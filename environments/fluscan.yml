@@ -3,7 +3,6 @@ channels:
   - conda-forge
   - bioconda
 dependencies:
-  - bbmap=39.01
   - bcftools=1.17
   - bedtools=2.31
   - blast=2.14.1
