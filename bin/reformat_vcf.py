@@ -165,6 +165,8 @@ def reformat_vcf(df: pd.DataFrame) -> pd.DataFrame:
     # build the final nucleotide dataframe
     df_nt_final = pd.concat([df_merge, split_aa_df], axis=1)
 
+    df_nt_final['gene_name'] = df_nt_final['gene_name'].str.upper()
+
     # # reset indices 
     # df_merge = df_merge.reset_index(drop=True)
     # split_aa_df = split_aa_df.reset_index(drop=True)
