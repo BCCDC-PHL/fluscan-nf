@@ -103,11 +103,11 @@ workflow {
         
         //snp_calling(ref_mapping.out.consensus, ch_aa_database)
     
-        pull_genoflu(params.genoflu_github_url)
+        // pull_genoflu(params.genoflu_github_url)
 
-        checkout_genoflu(pull_genoflu.out.repo, params.genoflu_version)
+        // checkout_genoflu(pull_genoflu.out.repo, params.genoflu_version)
 
-        genoflu(ref_mapping.out.consensus.combine(pull_genoflu.out.repo))
+        // genoflu(ref_mapping.out.consensus.combine(pull_genoflu.out.repo))
 
         //
         // Provenance collection processes
@@ -122,7 +122,7 @@ workflow {
         ch_provenance = ch_provenance.join(assembly.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }    
         //ch_provenance = ch_provenance.join(clade_calling.out.provenance).map{ it ->   [it[0], it[1] << it[2]] }
         //ch_provenance = ch_provenance.join(snp_calling.out.provenance).map{ it ->     [it[0], it[1] << it[2]] }
-        ch_provenance = ch_provenance.join(genoflu.out.provenance).map{ it ->         [it[0], it[1] << it[2]] }
+        //ch_provenance = ch_provenance.join(genoflu.out.provenance).map{ it ->         [it[0], it[1] << it[2]] }
         collect_provenance(ch_provenance)
 
 }
