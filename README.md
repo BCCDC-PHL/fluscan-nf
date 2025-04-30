@@ -9,10 +9,13 @@ The pipeline further produces QC reports, coverage plots, pileups, consensus seq
 - Primer removal with [cutadapt](https://github.com/marcelm/cutadapt)
 - FASTQ quality reporting with [FastQC](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/)
 - Aggregate the reports with [MultiQC](https://multiqc.info/)
-- Clade calls for H1, H3 and H5 influenza using [Nextclade](https://github.com/nextstrain/nextclade)
+- De-novo assembly 
+- Automated reference selection from built in database
+- Reference-based read mapping
 - Nucleotide variant calling using FreeBayes
 - Annotation of amino acid variant calls using SnpEff
-- Genotype calls using GenoFLU against curated database
+- Detection of mutations of interest via watchlist scanning 
+- Consensus sequence generation 
 
 ```mermaid
 flowchart TD
