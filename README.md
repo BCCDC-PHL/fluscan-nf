@@ -74,6 +74,8 @@ nextflow run BCCDC-PHL/fluscan-nf \
   -profile conda \
   --cache ~/.conda/envs \
   --fastq_input /path/to/your_fastqs \
+  --watchlist_dir /path/to/multiple/watchlists \
+  --snpeff_config /path/to/snpeff.config \
   --outdir /path/to/output_dir
 ```
 
