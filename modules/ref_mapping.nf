@@ -94,7 +94,7 @@ process make_pileup {
 
 	tag {sample_id}
 
-    conda "${projectDir}/environments/fluviewer.yml"
+    conda "${projectDir}/environments/fluscan.yml"
 
     publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*tsv", mode: 'copy'
 
@@ -116,7 +116,7 @@ process freebayes {
 
     tag { sample_id }
 
-    conda "${projectDir}/environments/fluviewer.yml"
+    conda "${projectDir}/environments/fluscan.yml"
 
     publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*{gz,csi}", mode: 'copy'
 
@@ -155,12 +155,12 @@ process freebayes {
 process snpeff_annotation {
     tag { sample_id }
 
-    conda "${projectDir}/environments/fluviewer.yml"
+    conda "${projectDir}/environments/fluscan.yml"
 
     publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*{vcf,tsv}", mode: 'copy'
 
     input: 
-	tuple val(sample_id), path(vcf), path(vcf_index), path(snpeff_db_path)
+	tuple val(sample_id), path(vcf), path(vcf_index), path(snpeff_config_path)
 	
 	output:
     tuple val(sample_id), path("${sample_id}*vcf"), emit: vcf
@@ -176,7 +176,7 @@ process snpeff_annotation {
     printf -- "  - tool_name: samtools\\n    tool_version: \$(samtools --version 2>&1 | head -n1 | cut -d' ' -f2)\\n"   >> ${sample_id}_snpeff_provenance.yml
     printf -- "  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n"   >> ${sample_id}_snpeff_provenance.yml
 
-    run_snpeff.py --input ${vcf} --config ${snpeff_db_path} --outname ${sample_id}
+    run_snpeff.py --input ${vcf} --config ${snpeff_config_path} --outname ${sample_id}
 
     reformat_vcf.py --input ${sample_id}_all_anno.vcf --output ${sample_id}_all_muts.tsv
     """
@@ -186,7 +186,7 @@ process snpeff_annotation {
 process mutation_watch {
     tag { sample_id }
 
-    conda "${projectDir}/environments/fluviewer.yml"
+    conda "${projectDir}/environments/fluscan.yml"
 
     publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*{tsv}", mode: 'copy'
 
@@ -196,9 +196,9 @@ process mutation_watch {
 	output:
     tuple val(sample_id), path("${sample_id}*tsv"), emit: vcf
     script:
-
+    watchlist_name = watchlist.baseName
     """
-    mutation_watcher.py --input ${vcf_filter} --watchlist ${watchlist} --output ${sample_id}_mut_watch.tsv
+    mutation_watcher.py --input ${vcf_filter} --watchlist ${watchlist} --output ${sample_id}_${watchlist_name}.tsv
     """
 
 }
@@ -230,7 +230,7 @@ process make_consensus {
 
     tag { sample_id }
 
-    conda "${projectDir}/environments/fluviewer.yml"
+    conda "${projectDir}/environments/fluscan.yml"
 
     publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*consensus.fasta", mode: 'copy'
     
