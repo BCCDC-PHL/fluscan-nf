@@ -3,7 +3,7 @@
 import argparse
 import pandas as pd
 from glob import glob
-import os
+import os, sys
 import re 
 from typing import List
 
@@ -16,7 +16,7 @@ def load_watchlist(watchlist_path):
     Load the watchlist CSV file using pandas and convert it to a dict.
     """
     try:
-        watchlist_df = pd.read_csv(watchlist_path)
+        watchlist_df = pd.read_csv(watchlist_path, keep_default_na=False)
         # Assuming the mutations are in a column named 'mutation'
         # Modify this according to your CSV structure
         watchlist_dict = watchlist_df.groupby('segment')['mutation'].apply(set).to_dict()
@@ -27,9 +27,22 @@ def load_watchlist(watchlist_path):
     
 def load_vcf(vcf_path):
     df = pd.read_csv(vcf_path, sep='\t', keep_default_na=False)
-    mutation_dict = df.groupby('gene_name')['MUT_LIST_AA'].apply(lambda x : ";".join([y for y in x if y])).str.split(";").to_dict()
-    mutation_dict = {gene : set(muts) for gene, muts in mutation_dict.items()}
+    mutation_dict = df.groupby('gene_name')['MUT_LIST_AA'].apply(lambda x : ";".join([y for y in x if y])).str.split(";")
+    
+    def filter(mut_list):
+        filtered = set()
+        for mut in mut_list:
+            if "fs" in mut or "*" in mut:
+                continue
+            filtered.add(mut)
+        return filtered
+    mutation_dict = {gene : filter(muts) for gene, muts in mutation_dict.items()}
+
     return mutation_dict
+
+def check_data_schema(mutation_dict, watchlist_dict):
+    return any([segment in mutation_dict for segment in watchlist_dict])
+     
 
 def detect_mutations(mutation_dict, watchlist_dict):
     """
@@ -67,12 +80,21 @@ def main():
     # Load watchlist
     watchlist = load_watchlist(args.watchlist)
 
+    if not check_data_schema(mutation_dict, watchlist):
+        print("WARNING: No segments are overlapping between the two files. Exiting.")
+        print(f"VCF Segment Names: {list(mutation_dict.keys())}")
+        print(f"Watchlist Segment Names: {list(watchlist.keys())}")
+        with open(args.output, 'a'):     # Create file if does not exist
+            os.utime(args.output, None)
+        sys.exit(0)
+    
     # Detect mutations
     detected_mutations = detect_mutations(mutation_dict, watchlist)
 
     # Print results
     if detected_mutations:
         print("Detected mutations of interest:")
+        print(detected_mutations)
         dfs = []
         for segment, mutations in detected_mutations.items():
             dfs.append(pd.DataFrame({'name': sample_name, 'segment': segment, 'mutations':mutations}))
