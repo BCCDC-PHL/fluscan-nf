@@ -65,25 +65,35 @@ def main():
 
     annotated_vcfs = {}
 
+    # split the input VCF by flu segment
     for ref_name, seg_df in vcf_df.groupby('CHROM'):
         print(ref_name)
 
+        # parse out segment and subtype information from the header 
         ref_name_fields = ref_name.split("|")
         segment = ref_name_fields[0]
         subtype = ref_name_fields[2].lower()
+
+        # rename the #CHROM column entries because these have to match with the snpEff database entry
         rename_vcf_df = rename_vcf(seg_df)
         
+        # write a temp VCF file containing only the entries for one segment 
         write_vcf(rename_vcf_df, header_lines, '.tmp.vcf')
 
+        # run snpEff on the temp VCF file to produce an annotated VCF for one segment only 
         output_vcf = f'{args.outname}_{segment}_anno.vcf'
         run_snpeff('.tmp.vcf', f'influenza_{subtype}', output_vcf, args.config)
         
+        # save the output annotated VCF filepath for later concatentation 
         annotated_vcfs[segment] = output_vcf
     
+    # extract header lines from last temp VCF file 
     _ , ann_header_lines = read_vcf('.tmp.vcf')
 
+    # concatenate all the segment-based annotated VCFs together 
     final_vcf_df = concat_vcf(annotated_vcfs)
 
+    # write the final concatenated VCF 
     final_vcf_path = f"{args.outname}_all_anno.vcf"
     print(f'Writing combined VCF to {final_vcf_path}')
     write_vcf(final_vcf_df, ann_header_lines, final_vcf_path)
