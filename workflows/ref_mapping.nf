@@ -25,16 +25,16 @@ workflow ref_mapping {
 
     take:
         ch_fastq
-        ch_contigs
+        // ch_contigs
         ch_nt_database
 
     main:
-        blastn(ch_contigs, ch_nt_database)
-        map_reads(ch_fastq.join(blastn.out.ref))
+        // blastn(ch_contigs, ch_nt_database)
+        map_reads(ch_fastq.combine(ch_nt_database))
         sort_filter_sam(map_reads.out.sam)
         make_pileup(sort_filter_sam.out.bam)
         make_coverage_plot(sort_filter_sam.out.depth)
-        freebayes(sort_filter_sam.out.bam.join(blastn.out.ref))
+        freebayes(sort_filter_sam.out.bam.combine(ch_nt_database))
 
         if (params.snpeff_config != 'NO_FILE') {
             watchlist_files = Channel.fromPath(params.watchlist_dir + "/*watchlist.csv")
@@ -43,7 +43,7 @@ workflow ref_mapping {
         }
 
         mask_low_coverage(sort_filter_sam.out.bam)
-        make_consensus(freebayes.out.vcf.join(blastn.out.ref).join(mask_low_coverage.out.masked_bed))
+        make_consensus(freebayes.out.vcf.combine(ch_nt_database).join(mask_low_coverage.out.masked_bed))
     emit:
         consensus = make_consensus.out.consensus
 }

@@ -67,8 +67,8 @@ workflow {
     }
 
     ch_aa_database = Channel.of([file(params.aa_database).parent, file(params.aa_database).name]).first()
-    ch_nt_database = Channel.of([file(params.nt_database).parent, file(params.nt_database).name]).first()
-
+    //ch_nt_database = Channel.of([file(params.nt_database).parent, file(params.nt_database).name]).first()
+    ch_nt_database = Channel.fromPath(params.nt_database).first()
     main:
 
         // Provenance channel starts with just the sample IDs
@@ -86,15 +86,15 @@ workflow {
         sample_reads(cutadapt.out.primer_trimmed_reads)
 
         // Run assembly 
-        assembly(sample_reads.out.reads)
+        // assembly(sample_reads.out.reads)
 
         //Collect al the relevant filesfor multiqc
         ch_fastqc_collected = fastqc.out.zip.map{ it -> [it[1], it[2]]}.collect()
         multiqc(fastp.out.json.mix( cutadapt.out.log, ch_fastqc_collected ).collect().ifEmpty([]) )
     
         ref_mapping(
-            ch_fastq_input,
-            assembly.out.contigs,
+            sample_reads.out.reads,
+            // assembly.out.contigs,
             ch_nt_database
         )
 
@@ -119,7 +119,7 @@ workflow {
         ch_provenance = ch_provenance.join(fastp.out.provenance).map{ it ->           [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(cutadapt.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
         //ch_provenance = ch_provenance.join(sample_reads.out.provenance).map{ it ->    [it[0], it[1] << it[2]] }
-        ch_provenance = ch_provenance.join(assembly.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }    
+        //ch_provenance = ch_provenance.join(assembly.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }    
         //ch_provenance = ch_provenance.join(clade_calling.out.provenance).map{ it ->   [it[0], it[1] << it[2]] }
         //ch_provenance = ch_provenance.join(snp_calling.out.provenance).map{ it ->     [it[0], it[1] << it[2]] }
         //ch_provenance = ch_provenance.join(genoflu.out.provenance).map{ it ->         [it[0], it[1] << it[2]] }

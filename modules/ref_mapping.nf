@@ -154,7 +154,10 @@ process freebayes {
 
 process snpeff_annotation {
     tag { sample_id }
+ 
+    errorStrategy 'ignore'
 
+  
     conda "${projectDir}/environments/fluscan.yml"
 
     publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*{vcf,tsv}", mode: 'copy'
@@ -229,6 +232,8 @@ process mask_low_coverage {
 process make_consensus {
 
     tag { sample_id }
+
+    errorStrategy 'ignore' 
 
     conda "${projectDir}/environments/fluscan.yml"
 
