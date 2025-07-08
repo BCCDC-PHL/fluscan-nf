@@ -97,6 +97,8 @@ def extract_ann_df(info_df):
     aa_muts = ann_df['hgvs_p'].str.extract(r'p\.([^\.]+)').squeeze()
     #aa_muts = aa_muts.loc[aa_muts.str.match(r'^[A-z]+\d+[A-z]+$',na=False)]
 
+    
+
     # mask to search for multi-base deletions 
     mask_del_multi = aa_muts.str.match(r"[A-Za-z\d]+_[A-Za-z\d]+del$", na=False)
 

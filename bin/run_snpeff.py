@@ -9,7 +9,7 @@ from subprocess import run, CalledProcessError
 from tools import read_vcf, write_vcf
 
 SEGMENTS = 'PB2 PB1 PA HA NP NA M NS'.split()
-SEGMENTS = '13 14 15 16 17 18 19 20'.split()
+
 def rename_vcf(df):
     df['CHROM'] = df['CHROM'].str.split("|").str[-1]
     return df
@@ -70,9 +70,9 @@ def main():
         print(ref_name)
 
         # parse out segment and subtype information from the header 
-        #ref_name_fields = ref_name.split("|")
-        segment = ref_name[-2:]
-        subtype = 'h5n1'
+        ref_name_fields = ref_name.split("|")
+        segment = ref_name_fields[0]
+        subtype = ref_name_fields[2].lower()
 
         # rename the #CHROM column entries because these have to match with the snpEff database entry
         rename_vcf_df = rename_vcf(seg_df)
@@ -89,8 +89,7 @@ def main():
     
     # extract header lines from last temp VCF file 
     _ , ann_header_lines = read_vcf('.tmp.vcf')
-    
-    print(annotated_vcfs.keys())
+
     # concatenate all the segment-based annotated VCFs together 
     final_vcf_df = concat_vcf(annotated_vcfs)
 
@@ -99,6 +98,18 @@ def main():
     print(f'Writing combined VCF to {final_vcf_path}')
     write_vcf(final_vcf_df, ann_header_lines, final_vcf_path)
 
+def main2():
+    args = get_args()
 
+    vcf_df, header_lines = read_vcf(args.input)
+
+    rename_vcf_df = rename_vcf(vcf_df)
+    
+    write_vcf(rename_vcf_df, header_lines, '.tmp.vcf')
+    
+    # run snpEff on the temp VCF file to produce an annotated VCF for one segment only 
+    output_vcf = f'{args.outname}_anno.vcf'
+    run_snpeff('.tmp.vcf', f'influenza_h5n1', output_vcf, args.config)
+        
 if __name__ == '__main__':
-    main()    
+    main2()    

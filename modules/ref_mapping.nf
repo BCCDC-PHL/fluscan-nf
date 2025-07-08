@@ -181,7 +181,7 @@ process snpeff_annotation {
 
     run_snpeff.py --input ${vcf} --config ${snpeff_config_path} --outname ${sample_id}
 
-    reformat_vcf.py --input ${sample_id}_all_anno.vcf --output ${sample_id}_all_muts.tsv
+    reformat_vcf.py --input ${sample_id}_anno.vcf --output ${sample_id}_muts.tsv
     """
 
 }
