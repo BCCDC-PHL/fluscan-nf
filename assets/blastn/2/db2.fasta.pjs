@@ -1,0 +1,22 @@
+{
+  "version": "1.2",
+  "dbname": "db2.fasta",
+  "dbtype": "Protein",
+  "db-version": 5,
+  "description": "/home/john.palmer/git/fluscan-nf/assets/new_blastn/db2.fasta",
+  "number-of-letters": 13567,
+  "number-of-sequences": 8,
+  "last-updated": "2025-07-09T10:53:00",
+  "number-of-volumes": 1,
+  "bytes-total": 51453,
+  "bytes-to-cache": 13784,
+  "files": [
+    "db2.fasta.pdb",
+    "db2.fasta.phr",
+    "db2.fasta.pin",
+    "db2.fasta.pot",
+    "db2.fasta.psq",
+    "db2.fasta.ptf",
+    "db2.fasta.pto"
+  ]
+}
