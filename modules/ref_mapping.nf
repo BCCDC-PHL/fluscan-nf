@@ -136,15 +136,16 @@ process freebayes {
     printf -- "  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n"                    >> ${sample_id}_freebayes_provenance.yml
 
     samtools faidx ${reference}
-    freebayes -X -O \
+    freebayes \
     -b ${bamfile} \
     -v ${sample_id}.vcf \
     -f ${reference} \
     --limit-coverage 200 \
+    --min-mapping-quality 20 \
+    --min-base-quality 20 \
     -p 1 \
-    -m 20 \
-    -q 20 \
-    --pooled-continuous \
+    --min-coverage 10 \
+    --pooled-continuous 
 
     bcftools sort --output-type z ${sample_id}.vcf > ${sample_id}.vcf.gz
     bcftools index ${sample_id}.vcf.gz

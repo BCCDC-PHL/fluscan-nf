@@ -25,7 +25,6 @@ workflow ref_mapping {
 
     take:
         ch_fastq
-        // ch_contigs
         ch_nt_database
 
     main:
