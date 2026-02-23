@@ -21,9 +21,9 @@ process sample_reads {
     let "TARGET_COUNT = ${params.target_depth} * ${params.genome_size}"
 
     if [ \${READ_COUNT_1} -gt \${TARGET_COUNT} ]; then 
-        sample_reads.py -s 12 -n \${TARGET_COUNT} \
-        -f1 ${reads_1} \
-        -f2 ${reads_2}  \
+        sample_reads.py -s 12 -d ${params.target_depth} -g ${params.genome_size} \
+        -i1 ${reads_1} \
+        -i2 ${reads_2}  \
         -o1 ${sample_id}_R1_sample.fq.gz \
         -o2 ${sample_id}_R2_sample.fq.gz
         

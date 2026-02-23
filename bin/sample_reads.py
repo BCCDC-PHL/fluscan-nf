@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import sys
 import argparse
 import random
 from Bio import SeqIO
@@ -15,10 +16,12 @@ def parse_arguments() -> argparse.Namespace:
         argparse.Namespace: Parsed command line arguments
     """
     parser = argparse.ArgumentParser(description="Randomly sample N paired-end reads from FASTQ files")
-    parser.add_argument("-f1", "--forward", required=True, help="Input forward (R1) FASTQ file")
-    parser.add_argument("-f2", "--reverse", required=True, help="Input reverse (R2) FASTQ file")
-    parser.add_argument("-n", "--num_reads", type=int, required=True, help="Number of reads to sample")
+    parser.add_argument("-i1", "--forward", required=True, help="Input forward (R1) FASTQ file")
+    parser.add_argument("-i2", "--reverse", required=True, help="Input reverse (R2) FASTQ file")
+    parser.add_argument("-d", "--target_depth", type=int, required=True, help="Target depth of the sampling")
     parser.add_argument("-s", "--seed", type=int, default=0, help="Set the random seed to use in sampling.")
+    parser.add_argument("-g", "--genome_size", type=int, default=13500, help="Size of the genome. Default is influenza A")
+    parser.add_argument("-l", "--read_length", type=int, default=150, help="Size of the reads. Default is 150bp")
     parser.add_argument("-o1", "--out_forward", required=True, help="Output forward (R1) FASTQ file")
     parser.add_argument("-o2", "--out_reverse", required=True, help="Output reverse (R2) FASTQ file")
     return parser.parse_args()
@@ -51,8 +54,8 @@ def generate_random_indices(total_reads: int, num_samples: int) -> Set[int]:
         Set[int]: Set of random indices
     """
     if num_samples > total_reads:
-        raise ValueError(f"Cannot sample {num_samples} reads from {total_reads} total reads")
-    
+        return None 
+
     return set(random.sample(range(total_reads), num_samples))
 
 def sample_fastq_files(args: argparse.Namespace) -> None:
@@ -76,8 +79,20 @@ def sample_fastq_files(args: argparse.Namespace) -> None:
     if total_reads != reverse_reads:
         raise ValueError(f"Forward and reverse files have different numbers of reads: {total_reads} vs {reverse_reads}")
     
+    print("Genome size: " + str(args.genome_size))
+    print("Target depth: " + str(args.target_depth))
+    print(f"Read length: " + str(args.read_length))
+    target_bp_count = args.genome_size * args.target_depth
+    target_read_count = target_bp_count / args.read_length
+    
+
     # Generate random indices
-    random_indices = generate_random_indices(total_reads, args.num_reads)
+    target_read_count = int(target_read_count)
+    random_indices = generate_random_indices(total_reads, target_read_count)
+
+    if not random_indices:
+        print(f"Unable to sample {target_read_count} from {total_reads}. No action taken.")
+        sys.exit(0)
 
     # Process forward reads
     with read_fn(args.forward) as in_f1, write_fn(args.out_forward) as out_f1:
@@ -90,6 +105,8 @@ def sample_fastq_files(args: argparse.Namespace) -> None:
         for idx, record in enumerate(SeqIO.parse(in_f2, "fastq")):
             if idx in random_indices:
                 SeqIO.write(record, out_f2, "fastq")
+    
+    return target_read_count
 
 def main() -> None:
     """Main function to execute the script."""
@@ -98,8 +115,8 @@ def main() -> None:
     
     try:
         # Sample reads
-        sample_fastq_files(args)
-        print(f"Successfully sampled {args.num_reads} reads to {args.out_forward} and {args.out_reverse}")
+        target_read_count = sample_fastq_files(args)
+        print(f"Successfully sampled {target_read_count} reads to {args.out_forward} and {args.out_reverse}")
     except Exception as e:
         print(f"Error: {str(e)}")
         exit(1)
