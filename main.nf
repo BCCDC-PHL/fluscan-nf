@@ -22,7 +22,16 @@ include { pull_genoflu }        from './modules/genoflu.nf'
 include { checkout_genoflu }    from './modules/genoflu.nf'
 include { genoflu }             from './modules/genoflu.nf'
 
-include { ref_mapping }         from './workflows/ref_mapping.nf'
+include { blastn }              from './modules/ref_mapping.nf'
+include { map_reads }           from './modules/ref_mapping.nf'
+include { sort_filter_sam }     from './modules/ref_mapping.nf'
+include { make_pileup }         from './modules/ref_mapping.nf'
+include { freebayes }           from './modules/ref_mapping.nf'
+include { snpeff_annotation }   from './modules/ref_mapping.nf'
+include { mutation_watch }      from './modules/ref_mapping.nf'
+include { mask_low_coverage }   from './modules/ref_mapping.nf'
+include { make_consensus }      from './modules/ref_mapping.nf'
+include { make_coverage_plot }  from './modules/plotting.nf'
 
 
 
@@ -92,22 +101,36 @@ workflow {
         ch_fastqc_collected = fastqc.out.zip.map{ it -> [it[1], it[2]]}.collect()
         multiqc(fastp.out.json.mix( cutadapt.out.log, ch_fastqc_collected ).collect().ifEmpty([]) )
     
-        ref_mapping(
-            ch_fastq_input,
-            assembly.out.contigs,
-            ch_nt_database
-        )
+        // Reference mapping: BLAST contigs to find best reference, then map reads and call variants
+        blastn(assembly.out.contigs, ch_nt_database)
+
+        // NOTE: Currently mapping raw reads (ch_fastq_input). Consider using
+        // cutadapt.out.primer_trimmed_reads instead to avoid adapter/primer artifacts.
+        map_reads(ch_fastq_input.join(blastn.out.ref))
+        sort_filter_sam(map_reads.out.sam)
+        make_pileup(sort_filter_sam.out.bam)
+        make_coverage_plot(sort_filter_sam.out.depth)
+        freebayes(sort_filter_sam.out.bam.join(blastn.out.ref))
+
+        if (params.snpeff_config != 'NO_FILE') {
+            watchlist_files = Channel.fromPath(params.watchlist_dir + "/*watchlist.csv")
+            snpeff_annotation(freebayes.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
+            mutation_watch(snpeff_annotation.out.vcf_filter.combine(watchlist_files))
+        }
+
+        mask_low_coverage(sort_filter_sam.out.bam)
+        make_consensus(freebayes.out.vcf.join(blastn.out.ref).join(mask_low_coverage.out.masked_bed))
 
         //Call clades for H1 and H3 samples
-        //clade_calling(ref_mapping.out.ha_consensus_seq)
+        //clade_calling(make_consensus.out.consensus)
         
-        //snp_calling(ref_mapping.out.consensus, ch_aa_database)
+        //snp_calling(make_consensus.out.consensus, ch_aa_database)
     
         // pull_genoflu(params.genoflu_github_url)
 
         // checkout_genoflu(pull_genoflu.out.repo, params.genoflu_version)
 
-        // genoflu(ref_mapping.out.consensus.combine(pull_genoflu.out.repo))
+        // genoflu(make_consensus.out.consensus.combine(pull_genoflu.out.repo))
 
         //
         // Provenance collection processes

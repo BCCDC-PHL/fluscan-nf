@@ -41,8 +41,6 @@ process map_reads {
 
     tag {sample_id}
 
-    conda ""
-
     errorStrategy 'ignore'
 
 	label 'heavy'

@@ -189,6 +189,7 @@ def reformat_vcf(df: pd.DataFrame) -> pd.DataFrame:
     return df_nt_final #, df_aa_final 
 
 def filter_vcf(df):
+    df = df.reset_index(drop=True)
     df = df.drop(DROP_COLS, axis=1)
     df = df.drop(df.index[df['gene_name'].str.contains("CHR")])
     df = df.drop(df.index[df['hgvs_p']==''])
