@@ -34,7 +34,7 @@ def parse_blast(filepath):
 
 	blast_df.insert(0, 'sample_name', os.path.basename(filepath).split("_")[0])
 
-	blast_df.insert(3, 'segment', blast_df['sseqid'].str.split("|").str[0])
+	blast_df.insert(3, 'segment', blast_df['sseqid'].str.split("|").str[-1])
 	return blast_df
 
 
