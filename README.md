@@ -1,7 +1,7 @@
 # fluscan-nf
 
-This is a Nextflow pipeline for reference-based read mapping with a strong focus on calling nucleotide and amino acid mutations for Influenza A short-read sequence data. 
-The pipeline further produces QC reports, coverage plots, pileups, consensus sequences, HA and NA subtype calls, clade calls, and more. 
+This is a Nextflow pipeline for Influenza A mutation analysis from either short-read FASTQ data or pre-built consensus FASTA files.
+The short-read workflow performs trimming, assembly, mapping, FreeBayes calling, annotation, and consensus generation. The consensus workflow validates the supplied FASTA, selects a subtype-matched reference with BLAST, calls differences with `minimap2` + `paftools.js`, sorts with `bcftools`, annotates with SnpEff, and exports a simplified mutation summary.
 
 ## Analyses
 
@@ -13,6 +13,7 @@ The pipeline further produces QC reports, coverage plots, pileups, consensus seq
 - Automated reference selection from built in database
 - Reference-based read mapping
 - Nucleotide variant calling using FreeBayes
+- Consensus-to-reference variant calling using minimap2 + paftools.js
 - Annotation of amino acid variant calls using SnpEff
 - Detection of mutations of interest via watchlist scanning 
 - Consensus sequence generation 
@@ -63,6 +64,10 @@ flowchart TD
 
 Short read Illumina sequences, files ending in '.fastq.gz', '.fq.gz', '.fastq', '.fq'
 
+or
+
+Consensus FASTA files, one multi-FASTA per sample, with one sequence per influenza segment.
+
 ## Usage
 
 **Additional requirements for use:**  
@@ -78,6 +83,17 @@ nextflow run BCCDC-PHL/fluscan-nf \
   --cache ~/.conda/envs \
   --fastq_input /path/to/your_fastqs \
   --watchlist_dir /path/to/multiple/watchlists \
+  --snpeff_config /path/to/snpeff.config \
+  --outdir /path/to/output_dir
+```
+
+**Consensus FASTA example:**
+```
+nextflow run BCCDC-PHL/fluscan-nf \
+  -r v0.1.0 \
+  -profile conda \
+  --cache ~/.conda/envs \
+  --fasta_input /path/to/consensus_fastas \
   --snpeff_config /path/to/snpeff.config \
   --outdir /path/to/output_dir
 ```
@@ -100,9 +116,13 @@ Output for each sample includes:
 | `*_coverage.png`            | line plots describing mapping coverage across all 8 flu segments                           |
 | `*_pileup.tsv`              | Pileup in TSV containing raw counts of all 4 nucleotides and gaps                          |
 | `*_depth.tsv`               | Simple TSV reporting the depth values at every position in the alignment (samtools depth)    |
-| `vcf/*.vcf.gz`             | list of mutations in variant call format (VCF) called relative to the reference sequence (FreeBayes)  |
-| `vcf/*_anno.vcf`            | VCF with amino acid annotations provided by SnpEff    |
-| `vcf/*_mutations.tsv`            | Filtered, reformatted VCF used to make mutation identification easier                     |
+| `vcf/*.vcf.gz`             | list of mutations in variant call format (VCF) called relative to the reference sequence (short-read workflow / FreeBayes)  |
+| `vcf/*_raw.vcf`            | raw consensus-workflow VCF emitted by `minimap2` + `paftools.js` |
+| `vcf/*_sorted.vcf`         | consensus-workflow VCF sorted with `bcftools sort` |
+| `vcf/*_annotated.vcf`      | consensus-workflow VCF annotated with SnpEff |
+| `vcf/*_anno.vcf`           | VCF with amino acid annotations provided by SnpEff in the short-read workflow |
+| `vcf/*_final_summary.tsv`  | simplified consensus-workflow mutation summary derived from the annotated VCF |
+| `vcf/*_mutations.tsv`      | filtered, reformatted VCF used to make mutation identification easier in the short-read workflow |
 | `vcf/*_mut_watch.tsv`            | A filtered list of mutations that are also present on the provided watchlist          |
 | `genoflu/*_stats.tsv`       | tabular list of genotype call information for the sample's consensus sequences             |
 

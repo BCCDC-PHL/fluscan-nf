@@ -4,6 +4,8 @@ process makeblastdb {
 
     tag { fasta_db.name }
 
+    conda "${projectDir}/environments/fluscan.yml"
+
     input:
     path(fasta_db)
 
@@ -25,6 +27,8 @@ process blastn {
 
     tag {sample_id}
 
+    conda "${projectDir}/environments/fluscan.yml"
+
     publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*blastn.tsv" , mode:'copy'
     publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*filter.tsv" , mode:'copy'
     publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*fasta" , mode:'copy'
@@ -45,7 +49,13 @@ process blastn {
     printf -- "- process_name: blastn\\n" > ${sample_id}-blastn-provenance.yml
     printf -- "  tools: \\n  - tool_name: blastn\\n    tool_version: \$(blastn -version 2>&1 | head -n1 | cut -d' ' -f2)\\n" >> ${sample_id}-blastn-provenance.yml
 
-    blastn -num_threads ${task.cpus} -query ${query} -db ${blast_db_fasta} -outfmt 6 > ${sample_id}_blastn.tsv &&
+    blastn \
+        -num_threads ${task.cpus} \
+        -max_target_seqs 1 \
+        -query ${query} \
+        -db ${blast_db_fasta} \
+        -outfmt "6 qseqid sseqid pident length qlen slen qstart qend sstart send evalue bitscore score" \
+        > ${sample_id}_blastn.tsv &&
 
     filter_alignments.py ${sample_id}_blastn.tsv \
     --seqs ${blast_db_fasta} \
