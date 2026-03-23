@@ -19,7 +19,7 @@ coverage <- read_tsv(file = args[1],
   rename(segment = X1,
          position = X2,
          depth = X3) %>%
-  separate(segment, into = c("Accession", "plate", "index", "Well", "ignore1", "ignore2", "segment_name", "subtype", "seg_length"))
+  separate(segment, into = c("Accession", "subtype", "segment_name"), sep = "\\|")
 
 
 Accession <- coverage %>%
