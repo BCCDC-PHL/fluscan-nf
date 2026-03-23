@@ -51,8 +51,8 @@ def main():
 
         # Parse out segment and subtype information from the CHROM field
         ref_name_fields = ref_name.split("|")
-        segment = ref_name_fields[0]
-        subtype = ref_name_fields[2].lower()
+        segment = ref_name_fields[-1]
+        subtype = ref_name_fields[-2].lower()
 
         # Rename CHROM entries to match the snpEff database entry names
         renamed_df = rename_chrom(seg_df)

@@ -101,7 +101,7 @@ def main():
 		
 		# retrieve the name of the most appropriate reference (based on a BLAST alignment)
 		ref_name = qry_align_data[nt_qry.id]
-		segment = ref_name.split("|")[0]
+		segment = ref_name.split("|")[-1]
 
 		# grab the appropriate reference sequence for the subtype
 		aa_ref = ref_database[ref_name]
