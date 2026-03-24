@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 def rename_chrom(df):
     """Strip pipe-delimited prefix from CHROM, keeping only the accession."""
     df = df.copy()
-    df['CHROM'] = df['CHROM'].str.split("|").str[-1]
+    df['CHROM'] = df['CHROM'].str.split("|").str[0]
     return df
 
 
