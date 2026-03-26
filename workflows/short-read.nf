@@ -84,8 +84,8 @@ workflow SHORT_READ {
         multiqc(fastp.out.json.mix( cutadapt.out.log, ch_fastqc_collected ).collect().ifEmpty([]) )
 
         // Build BLAST database, then search assembled contigs against it to select references
-        makeblastdb(ch_nt_database)
-        blastn(assembly.out.contigs, makeblastdb.out.db)
+        makeblastdb(ch_nt_database).first().set{ch_blastdb}
+        blastn(assembly.out.contigs, ch_blastdb)
 
         // NOTE: Currently mapping raw reads (ch_fastq_input). Consider using
         // cutadapt.out.primer_trimmed_reads instead to avoid adapter/primer artifacts.
@@ -109,13 +109,6 @@ workflow SHORT_READ {
 
         //snp_calling(make_consensus.out.consensus, ch_aa_database)
 
-        // pull_genoflu(params.genoflu_github_url)
-
-        // checkout_genoflu(pull_genoflu.out.repo, params.genoflu_version)
-
-        // genoflu(make_consensus.out.consensus.combine(pull_genoflu.out.repo))
-
-        //
         // Provenance collection processes
         // The basic idea is to build up a channel with the following structure:
         // [sample_id, [provenance_file_1.yml, provenance_file_2.yml, provenance_file_3.yml...]]
@@ -128,7 +121,6 @@ workflow SHORT_READ {
         ch_provenance = ch_provenance.join(assembly.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
         //ch_provenance = ch_provenance.join(clade_calling.out.provenance).map{ it ->   [it[0], it[1] << it[2]] }
         //ch_provenance = ch_provenance.join(snp_calling.out.provenance).map{ it ->     [it[0], it[1] << it[2]] }
-        //ch_provenance = ch_provenance.join(genoflu.out.provenance).map{ it ->         [it[0], it[1] << it[2]] }
         collect_provenance(ch_provenance)
 
 }

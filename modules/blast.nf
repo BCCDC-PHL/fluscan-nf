@@ -10,11 +10,13 @@ process makeblastdb {
     path(fasta_db)
 
     output:
-    tuple path("${fasta_db.name}"), path("${fasta_db.name}.*"), emit: db
+    path("${blast_db_name}*"), emit: db
 
     script:
+    blast_db_name = "${task.ext.workflow}_blastn_db.fasta"
     """
-    makeblastdb -in ${fasta_db} -dbtype nucl
+    makeblastdb -dbtype nucl -in ${fasta_db} -out ${blast_db_name}
+    cp ${fasta_db} ${blast_db_name}
     """
 }
 
@@ -35,7 +37,7 @@ process blastn {
 
     input: 
     tuple val(sample_id), path(query)
-    tuple path(blast_db_fasta), path(blast_db_index_files)
+    path(blast_db)
 
     output:
     tuple val(sample_id), path("${sample_id}*blastn.tsv"), emit: raw
@@ -45,6 +47,7 @@ process blastn {
     tuple val(sample_id), path("${sample_id}-*-provenance.yml"), emit: provenance
 
     script:
+    blast_db_name = blast_db[0]
     """
     printf -- "- process_name: blastn\\n" > ${sample_id}-blastn-provenance.yml
     printf -- "  tools: \\n  - tool_name: blastn\\n    tool_version: \$(blastn -version 2>&1 | head -n1 | cut -d' ' -f2)\\n" >> ${sample_id}-blastn-provenance.yml
@@ -53,12 +56,12 @@ process blastn {
         -num_threads ${task.cpus} \
         -max_target_seqs 1 \
         -query ${query} \
-        -db ${blast_db_fasta} \
+        -db ${blast_db_name} \
         -outfmt "6 qseqid sseqid pident length qlen slen qstart qend sstart send evalue bitscore score" \
         > ${sample_id}_blastn.tsv &&
 
     filter_alignments.py ${sample_id}_blastn.tsv \
-    --seqs ${blast_db_fasta} \
+    --seqs ${blast_db_name} \
     --out_tsv ${sample_id}_blastn_filter.tsv \
     --out_fasta ${sample_id}_ref.fasta 
     """
