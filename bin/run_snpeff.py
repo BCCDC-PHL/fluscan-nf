@@ -20,6 +20,18 @@ def rename_chrom(df):
     return df
 
 
+def filter_contig_headers(header_lines, accession):
+    """Return header_lines with only the ##contig line matching *accession*."""
+    filtered = []
+    for line in header_lines:
+        if line.startswith("##contig"):
+            if accession in line:
+                filtered.append(line)
+        else:
+            filtered.append(line)
+    return filtered
+
+
 def run_snpeff(input_path, genome, output_path, config_path):
     """Run snpEff annotation and write the result to *output_path*."""
     command = ['snpEff', '-config', config_path, genome, input_path]
@@ -56,13 +68,15 @@ def main():
 
         # Rename CHROM entries to match the snpEff database entry names
         renamed_df = rename_chrom(seg_df)
+        accession = renamed_df['CHROM'].iloc[0]
+        seg_header_lines = filter_contig_headers(header_lines, accession)
 
         # Use a temporary file for the single-segment VCF
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_vcf = os.path.join(tmpdir, 'segment.vcf')
-            output_vcf = f'{args.outname}_{segment}_anno.vcf'
+            output_vcf = f'{args.outname}_{accession}_{subtype}_{segment}_anno.vcf'
 
-            write_vcf(renamed_df, header_lines, tmp_vcf)
+            write_vcf(renamed_df, seg_header_lines, tmp_vcf)
             run_snpeff(tmp_vcf, f'influenza_{subtype}', output_vcf, args.config)
 
         # Read back the annotated VCF and accumulate

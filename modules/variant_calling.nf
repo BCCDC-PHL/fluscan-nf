@@ -111,28 +111,24 @@ process snpeff_annotation {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*{vcf,tsv}", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*vcf", mode: 'copy'
 
-    input: 
-	tuple val(sample_id), path(vcf), path(vcf_index), path(snpeff_config_path)
-	
-	output:
-    tuple val(sample_id), path("${sample_id}*vcf"), emit: vcf
-    tuple val(sample_id), path("${sample_id}*tsv"), emit: vcf_filter
-    tuple val(sample_id), path("${sample_id}*provenance.yml"), emit: provenance
+    input:
+    tuple val(sample_id), path(vcf), path(vcf_index), path(snpeff_config_path)
+
+    output:
+    tuple val(sample_id), path("${sample_id}_all_anno.vcf"), emit: vcf
+    tuple val(sample_id), path("${sample_id}_snpeff_provenance.yml"), emit: provenance
 
     script:
-
     """
-	printf -- "- process_name: snpeff_annotation\\n"                                                      >> ${sample_id}_snpeff_provenance.yml
+    printf -- "- process_name: snpeff_annotation\\n"                                                      >> ${sample_id}_snpeff_provenance.yml
     printf -- "  tools: \\n  "                                                                            >> ${sample_id}_snpeff_provenance.yml
     printf -- "  - tool_name: snpeff\\n    tool_version: \$(snpEff -version 2>&1 | cut -d\$'\t' -f2)\\n"   >> ${sample_id}_snpeff_provenance.yml
     printf -- "  - tool_name: samtools\\n    tool_version: \$(samtools --version 2>&1 | head -n1 | cut -d' ' -f2)\\n"   >> ${sample_id}_snpeff_provenance.yml
     printf -- "  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n"   >> ${sample_id}_snpeff_provenance.yml
 
     run_snpeff.py --input ${vcf} --config ${snpeff_config_path} --outname ${sample_id}
-
-    reformat_vcf.py --input ${sample_id}_all_anno.vcf --output ${sample_id}_all_muts.tsv
     """
 
 }
@@ -143,13 +139,13 @@ process consensus_snpeff_annotation {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}_annotated.vcf", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}_anno.vcf", mode: 'copy'
 
     input:
     tuple val(sample_id), path(vcf), val(snpeff_db_name), path(snpeff_config_path)
 
     output:
-    tuple val(sample_id), path("${sample_id}_annotated.vcf"), emit: vcf
+    tuple val(sample_id), path("${sample_id}_anno.vcf"), emit: vcf
     tuple val(sample_id), path("${sample_id}_consensus_snpeff_provenance.yml"), emit: provenance
 
     script:
@@ -159,33 +155,33 @@ process consensus_snpeff_annotation {
     printf -- "  - tool_name: snpeff\\n    tool_version: \$(snpEff -version 2>&1 | cut -d\$'\\t' -f2)\\n" >> ${sample_id}_consensus_snpeff_provenance.yml
     printf -- "  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n" >> ${sample_id}_consensus_snpeff_provenance.yml
 
-    snpEff -Xmx4g -noStats -config ${snpeff_config_path} ${snpeff_db_name} ${vcf} > ${sample_id}_annotated.vcf
+    snpEff -Xmx4g -noStats -config ${snpeff_config_path} ${snpeff_db_name} ${vcf} > ${sample_id}_anno.vcf
     """
 }
 
 
-process consensus_reformat_vcf {
+process reformat_vcf {
     tag { sample_id }
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}_final_summary.tsv", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*tsv", mode: 'copy'
 
     input:
     tuple val(sample_id), path(vcf)
 
     output:
-    tuple val(sample_id), path("${sample_id}_final_summary.tsv"), emit: summary
-    tuple val(sample_id), path("${sample_id}_consensus_reformat_vcf_provenance.yml"), emit: provenance
+    tuple val(sample_id), path("${sample_id}_all_muts.tsv"), emit: tsv
+    tuple val(sample_id), path("${sample_id}_reformat_vcf_provenance.yml"), emit: provenance
 
     script:
     """
-    printf -- "- process_name: consensus_reformat_vcf\\n" > ${sample_id}_consensus_reformat_vcf_provenance.yml
-    printf -- "  tools: \\n" >> ${sample_id}_consensus_reformat_vcf_provenance.yml
-    printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_consensus_reformat_vcf_provenance.yml
-    printf -- "  - tool_name: reformat_vcf.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_consensus_reformat_vcf_provenance.yml
+    printf -- "- process_name: reformat_vcf\\n" > ${sample_id}_reformat_vcf_provenance.yml
+    printf -- "  tools: \\n" >> ${sample_id}_reformat_vcf_provenance.yml
+    printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_reformat_vcf_provenance.yml
+    printf -- "  - tool_name: reformat_vcf.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_reformat_vcf_provenance.yml
 
-    reformat_vcf.py --input ${vcf} --output ${sample_id}_final_summary.tsv
+    reformat_vcf.py --input ${vcf} --output ${sample_id}_all_muts.tsv
     """
 }
 

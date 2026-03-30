@@ -33,6 +33,7 @@ include { mask_low_coverage }   from '../modules/alignment.nf'
 include { make_consensus }      from '../modules/alignment.nf'
 include { freebayes }           from '../modules/variant_calling.nf'
 include { snpeff_annotation }   from '../modules/variant_calling.nf'
+include { reformat_vcf }        from '../modules/variant_calling.nf'
 include { mutation_watch }      from '../modules/variant_calling.nf'
 include { make_coverage_plot }  from '../modules/plotting.nf'
 
@@ -98,7 +99,8 @@ workflow SHORT_READ {
         if (params.snpeff_config != 'NO_FILE') {
             watchlist_files = Channel.fromPath(params.watchlist_dir + "/*watchlist.csv")
             snpeff_annotation(freebayes.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
-            mutation_watch(snpeff_annotation.out.vcf_filter.combine(watchlist_files))
+            reformat_vcf(snpeff_annotation.out.vcf)
+            mutation_watch(reformat_vcf.out.tsv.combine(watchlist_files))
         }
 
         mask_low_coverage(sort_filter_sam.out.bam)
