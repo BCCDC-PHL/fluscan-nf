@@ -1,9 +1,0 @@
-name: fluscan-main
-channels:
-  - conda-forge
-  - bioconda
-dependencies:
-  - fastp=1.2.0
-  - cutadapt=5.2
-  - multiqc=1.33
-  - fastqc=0.12.1

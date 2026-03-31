@@ -24,3 +24,7 @@ dependencies:
   - snpeff=5.4.0c
   - spades=4.2.0
   - zstd=1.5.7
+  - fastp=1.3.0
+  - cutadapt=5.2
+  - multiqc=1.33
+  - fastqc=0.12.1
