@@ -33,7 +33,7 @@ DEGENERATE_BASES = set('RYSWKMBDHV')
 # Acceptable sequence length ranges (min_len, max_len) per segment
 SEGMENT_LENGTH_RANGES = {
     'PB2': (1700, 2400),
-    'PB1': (1650, 2300),
+    'PB1': (1650, 2400),
     'PA':  (2100, 2280),
     'HA':  (1600, 1800),
     'NP':  (1450, 1600),
