@@ -147,6 +147,8 @@ process make_consensus {
 
     bcftools consensus -m ${mask_file} -f ${reference} ${vcf} > ${sample_id}_consensus.fasta
 
-    
+    ref_header=\$(head -n1 ${reference} | sed 's/^>//')
+    sed -i "s/^>.*/>${sample_id}|\${ref_header}/" ${sample_id}_consensus.fasta
+
     """
 }
