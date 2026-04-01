@@ -43,65 +43,55 @@ process freebayes {
 
 process consensus_paftools_call {
 
-    tag { sample_id }
+    tag { "${name}" }
 
-    conda "${projectDir}/environments/fluscan.yml"
-
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}_raw.vcf", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${name}_raw.vcf", mode: 'copy'
 
     input:
-    tuple val(sample_id), path(consensus_fasta), path(reference_fasta), val(subtype), val(snpeff_db_name)
+    tuple val(sample_id), val(segment), path(alignment_paf), path(reference_fasta) 
 
     output:
-    tuple val(sample_id), path("${sample_id}_raw.vcf"), val(snpeff_db_name), emit: vcf
+    tuple val(sample_id), val(segment), path("${name}_raw.vcf"), env(SNPEFF_DB_NAME), emit: vcf
     tuple val(sample_id), path("${sample_id}_consensus_paftools_provenance.yml"), emit: provenance
 
     script:
+    name = "${sample_id}_${segment}"
     """
     printf -- "- process_name: consensus_paftools_call\\n" > ${sample_id}_consensus_paftools_provenance.yml
     printf -- "  tools: \\n" >> ${sample_id}_consensus_paftools_provenance.yml
-    printf -- "  - tool_name: minimap2\\n    tool_version: \$(minimap2 --version 2>&1 | head -n1)\\n" >> ${sample_id}_consensus_paftools_provenance.yml
-    printf -- "  - tool_name: k8\\n    tool_version: \$(k8 -v 2>&1 | head -n1)\\n" >> ${sample_id}_consensus_paftools_provenance.yml
+    printf -- "  - tool_name: paftools.js\\n    tool_version: \$(paftools.js version)\\n" >> ${sample_id}_consensus_paftools_provenance.yml
 
-    paftools_js=\$(command -v paftools.js || true)
-    if [ -z "\$paftools_js" ]; then
-        paftools_js=\$(find "\$(dirname "\$(command -v minimap2)")" -maxdepth 3 -name paftools.js | head -n1)
-    fi
-    if [ -z "\$paftools_js" ]; then
-        echo "ERROR: Unable to locate paftools.js in the active environment." >&2
-        exit 1
-    fi
+    paftools.js call -l 100 -L 100 -f ${reference_fasta} ${name}.paf > ${name}_raw.vcf
 
-    printf -- "  - tool_name: paftools.js\\n    tool_version: \$(basename "\$paftools_js")\\n" >> ${sample_id}_consensus_paftools_provenance.yml
+    SNPEFF_DB_NAME=\$(head -n1 ${reference_fasta} | cut -d'|' -f2)
+    SNPEFF_DB_NAME="influenza_\${SNPEFF_DB_NAME,,}"
 
-    minimap2 -cx asm5 --cs ${reference_fasta} ${consensus_fasta} | \
-        k8 "\$paftools_js" call -l 1 -L 1 -f ${reference_fasta} - \
-        > ${sample_id}_raw.vcf
+    echo "influenza_\${SNPEFF_DB_NAME}" > ${name}_snpeff_db_name.txt
     """
 }
 
 
 process consensus_sort_vcf {
 
-    tag { sample_id }
+    tag { name }
 
-    conda "${projectDir}/environments/fluscan.yml"
-
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}_sorted.vcf", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${name}_sorted.vcf", mode: 'copy'
 
     input:
-    tuple val(sample_id), path(raw_vcf), val(snpeff_db_name)
+    tuple val(sample_id), val(segment), path(raw_vcf), val(snpeff_db_name)
 
     output:
-    tuple val(sample_id), path("${sample_id}_sorted.vcf"), val(snpeff_db_name), emit: vcf
+    tuple val(sample_id), val(segment), path("${name}_sorted.vcf"), val(snpeff_db_name), emit: vcf
     tuple val(sample_id), path("${sample_id}_consensus_sort_vcf_provenance.yml"), emit: provenance
 
     script:
+    name = "${sample_id}_${segment}"
+
     """
     printf -- "- process_name: consensus_sort_vcf\\n" > ${sample_id}_consensus_sort_vcf_provenance.yml
     printf -- "  tools: \\n  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n" >> ${sample_id}_consensus_sort_vcf_provenance.yml
 
-    bcftools sort ${raw_vcf} -o ${sample_id}_sorted.vcf
+    bcftools sort ${raw_vcf} -o ${name}_sorted.vcf
     """
 }
 
@@ -118,6 +108,7 @@ process snpeff_annotation {
 
     output:
     tuple val(sample_id), path("${sample_id}_all_anno.vcf"), emit: vcf
+    tuple val(sample_id), path("${sample_id}*anno.vcf"), emit: all_vcf
     tuple val(sample_id), path("${sample_id}_snpeff_provenance.yml"), emit: provenance
 
     script:
@@ -135,27 +126,37 @@ process snpeff_annotation {
 
 
 process consensus_snpeff_annotation {
-    tag { sample_id }
+    tag { name }
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}_anno.vcf", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_anno.vcf", mode: 'copy'
 
     input:
-    tuple val(sample_id), path(vcf), val(snpeff_db_name), path(snpeff_config_path)
+    tuple val(sample_id), val(segment), path(vcf), val(snpeff_db_name), path(snpeff_config_path)
 
     output:
-    tuple val(sample_id), path("${sample_id}_anno.vcf"), emit: vcf
+    tuple val(sample_id), path("${sample_id}*_anno.vcf"), emit: vcf
     tuple val(sample_id), path("${sample_id}_consensus_snpeff_provenance.yml"), emit: provenance
 
     script:
+    name = "${sample_id}_${segment}"
+    
     """
     printf -- "- process_name: consensus_snpeff_annotation\\n" > ${sample_id}_consensus_snpeff_provenance.yml
     printf -- "  tools: \\n" >> ${sample_id}_consensus_snpeff_provenance.yml
     printf -- "  - tool_name: snpeff\\n    tool_version: \$(snpEff -version 2>&1 | cut -d\$'\\t' -f2)\\n" >> ${sample_id}_consensus_snpeff_provenance.yml
     printf -- "  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n" >> ${sample_id}_consensus_snpeff_provenance.yml
 
-    snpEff -Xmx4g -noStats -config ${snpeff_config_path} ${snpeff_db_name} ${vcf} > ${sample_id}_anno.vcf
+    REF_NAME=\$(grep -oP "##contig=<ID=\\K([^,]+)" ${vcf})
+    REF_NAME_FIELDS=(\${REF_NAME//|/ })
+
+    awk 'BEGIN{OFS="\\t"} /^##contig=/{gsub(/\\|[^,>]*/, ""); print; next} /^#/{print; next} {split(\$1,a,"|"); \$1=a[1]; print}' ${vcf} \\
+     > ${name}_rename.vcf
+
+    OUTPUT_FILENAME="${sample_id}__\${REF_NAME_FIELDS[0]}__\${REF_NAME_FIELDS[1]}__\${REF_NAME_FIELDS[2]}__anno.vcf"
+
+    snpEff -Xmx4g -noStats -config ${snpeff_config_path} ${snpeff_db_name} ${name}_rename.vcf > \${OUTPUT_FILENAME}
     """
 }
 
@@ -171,7 +172,7 @@ process reformat_vcf {
     tuple val(sample_id), path(vcf)
 
     output:
-    tuple val(sample_id), path("${sample_id}_all_muts.tsv"), emit: tsv
+    tuple val(sample_id), path("${sample_id}_mutations.tsv"), emit: tsv
     tuple val(sample_id), path("${sample_id}_reformat_vcf_provenance.yml"), emit: provenance
 
     script:
@@ -181,7 +182,7 @@ process reformat_vcf {
     printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_reformat_vcf_provenance.yml
     printf -- "  - tool_name: reformat_vcf.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_reformat_vcf_provenance.yml
 
-    reformat_vcf.py --input ${vcf} --output ${sample_id}_all_muts.tsv
+    reformat_vcf.py --input ${vcf} --output ${sample_id}_mutations.tsv
     """
 }
 
