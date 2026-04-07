@@ -3,7 +3,7 @@ import argparse
 import logging
 import os
 import tempfile
-
+import re
 import pandas as pd
 from subprocess import run
 
@@ -26,6 +26,7 @@ def filter_contig_headers(header_lines, accession):
     for line in header_lines:
         if line.startswith("##contig"):
             if accession in line:
+                line = re.sub(r'ID=[^,]+', f"ID={accession}", line)
                 filtered.append(line)
         else:
             filtered.append(line)
@@ -34,7 +35,7 @@ def filter_contig_headers(header_lines, accession):
 
 def run_snpeff(input_path, genome, output_path, config_path):
     """Run snpEff annotation and write the result to *output_path*."""
-    command = ['snpEff', '-config', config_path, genome, input_path]
+    command = ['snpEff', '-hgvs1LetterAa', '-config', config_path, genome, input_path]
     process = run(command, capture_output=True, check=True, timeout=600)
 
     with open(output_path, 'w') as outfile:
@@ -64,7 +65,7 @@ def main():
         # Parse out segment and subtype information from the CHROM field
         ref_name_fields = ref_name.split("|")
         segment = ref_name_fields[-1]
-        subtype = ref_name_fields[-2].lower()
+        subtype = ref_name_fields[-2]
 
         # Rename CHROM entries to match the snpEff database entry names
         renamed_df = rename_chrom(seg_df)

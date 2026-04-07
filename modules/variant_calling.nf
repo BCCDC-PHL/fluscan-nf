@@ -156,7 +156,7 @@ process consensus_snpeff_annotation {
 
     OUTPUT_FILENAME="${sample_id}__\${REF_NAME_FIELDS[0]}__\${REF_NAME_FIELDS[1]}__\${REF_NAME_FIELDS[2]}__anno.vcf"
 
-    snpEff -Xmx4g -noStats -config ${snpeff_config_path} ${snpeff_db_name} ${name}_rename.vcf > \${OUTPUT_FILENAME}
+    snpEff -Xmx4g -noStats -hgvs1LetterAa -config ${snpeff_config_path} ${snpeff_db_name} ${name}_rename.vcf > \${OUTPUT_FILENAME}
     """
 }
 
