@@ -78,7 +78,7 @@ def main():
             output_vcf = f'{args.outname}__{accession}__{subtype}__{segment}__anno.vcf'
 
             write_vcf(renamed_df, seg_header_lines, tmp_vcf)
-            run_snpeff(tmp_vcf, f'influenza_{subtype}', output_vcf, args.config)
+            run_snpeff(tmp_vcf, f'influenza_{subtype.lower()}', output_vcf, args.config)
 
         # Read back the annotated VCF and accumulate
         ann_df, ann_header_lines = read_vcf(output_vcf)
