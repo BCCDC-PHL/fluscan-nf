@@ -145,10 +145,7 @@ process make_consensus {
     printf -- "- process_name: make_consensus\\n" > ${sample_id}-bcftools-provenance.yml
     printf -- "  tools: \\n  - tool_name: bcftools\\n    tool_version: \$(bcftools --version 2>&1 | head -n1 | cut -d' ' -f2)\\n" >> ${sample_id}-bcftools-provenance.yml
 
-    bcftools consensus -m ${mask_file} -f ${reference} ${vcf} > ${sample_id}_consensus.fasta
-
-    ref_header=\$(head -n1 ${reference} | sed 's/^>//')
-    sed -i "s/^>.*/>${sample_id}|\${ref_header}/" ${sample_id}_consensus.fasta
+    bcftools consensus -m ${mask_file} -f ${reference} ${vcf} |  sed 's/^>/>${sample_id}|/' > ${sample_id}_consensus.fasta
 
     """
 }
