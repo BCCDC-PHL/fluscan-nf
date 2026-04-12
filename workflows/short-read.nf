@@ -109,6 +109,7 @@ workflow SHORT_READ {
         //Call clades for H1 and H3 samples
         //clade_calling(make_consensus.out.consensus)
 
+        //genoflu(make_consensus.out.consensus)
         //snp_calling(make_consensus.out.consensus, ch_aa_database)
 
         // Provenance collection processes
@@ -119,10 +120,7 @@ workflow SHORT_READ {
         ch_provenance = ch_provenance.join(hash_files.out.provenance).map{ it ->      [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(fastp.out.provenance).map{ it ->           [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(cutadapt.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
-        //ch_provenance = ch_provenance.join(sample_reads.out.provenance).map{ it ->    [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(assembly.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
-        //ch_provenance = ch_provenance.join(clade_calling.out.provenance).map{ it ->   [it[0], it[1] << it[2]] }
-        //ch_provenance = ch_provenance.join(snp_calling.out.provenance).map{ it ->     [it[0], it[1] << it[2]] }
         collect_provenance(ch_provenance)
 
 }
