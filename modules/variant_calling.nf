@@ -33,7 +33,7 @@ process lofreq {
 
     lofreq call --call-indels -f ${reference} -o ${sample_id}.vcf ${sample_id}_indelqual.bam
 
-    bcftools sort --output-type z ${sample_id}.vcf > ${sample_id}.vcf.gz
+    bcftools reheader --fai ${reference}.fai ${sample_id}.vcf | bcftools sort --output-type z > ${sample_id}.vcf.gz
     bcftools index ${sample_id}.vcf.gz
     """
 
