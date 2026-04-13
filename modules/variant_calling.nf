@@ -1,6 +1,6 @@
 // variant_calling.nf - Variant calling and annotation processes
 
-process freebayes {
+process lofreq {
 
     tag { sample_id }
 
@@ -8,9 +8,9 @@ process freebayes {
 
     publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*{gz,csi}", mode: 'copy'
 
-    input: 
+    input:
 	tuple val(sample_id), path(bamfile), path(bam_index), path(reference)
-	
+
 	output:
     tuple val(sample_id), path("${sample_id}*vcf.gz"), path("${sample_id}*.csi"), emit: vcf
     tuple val(sample_id), path("${sample_id}*provenance.yml"), emit: provenance
@@ -18,21 +18,20 @@ process freebayes {
     script:
 
     """
-	printf -- "- process_name: freebayes\\n"                                                                                           >> ${sample_id}_freebayes_provenance.yml
-    printf -- "  tools: \\n  - tool_name: samtools\\n    tool_version: \$(samtools --version 2>&1 | head -n1 | cut -d' ' -f2)\\n"   >> ${sample_id}_freebayes_provenance.yml
-    printf -- "  - tool_name: freebayes\\n    tool_version: \$(freebayes --version | cut -d' ' -f3)\\n"                             >> ${sample_id}_freebayes_provenance.yml
-    printf -- "  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n"                    >> ${sample_id}_freebayes_provenance.yml
+	printf -- "- process_name: lofreq\\n"                                                                                              >> ${sample_id}_lofreq_provenance.yml
+    printf -- "  tools: \\n  - tool_name: samtools\\n    tool_version: \$(samtools --version 2>&1 | head -n1 | cut -d' ' -f2)\\n"   >> ${sample_id}_lofreq_provenance.yml
+    printf -- "  - tool_name: lofreq\\n    tool_version: \$(lofreq version 2>&1 | head -n1)\\n"                                     >> ${sample_id}_lofreq_provenance.yml
+    printf -- "  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n"                    >> ${sample_id}_lofreq_provenance.yml
 
     samtools faidx ${reference}
-    freebayes -X -O \
-    -b ${bamfile} \
-    -v ${sample_id}.vcf \
-    -f ${reference} \
-    --limit-coverage 200 \
-    -p 1 \
-    -m 20 \
-    -q 20 \
-    --pooled-continuous \
+
+    lofreq viterbi -f ${reference} ${bamfile} | samtools sort -o ${sample_id}_viterbi.bam
+    samtools index ${sample_id}_viterbi.bam
+
+    lofreq indelqual --dindel -f ${reference} ${sample_id}_viterbi.bam -o ${sample_id}_indelqual.bam
+    samtools index ${sample_id}_indelqual.bam
+
+    lofreq call --call-indels -f ${reference} -o ${sample_id}.vcf ${sample_id}_indelqual.bam
 
     bcftools sort --output-type z ${sample_id}.vcf > ${sample_id}.vcf.gz
     bcftools index ${sample_id}.vcf.gz

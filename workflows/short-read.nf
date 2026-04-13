@@ -27,11 +27,12 @@ include { genoflu }             from '../modules/genoflu.nf'
 include { makeblastdb }         from '../modules/blast.nf'
 include { blastn }              from '../modules/blast.nf'
 include { map_reads }           from '../modules/alignment.nf'
+include { map_reads_minimap2 }  from '../modules/alignment.nf'
 include { sort_filter_sam }     from '../modules/alignment.nf'
 include { make_pileup }         from '../modules/alignment.nf'
 include { mask_low_coverage }   from '../modules/alignment.nf'
 include { make_consensus }      from '../modules/alignment.nf'
-include { freebayes }           from '../modules/variant_calling.nf'
+include { lofreq }              from '../modules/variant_calling.nf'
 include { snpeff_annotation }   from '../modules/variant_calling.nf'
 include { reformat_vcf }        from '../modules/variant_calling.nf'
 include { mutation_watch }      from '../modules/variant_calling.nf'
@@ -90,21 +91,27 @@ workflow SHORT_READ {
 
         // NOTE: Currently mapping raw reads (ch_fastq_input). Consider using
         // cutadapt.out.primer_trimmed_reads instead to avoid adapter/primer artifacts.
-        map_reads(ch_fastq_input.join(blastn.out.ref))
-        sort_filter_sam(map_reads.out.sam)
+        if (params.aligner == 'minimap2') {
+            map_reads_minimap2(ch_fastq_input.join(blastn.out.ref))
+            ch_sam = map_reads_minimap2.out.sam
+        } else {
+            map_reads(ch_fastq_input.join(blastn.out.ref))
+            ch_sam = map_reads.out.sam
+        }
+        sort_filter_sam(ch_sam)
         make_pileup(sort_filter_sam.out.bam)
         make_coverage_plot(sort_filter_sam.out.depth)
-        freebayes(sort_filter_sam.out.bam.join(blastn.out.ref))
+        lofreq(sort_filter_sam.out.bam.join(blastn.out.ref))
 
         if (params.snpeff_config != 'NO_FILE') {
             watchlist_files = Channel.fromPath(params.watchlist_dir + "/*watchlist.csv")
-            snpeff_annotation(freebayes.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
+            snpeff_annotation(lofreq.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
             reformat_vcf(snpeff_annotation.out.vcf)
             mutation_watch(reformat_vcf.out.tsv.combine(watchlist_files))
         }
 
         mask_low_coverage(sort_filter_sam.out.bam)
-        make_consensus(freebayes.out.vcf.join(blastn.out.ref).join(mask_low_coverage.out.masked_bed))
+        make_consensus(lofreq.out.vcf.join(blastn.out.ref).join(mask_low_coverage.out.masked_bed))
 
         //Call clades for H1 and H3 samples
         //clade_calling(make_consensus.out.consensus)
