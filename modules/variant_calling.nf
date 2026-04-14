@@ -31,7 +31,21 @@ process lofreq {
     lofreq indelqual --dindel -f ${reference} ${sample_id}_viterbi.bam -o ${sample_id}_indelqual.bam
     samtools index ${sample_id}_indelqual.bam
 
-    lofreq call --call-indels -f ${reference} -o ${sample_id}.vcf ${sample_id}_indelqual.bam
+    TARGET_COV=${params.lofreq_target_cov}
+    
+    MEAN_DEPTH=\$(samtools coverage ${sample_id}_indelqual.bam | awk 'NR>1 {sum+=\$7; count++} END {if(count>0) print sum/count; else print 0}')
+
+    FRACTION=\$(echo "scale=4; \$TARGET_COV / \$MEAN_DEPTH" | bc)
+
+    echo "Target coverage: \$TARGET_COV"
+    echo "Mean depth: \$MEAN_DEPTH"
+    echo "Subsampling fraction: \$FRACTION"
+
+
+    samtools view -s "0\${FRACTION}" -b ${sample_id}_indelqual.bam > ${sample_id}_final.bam
+    samtools index ${sample_id}_final.bam
+
+    lofreq call-parallel --pp-threads 8 --call-indels -f ${reference} -o ${sample_id}.vcf ${sample_id}_final.bam
 
     bcftools reheader --fai ${reference}.fai ${sample_id}.vcf | bcftools sort --output-type z > ${sample_id}.vcf.gz
     bcftools index ${sample_id}.vcf.gz
@@ -162,6 +176,8 @@ process consensus_snpeff_annotation {
 
 process reformat_vcf {
     tag { sample_id }
+
+    errorStrategy 'ignore'
 
     conda "${projectDir}/environments/fluscan.yml"
 
