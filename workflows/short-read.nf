@@ -34,6 +34,7 @@ include { mask_low_coverage }   from '../modules/alignment.nf'
 include { make_consensus }      from '../modules/alignment.nf'
 include { lofreq }              from '../modules/variant_calling.nf'
 include { snpeff_annotation }   from '../modules/variant_calling.nf'
+include { fix_mnv_codons }      from '../modules/variant_calling.nf'
 include { reformat_vcf }        from '../modules/variant_calling.nf'
 include { mutation_watch }      from '../modules/variant_calling.nf'
 include { make_coverage_plot }  from '../modules/plotting.nf'
@@ -106,7 +107,8 @@ workflow SHORT_READ {
         if (params.snpeff_config != 'NO_FILE') {
             watchlist_files = Channel.fromPath(params.watchlist_dir + "/*watchlist.csv")
             snpeff_annotation(lofreq.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
-            reformat_vcf(snpeff_annotation.out.vcf)
+            fix_mnv_codons(snpeff_annotation.out.vcf)
+            reformat_vcf(fix_mnv_codons.out.vcf)
             mutation_watch(reformat_vcf.out.tsv.combine(watchlist_files))
         }
 

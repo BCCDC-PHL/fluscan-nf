@@ -160,6 +160,36 @@ process consensus_snpeff_annotation {
 }
 
 
+process fix_mnv_codons {
+    tag { sample_id }
+
+    conda "${projectDir}/environments/fluscan.yml"
+
+    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_mnvcorrected.vcf", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(vcf)
+
+    output:
+    tuple val(sample_id), path("${sample_id}*.vcf"), emit: vcf
+    tuple val(sample_id), path("${sample_id}_fix_mnv_codons_provenance.yml"), emit: provenance
+
+    script:
+    def min_af = params.mnv_min_af ?: 0.5
+    """
+    printf -- "- process_name: fix_mnv_codons\\n" > ${sample_id}_fix_mnv_codons_provenance.yml
+    printf -- "  tools: \\n" >> ${sample_id}_fix_mnv_codons_provenance.yml
+    printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_fix_mnv_codons_provenance.yml
+    printf -- "  - tool_name: fix_mnv_codons.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_fix_mnv_codons_provenance.yml
+
+    fix_mnv_codons.py \\
+        --input ${vcf} \\
+        --output-vcf ${sample_id}_all_anno_mnvcorrected.vcf \\
+        --min-af ${min_af}
+    """
+}
+
+
 process reformat_vcf {
     tag { sample_id }
 
