@@ -23,6 +23,7 @@ include { snp_calling }         from '../modules/snp_calling.nf'
 include { pull_genoflu }        from '../modules/genoflu.nf'
 include { checkout_genoflu }    from '../modules/genoflu.nf'
 include { genoflu }             from '../modules/genoflu.nf'
+include { flumut }              from '../modules/flumut.nf'
 
 include { makeblastdb }         from '../modules/blast.nf'
 include { blastn }              from '../modules/blast.nf'
@@ -115,6 +116,8 @@ workflow SHORT_READ {
         mask_low_coverage(sort_filter_sam.out.bam)
         make_consensus(lofreq.out.vcf.join(blastn.out.ref).join(mask_low_coverage.out.masked_bed))
 
+        flumut(make_consensus.out.consensus)
+
         //Call clades for H1 and H3 samples
         //clade_calling(make_consensus.out.consensus)
 
@@ -130,6 +133,7 @@ workflow SHORT_READ {
         ch_provenance = ch_provenance.join(fastp.out.provenance).map{ it ->           [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(cutadapt.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(assembly.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it ->         [it[0], it[1] << it[2]] }
         collect_provenance(ch_provenance)
 
 }

@@ -30,3 +30,5 @@ dependencies:
   - cutadapt=5.2
   - multiqc=1.33
   - fastqc=0.12.1
+  - flumut=0.6.4
+  - flumutdb=6.6
