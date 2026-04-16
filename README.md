@@ -127,7 +127,8 @@ Output for each sample includes:
 | `vcf/*_mut_watch.tsv`            | A filtered list of mutations that are also present on the provided watchlist          |
 | `genoflu/*_stats.tsv`       | tabular list of genotype call information for the sample's consensus sequences             |
 | `flumut/*_flumut_markers.tsv`    | FluMut table of molecular markers identified in the consensus sequences                    |
-| `flumut/*_flumut_mutations.tsv`  | FluMut table of amino acid mutations at positions of interest                              |
+| `flumut/*_flumut_mutations.tsv`  | FluMut long format table of amino acid mutations at positions of interest                              |
+| `flumut/*_flumut_mutations_wide.tsv`  | FluMut wide format table of amino acid mutations at positions of interest                              |
 | `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers                        |
 
 Output for each run includes:

@@ -12,11 +12,11 @@ process flumut {
     tuple val(sample_id), path(consensus_fasta)
 
     output:
-    tuple val(sample_id), path("${sample_id}_flumut_markers.tsv"),   emit: markers
-    tuple val(sample_id), path("${sample_id}_flumut_mutations.tsv"),  emit: mutations
-    tuple val(sample_id), path("${sample_id}_flumut_wide.tsv"),       emit: wide_mutations
-    tuple val(sample_id), path("${sample_id}_flumut_literature.tsv"), emit: literature
-    tuple val(sample_id), path("${sample_id}_flumut_provenance.yml"), emit: provenance
+    tuple val(sample_id), path("${sample_id}_flumut_markers.tsv"),          emit: markers
+    tuple val(sample_id), path("${sample_id}_flumut_mutations.tsv"),        emit: mutations
+    tuple val(sample_id), path("${sample_id}_flumut_mutations_wide.tsv"),   emit: wide_mutations
+    tuple val(sample_id), path("${sample_id}_flumut_literature.tsv"),       emit: literature
+    tuple val(sample_id), path("${sample_id}_flumut_provenance.yml"),       emit: provenance
 
     script:
     def regex_opt = task.ext.segment_regex ? "--name-regex '${task.ext.segment_regex}'" : ""
@@ -30,12 +30,12 @@ process flumut {
 
     flumut \\
         -m ${sample_id}_flumut_markers.tsv \\
-        -M ${sample_id}_flumut_wide.tsv \\
+        -M ${sample_id}_flumut_mutations_wide.tsv \\
         -l ${sample_id}_flumut_literature.tsv \\
         --skip-unmatch-names \\
         --skip-unknown-segments ${regex_opt} \\
         ${consensus_fasta}
 
-    melt_flumut.py --input ${sample_id}_flumut_wide.tsv --output ${sample_id}_flumut_mutations.tsv
+    melt_flumut.py --input ${sample_id}_flumut_mutations_wide.tsv --output ${sample_id}_flumut_mutations.tsv
     """
 }
