@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """fix_mnv_codons.py
 
-Post-process a snpEff-annotated LoFreq VCF to correct amino acid annotations
-where two or more adjacent SNVs fall within the same codon (MNV problem).
+Post-process a snpEff-annotated VCF to correct amino acid annotations where
+two or more adjacent SNVs fall within the same codon (MNV problem).
+
+Supports any snpEff-annotated VCF containing an ANN INFO field — LoFreq-style
+VCFs (with INFO/AF, DP, DP4, etc.) and alignment-based consensus VCFs (with
+GT=1/1 and no AF) are both handled.  When INFO/AF is absent the variant is
+treated as AF=1.0 (fixed consensus call).
 
 Background
 ----------
@@ -295,13 +300,14 @@ def collect_codon_groups(vcf_path: str, min_af: float) -> Dict[Tuple[str, str, i
 
             af_raw = variant.INFO.get("AF")
             if af_raw is None:
-                n_skipped += 1
-                continue
-            try:
-                af = float(af_raw) if not isinstance(af_raw, (list, tuple)) else float(af_raw[0])
-            except (TypeError, ValueError):
-                n_skipped += 1
-                continue
+                # Consensus-only callers (e.g. paftools.js call with GT=1/1) omit AF.
+                af = 1.0
+            else:
+                try:
+                    af = float(af_raw) if not isinstance(af_raw, (list, tuple)) else float(af_raw[0])
+                except (TypeError, ValueError):
+                    n_skipped += 1
+                    continue
             if af < min_af:
                 n_skipped += 1
                 continue
@@ -569,7 +575,8 @@ def get_args() -> argparse.Namespace:
     p.add_argument("--output-tsv", metavar="TSV",
                    help="Optional flat TSV of coding annotations from corrected VCF.")
     p.add_argument("--min-af", type=float, default=0.5, metavar="FLOAT",
-                   help="Minimum AF for MNV codon correction eligibility (default: 0.5).")
+                   help=("Minimum AF for MNV codon correction eligibility (default: 0.5). "
+                         "Variants with no INFO/AF are treated as AF=1.0."))
     p.add_argument("--verbose", action="store_true", help="Enable DEBUG logging.")
     return p.parse_args()
 
