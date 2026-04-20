@@ -21,6 +21,7 @@ The segment name is the last underscore-delimited field of the sequence ID.
 import argparse
 import sys
 import csv
+import re
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
@@ -63,6 +64,11 @@ def detect_delimiter(records):
             return '|'
     return '_'
 
+
+def clean_header(record_id):
+    """Clean the sequence ID by enforcing MP label and removing trailing segment label."""
+    new_id = re.sub(r"_segment\d", "", record_id)
+    return new_id
 
 def get_segment_label(record_id, delimiter='_'):
     """Extract the segment label (e.g., PB2, HA, M) from the sequence ID."""
@@ -110,8 +116,14 @@ def main():
     # Index records by segment label
     seg_to_record = {}
     for rec in records:
-        label = get_segment_label(rec.id, delimiter)
-        seg_to_record[label] = rec
+        segment = get_segment_label(rec.id, delimiter)
+        new_id = clean_header(rec.id)  # Clean the header for output
+
+        rec.id = new_id  # Update the record 
+        rec.description = new_id
+        rec.name = new_id
+
+        seg_to_record[segment] = rec
 
     # --- a) Check for 8 expected segments ---
     found_segments = set(seg_to_record.keys())

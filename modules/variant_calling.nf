@@ -44,7 +44,6 @@ process lofreq {
     if (( \$(echo "\$FRACTION < 1" | bc -l) )); then
         echo "Subsampling to target coverage..."
         samtools view -s "0\${FRACTION}" -b ${sample_id}_indelqual.bam > ${sample_id}_final.bam
-
     else
         echo "Mean depth is below target coverage; skipping subsampling."
         cp ${sample_id}_indelqual.bam ${sample_id}_final.bam
@@ -52,7 +51,7 @@ process lofreq {
 
     samtools index ${sample_id}_final.bam
 
-    lofreq call-parallel --pp-threads 8 --call-indels -f ${reference} -o ${sample_id}.vcf ${sample_id}_final.bam
+    lofreq call-parallel --pp-threads 8 -f ${reference} -o ${sample_id}.vcf ${sample_id}_final.bam
 
     bcftools reheader --fai ${reference}.fai ${sample_id}.vcf | bcftools sort --output-type z > ${sample_id}.vcf.gz
     bcftools index ${sample_id}.vcf.gz

@@ -17,6 +17,7 @@ The short-read workflow performs trimming, assembly, mapping, FreeBayes calling,
 - Annotation of amino acid variant calls using SnpEff
 - Detection of mutations of interest via watchlist scanning 
 - Consensus sequence generation 
+- Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli) (both short-read and consensus workflows)
 
 ```mermaid
 flowchart TD
@@ -125,6 +126,10 @@ Output for each sample includes:
 | `vcf/*_mutations.tsv`      | filtered, reformatted VCF used to make mutation identification easier in the short-read workflow |
 | `vcf/*_mut_watch.tsv`            | A filtered list of mutations that are also present on the provided watchlist          |
 | `genoflu/*_stats.tsv`       | tabular list of genotype call information for the sample's consensus sequences             |
+| `flumut/*_flumut_markers.tsv`    | FluMut table of molecular markers identified in the consensus sequences                    |
+| `flumut/*_flumut_mutations.tsv`  | FluMut long format table of amino acid mutations at positions of interest                              |
+| `flumut/*_flumut_mutations_wide.tsv`  | FluMut wide format table of amino acid mutations at positions of interest                              |
+| `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers                        |
 
 Output for each run includes:
 

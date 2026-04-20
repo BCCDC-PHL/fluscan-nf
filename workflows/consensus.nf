@@ -31,6 +31,7 @@ include { map_reads_long }      from '../modules/alignment.nf'
 include { makeblastdb }         from '../modules/blast.nf'
 include { blastn }              from '../modules/blast.nf'
 include { genoflu }              from '../modules/genoflu.nf'
+include { flumut }               from '../modules/flumut.nf'
 include { consensus_paftools_call }   from '../modules/variant_calling.nf'
 include { consensus_sort_vcf }        from '../modules/variant_calling.nf'
 include { consensus_snpeff_annotation } from '../modules/variant_calling.nf'
@@ -89,6 +90,8 @@ workflow CONSENSUS {
         blastn(prepare_consensus.out.cleaned, ch_blastdb)
 
         genoflu(prepare_consensus.out.cleaned)
+
+        flumut(prepare_consensus.out.cleaned)
 
         ch_consensus_segment = split_fasta_consensus(prepare_consensus.out.cleaned).transpose().map(extractSegment)
         ch_reference_segment = split_fasta_reference(blastn.out.ref).transpose().map(extractSegment)
