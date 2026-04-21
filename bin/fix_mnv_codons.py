@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fix_mnv_codons.py
+"""fix_mnv_codons_v2.py
 
 Post-process a snpEff-annotated VCF to correct amino acid annotations where
 two or more adjacent SNVs fall within the same codon (MNV problem).
@@ -29,11 +29,12 @@ Algorithm
    Group SNVs by (CHROM, snpEff feature_id, codon_number).
 
 2. For each group with >= 2 SNVs:
-     a. Reconstruct the 3-base reference codon from the VCF REF nucleotides
-        already present in the ANN hgvs_c field.  For any codon position not
-        covered by a variant, infer the reference nucleotide by elimination
-        (try all 4 bases, pick the one consistent with the annotated ref AA).
-        If inference is ambiguous, skip the codon and log a warning.
+     a. For codon positions not covered by a variant, look up the reference
+        nucleotide directly from the --reference FASTA (recommended).  If
+        no reference is supplied, fall back to inference: try all 4 bases,
+        pick the one consistent with the annotated ref AA.  If inference is
+        ambiguous (common for degenerate amino acids such as Arg), skip the
+        codon, set MNV_UNRESOLVED on the affected records, and log a warning.
      b. Apply all ALT nucleotides to obtain the mutant codon.
      c. Translate both codons to determine the true amino acid change.
 
@@ -42,18 +43,32 @@ Algorithm
        transcript entry.
      - Set INFO flag   MNV_CORRECTED = True
      - Set INFO string MNV_ORIGINAL_HGVS_P = original HGVS.p values
+   For groups that were detected but could not be resolved:
+     - Set INFO flag   MNV_UNRESOLVED = True on all member records.
 
 4. Optionally write a flat TSV with one row per coding ANN entry.
 
+Changes from v1
+---------------
+- --reference FASTA (optional but strongly recommended): eliminates codon
+  inference for the uncovered third position by direct reference lookup.
+  Without this, groups where the uncovered position is degenerate (e.g. Arg
+  with 6 codons) are silently skipped; with it, all 2-SNP MNVs are resolved.
+- MNV_UNRESOLVED INFO flag: marks records that were identified as part of an
+  MNV codon group but could not be corrected, making silent failures visible.
+- protein_pos consistency check: warns if SNVs in the same codon group report
+  inconsistent protein positions (snpEff data-quality guard).
+
 Usage
 -----
-    fix_mnv_codons.py -i sample_anno.vcf \\
+    fix_mnv_codons_v2.py -i sample_anno.vcf \\
+        --reference sample_ref.fa \\
         --output-vcf sample_anno_mnv_corrected.vcf \\
         --output-tsv sample_anno_mnv_corrected.tsv \\
         --min-af 0.5
 
 Pipeline integration (after snpEff, before reformat_vcf):
-    run_snpeff.py -> fix_mnv_codons.py -> reformat_vcf_cyvcf2.py
+    run_snpeff.py -> fix_mnv_codons_v2.py -> reformat_vcf_cyvcf2.py
 """
 
 import argparse
@@ -65,7 +80,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 try:
     from cyvcf2 import VCF, Writer
@@ -73,6 +88,7 @@ except ImportError as exc:
     raise SystemExit("cyvcf2 required: conda install -c bioconda cyvcf2") from exc
 
 try:
+    from Bio import SeqIO
     from Bio.Data.CodonTable import unambiguous_dna_by_name as _codon_tables
     from Bio.Data.IUPACData import protein_letters_3to1 as _aa_3to1
 except ImportError as exc:
@@ -210,12 +226,65 @@ def determine_annotation(ref_aa: str, alt_aa: str) -> Tuple[str, str]:
     return "missense_variant", "MODERATE"
 
 # ---------------------------------------------------------------------------
+# Reference FASTA loading
+# ---------------------------------------------------------------------------
+
+def load_reference_fasta(fasta_path: str) -> Dict[str, str]:
+    """Load all sequences from a FASTA file into a {seq_id: sequence_str} dict."""
+    ref = {}
+    for rec in SeqIO.parse(fasta_path, "fasta"):
+        ref[rec.id] = str(rec.seq).upper()
+    log.info("Loaded %d sequence(s) from reference %s", len(ref), fasta_path)
+    return ref
+
+# ---------------------------------------------------------------------------
 # Codon reconstruction
 # ---------------------------------------------------------------------------
 
-def resolve_mnv_codon(snvs: List[CodonSNV]) -> Optional[Tuple[str, str, str, str]]:
+def _missing_genome_pos(snvs: List[CodonSNV], missing_offset: int) -> Optional[int]:
+    """Derive the genome position (1-based) of an uncovered codon offset.
+
+    Uses the linear CDS-to-genome mapping implied by any two SNVs in the group.
+    Works for both strands; fails if the two SNVs report inconsistent mapping
+    (which would indicate a data error or a codon spanning an exon boundary).
+    """
+    s0 = snvs[0]
+    s1 = next((s for s in snvs if s.cds_pos != s0.cds_pos), None)
+    if s1 is None:
+        return None  # all SNVs at same CDS pos — duplicate-offset guard should have caught this
+
+    cds_delta = s1.cds_pos - s0.cds_pos
+    genome_delta = s1.vcf_pos - s0.vcf_pos
+
+    # Within a codon there can be no exon boundary, so |genome_delta| must equal |cds_delta|
+    if abs(genome_delta) != abs(cds_delta):
+        log.warning(
+            "Unexpected CDS/genome delta at %s (cds_delta=%d, genome_delta=%d) — "
+            "possible exon-boundary codon or data error; skipping",
+            s0.chrom, cds_delta, genome_delta,
+        )
+        return None
+
+    strand = 1 if genome_delta > 0 else -1
+    cds_pos_codon_start = s0.cds_pos - s0.codon_offset
+    cds_pos_missing = cds_pos_codon_start + missing_offset
+    return s0.vcf_pos + (cds_pos_missing - s0.cds_pos) * strand
+
+
+def resolve_mnv_codon(
+    snvs: List[CodonSNV],
+    ref_seqs: Optional[Dict[str, str]] = None,
+) -> Optional[Tuple[str, str, str, str]]:
     """Resolve ref/mut codons for a group of SNVs in the same codon.
-    Returns (ref_codon, mut_codon, ref_aa_1, true_mut_aa_1) or None."""
+
+    Returns (ref_codon, mut_codon, ref_aa_1, true_mut_aa_1) or None.
+
+    When ref_seqs is provided, uncovered codon positions are filled from the
+    reference sequence via a direct positional lookup (preferred).  Without it,
+    the function falls back to inferring the reference nucleotide from the
+    annotated reference amino acid; this fails for degenerate amino acids
+    (most notably Arg, which has 6 codons) and returns None.
+    """
     known_ref: Dict[int, str] = {}
     known_alt: Dict[int, str] = {}
 
@@ -232,7 +301,7 @@ def resolve_mnv_codon(snvs: List[CodonSNV]) -> Optional[Tuple[str, str, str, str
 
     missing = [i for i in range(3) if i not in known_ref]
 
-    # All three codon positions covered
+    # All three codon positions covered — straightforward
     if not missing:
         ref_codon = "".join(known_ref[i] for i in range(3))
         mut_codon = "".join(known_alt.get(i, known_ref[i]) for i in range(3))
@@ -242,13 +311,37 @@ def resolve_mnv_codon(snvs: List[CodonSNV]) -> Optional[Tuple[str, str, str, str
         log.debug("Too many uncovered codon positions (%d)", len(missing))
         return None
 
-    # One uncovered position — infer from reference AA
+    pos = missing[0]  # single uncovered codon offset (0-2)
+
+    # --- Path 1: direct reference lookup (preferred) ---
+    if ref_seqs is not None:
+        chrom = snvs[0].chrom
+        ref_seq = ref_seqs.get(chrom)
+        if ref_seq is not None:
+            gpos = _missing_genome_pos(snvs, pos)
+            if gpos is None:
+                return None
+            if gpos < 1 or gpos > len(ref_seq):
+                log.warning("Genome pos %d out of range for %s (len=%d)", gpos, chrom, len(ref_seq))
+                return None
+            known_ref[pos] = ref_seq[gpos - 1].upper()  # VCF is 1-based; string is 0-based
+            ref_codon = "".join(known_ref[i] for i in range(3))
+            mut_codon = "".join(known_alt.get(i, known_ref[i]) for i in range(3))
+            ref_aa = translate_codon(ref_codon)
+            mut_aa = translate_codon(mut_codon)
+            if ref_aa is None or mut_aa is None:
+                log.warning("Untranslatable codon(s) %s/%s at %s:%d", ref_codon, mut_codon, chrom, gpos)
+                return None
+            return ref_codon, mut_codon, ref_aa, mut_aa
+        else:
+            log.warning("CHROM '%s' not found in reference FASTA — falling back to inference", chrom)
+
+    # --- Path 2: inference from reference AA (fallback; fails for degenerate codons) ---
     ref_aa_1 = next((s.ref_aa_1 for s in snvs if s.ref_aa_1), None)
     if ref_aa_1 is None:
         log.debug("No reference AA for codon with 1 uncovered position")
         return None
 
-    pos = missing[0]
     valid_nucs = []
     for nuc in "ACGT":
         rc = [known_ref.get(i, nuc if i == pos else "N") for i in range(3)]
@@ -259,7 +352,6 @@ def resolve_mnv_codon(snvs: List[CodonSNV]) -> Optional[Tuple[str, str, str, str
         log.warning("No nucleotide at offset %d gives ref AA '%s'", pos, ref_aa_1)
         return None
 
-    # Check if all valid nucs produce the same mutant AA
     mut_aa_set: set = set()
     per_nuc: Dict[str, Tuple[str, str]] = {}
     for nuc in valid_nucs:
@@ -277,8 +369,11 @@ def resolve_mnv_codon(snvs: List[CodonSNV]) -> Optional[Tuple[str, str, str, str
         ref_codon, mut_codon = per_nuc[valid_nucs[0]]
         return ref_codon, mut_codon, ref_aa_1, mut_aa_set.pop()
 
-    log.warning("Ambiguous MNV: offset %d=%s (ref_aa '%s'), mut AA=%s — skipping",
-                pos, "/".join(valid_nucs), ref_aa_1, "/".join(sorted(mut_aa_set)))
+    log.warning(
+        "Ambiguous MNV: offset %d=%s (ref_aa '%s'), mut AA=%s — skipping "
+        "(provide --reference to resolve degenerate codons)",
+        pos, "/".join(valid_nucs), ref_aa_1, "/".join(sorted(mut_aa_set)),
+    )
     return None
 
 # ---------------------------------------------------------------------------
@@ -286,7 +381,12 @@ def resolve_mnv_codon(snvs: List[CodonSNV]) -> Optional[Tuple[str, str, str, str
 # ---------------------------------------------------------------------------
 
 def collect_codon_groups(vcf_path: str, min_af: float) -> Dict[Tuple[str, str, int], List[CodonSNV]]:
-    """Read all PASS SNVs with AF >= min_af; group by (chrom, feature_id, codon_number)."""
+    """Read all PASS SNVs with AF >= min_af; group by (chrom, feature_id, codon_number).
+
+    Note: paftools.js consensus VCFs use FILTER='.' (missing) rather than
+    FILTER='PASS'.  cyvcf2 returns variant.FILTER=None for both, so the
+    check below correctly admits both.
+    """
     codon_groups: Dict[Tuple[str, str, int], List[CodonSNV]] = defaultdict(list)
     vcf = VCF(vcf_path)
     n_total = n_skipped = 0
@@ -352,9 +452,16 @@ def collect_codon_groups(vcf_path: str, min_af: float) -> Dict[Tuple[str, str, i
 
 def compute_corrections(
     codon_groups: Dict[Tuple[str, str, int], List[CodonSNV]],
-) -> Dict[Tuple[str, int], List[AnnCorrection]]:
-    """For each codon group with >=2 SNVs, resolve the true combined AA change."""
+    ref_seqs: Optional[Dict[str, str]] = None,
+) -> Tuple[Dict[Tuple[str, int], List[AnnCorrection]], Set[Tuple[str, int]]]:
+    """For each codon group with >=2 SNVs, resolve the true combined AA change.
+
+    Returns (corrections, unresolved_positions) where unresolved_positions is
+    the set of (chrom, vcf_pos) tuples belonging to codon groups that were
+    detected but could not be resolved.
+    """
     corrections: Dict[Tuple[str, int], List[AnnCorrection]] = defaultdict(list)
+    unresolved: Set[Tuple[str, int]] = set()
     n_groups = n_corrected = n_skipped = 0
 
     for (chrom, feature_id, codon_number), snvs in codon_groups.items():
@@ -373,9 +480,19 @@ def compute_corrections(
             n_skipped += 1
             continue
 
-        resolved = resolve_mnv_codon(snvs)
+        # Warn if snpEff reported inconsistent protein positions within the same codon group
+        protein_positions = {s.protein_pos for s in snvs}
+        if len(protein_positions) > 1:
+            log.warning(
+                "Inconsistent protein_pos %s in group (%s, %s, %d) — using first SNV value",
+                sorted(protein_positions), chrom, feature_id, codon_number,
+            )
+
+        resolved = resolve_mnv_codon(snvs, ref_seqs=ref_seqs)
         if resolved is None:
             n_skipped += 1
+            for snv in snvs:
+                unresolved.add((chrom, snv.vcf_pos))
             continue
 
         ref_codon, mut_codon, ref_aa_1, true_alt_aa_1 = resolved
@@ -383,6 +500,8 @@ def compute_corrections(
             log.warning("Cannot translate mut codon '%s' for (%s, %s, %d)",
                         mut_codon, chrom, feature_id, codon_number)
             n_skipped += 1
+            for snv in snvs:
+                unresolved.add((chrom, snv.vcf_pos))
             continue
 
         protein_pos = snvs[0].protein_pos
@@ -399,7 +518,7 @@ def compute_corrections(
         n_corrected += 1
 
     log.info("Codon groups: %d found, %d correctable, %d skipped", n_groups, n_corrected, n_skipped)
-    return dict(corrections)
+    return dict(corrections), unresolved
 
 # ---------------------------------------------------------------------------
 # Apply corrections to ANN field
@@ -425,8 +544,10 @@ def apply_corrections_to_ann(raw_ann: str, corrections: List[AnnCorrection]) -> 
 # ---------------------------------------------------------------------------
 
 def write_corrected_vcf(
-    vcf_path: str, output_vcf_path: str,
+    vcf_path: str,
+    output_vcf_path: str,
     corrections: Dict[Tuple[str, int], List[AnnCorrection]],
+    unresolved_positions: Set[Tuple[str, int]],
 ) -> int:
     """Emit all records to a new VCF, correcting ANN fields for MNV groups.
     Returns the count of corrected records."""
@@ -434,11 +555,16 @@ def write_corrected_vcf(
     vcf.add_info_to_header({
         "ID": "MNV_CORRECTED", "Number": "0", "Type": "Flag",
         "Description": ("Variant is part of an MNV codon group. ANN HGVS.p, annotation type, "
-                        "and impact corrected for true combined amino acid effect (fix_mnv_codons.py)."),
+                        "and impact corrected for true combined amino acid effect (fix_mnv_codons_v2.py)."),
     })
     vcf.add_info_to_header({
         "ID": "MNV_ORIGINAL_HGVS_P", "Number": "1", "Type": "String",
         "Description": "Original snpEff HGVS.p before MNV correction (featureID:hgvs_p pipe-separated).",
+    })
+    vcf.add_info_to_header({
+        "ID": "MNV_UNRESOLVED", "Number": "0", "Type": "Flag",
+        "Description": ("Variant is part of a detected MNV codon group that could not be resolved. "
+                        "Provide --reference to fix_mnv_codons_v2.py to enable direct reference lookup."),
     })
 
     writer = Writer(output_vcf_path, vcf)
@@ -446,7 +572,8 @@ def write_corrected_vcf(
 
     try:
         for variant in vcf:
-            correction_list = corrections.get((variant.CHROM, variant.POS))
+            key = (variant.CHROM, variant.POS)
+            correction_list = corrections.get(key)
             if correction_list:
                 raw_ann = variant.INFO.get("ANN")
                 if raw_ann is not None:
@@ -464,6 +591,9 @@ def write_corrected_vcf(
                         if orig_hgvs:
                             variant.INFO["MNV_ORIGINAL_HGVS_P"] = orig_hgvs
                         n_corrected += 1
+            elif key in unresolved_positions:
+                variant.INFO["MNV_UNRESOLVED"] = True
+
             writer.write_record(variant)
     finally:
         writer.close()
@@ -482,7 +612,7 @@ TSV_COLUMNS = [
     "hgvs_c", "hgvs_p", "cds_pos", "cds_len",
     "protein_pos", "protein_len",
     "aa_ref", "aa_pos", "aa_alt", "aa_change",
-    "mnv_corrected", "mnv_original_hgvs_p",
+    "mnv_corrected", "mnv_original_hgvs_p", "mnv_unresolved",
 ]
 
 def _parse_aa_parts(hgvs_p: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
@@ -509,6 +639,7 @@ def write_corrected_tsv(corrected_vcf_path: str, output_tsv_path: str) -> None:
                 continue
 
             mnv_corrected = bool(variant.INFO.get("MNV_CORRECTED", False))
+            mnv_unresolved = bool(variant.INFO.get("MNV_UNRESOLVED", False))
             mnv_orig_hp = str(variant.INFO.get("MNV_ORIGINAL_HGVS_P") or "")
             dp4_raw = variant.INFO.get("DP4")
             dp4_str = ",".join(str(int(x)) for x in dp4_raw) if dp4_raw is not None else None
@@ -529,7 +660,6 @@ def write_corrected_tsv(corrected_vcf_path: str, output_tsv_path: str) -> None:
                 feature_id = entry[ANN.FEATURE_ID]
                 aa_ref, aa_pos, aa_alt, aa_change = _parse_aa_parts(hgvs_p)
 
-                # Extract per-feature original hgvs_p
                 orig_hp_for_feature = ""
                 if mnv_corrected and mnv_orig_hp:
                     for pair in mnv_orig_hp.split("|"):
@@ -552,6 +682,7 @@ def write_corrected_tsv(corrected_vcf_path: str, output_tsv_path: str) -> None:
                     "aa_alt": aa_alt, "aa_change": aa_change,
                     "mnv_corrected": mnv_corrected,
                     "mnv_original_hgvs_p": orig_hp_for_feature,
+                    "mnv_unresolved": mnv_unresolved,
                 })
     finally:
         vcf.close()
@@ -569,7 +700,11 @@ def write_corrected_tsv(corrected_vcf_path: str, output_tsv_path: str) -> None:
 def get_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-i", "--input", required=True, metavar="VCF",
-                   help="snpEff-annotated LoFreq VCF (must contain ANN INFO field).")
+                   help="snpEff-annotated VCF (must contain ANN INFO field).")
+    p.add_argument("--reference", metavar="FASTA",
+                   help=("Reference FASTA used for alignment. Strongly recommended: enables direct "
+                         "nucleotide lookup for uncovered codon positions, resolving MNVs in "
+                         "degenerate codons (e.g. Arg) that the inference fallback cannot handle."))
     p.add_argument("--output-vcf", required=True, metavar="VCF",
                    help="Path for MNV-corrected output VCF.")
     p.add_argument("--output-tsv", metavar="TSV",
@@ -589,17 +724,28 @@ def main() -> None:
     if args.verbose:
         log.setLevel(logging.DEBUG)
 
+    ref_seqs = load_reference_fasta(args.reference) if args.reference else None
+    if ref_seqs is None:
+        log.warning(
+            "No --reference provided. MNV resolution will fall back to amino-acid inference, "
+            "which fails for degenerate codons (Arg, Leu, Ser). Unresolvable groups will be "
+            "flagged MNV_UNRESOLVED in the output VCF."
+        )
+
     log.info("Pass 1: scanning %s (min_af=%.3f)", args.input, args.min_af)
     codon_groups = collect_codon_groups(args.input, args.min_af)
     mnv_candidates = {k: v for k, v in codon_groups.items() if len(v) >= 2}
     log.info("%d codon groups, %d with >=2 high-AF SNVs", len(codon_groups), len(mnv_candidates))
 
-    corrections = compute_corrections(mnv_candidates)
-    log.info("%d positions to correct across %d codon groups",
-             len(corrections), len({c.codon_group_id for cl in corrections.values() for c in cl}))
+    corrections, unresolved = compute_corrections(mnv_candidates, ref_seqs=ref_seqs)
+    log.info(
+        "%d positions to correct, %d positions flagged MNV_UNRESOLVED",
+        len(corrections),
+        len(unresolved),
+    )
 
     log.info("Pass 2: writing corrected VCF -> %s", args.output_vcf)
-    n = write_corrected_vcf(args.input, args.output_vcf, corrections)
+    n = write_corrected_vcf(args.input, args.output_vcf, corrections, unresolved)
     log.info("%d VCF records updated", n)
 
     if args.output_tsv:
