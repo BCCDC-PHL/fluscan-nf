@@ -186,11 +186,11 @@ process fix_mnv_codons {
     publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_anno_clean.vcf", mode: 'copy'
 
     input:
-    tuple val(sample_id), val(segment), path(vcf)
+    tuple val(sample_id), val(segment), path(vcf), path(reference)
 
     output:
-    tuple val(sample_id), path("${sample_id}*_anno_clean.vcf"), emit: vcf
-    tuple val(sample_id), path("${sample_id}_fix_mnv_codons_provenance.yml"), emit: provenance
+    tuple val(sample_id), val(segment), path("${sample_id}*_anno_clean.vcf"), emit: vcf
+    tuple val(sample_id), val(segment), path("${sample_id}_fix_mnv_codons_provenance.yml"), emit: provenance
 
     script:
     def min_af = params.mnv_min_af ?: 0.5
@@ -204,8 +204,13 @@ process fix_mnv_codons {
 
     echo "Processing ${vcf} with min_af=${min_af}"
 
+    echo "Renaming reference "
+
+    sed -i -E 's/^>([^\|]+)\|.+/>\1/g' ${reference}
+
     fix_mnv_codons.py \\
     --input ${vcf} \\
+    --reference ${reference} \\
     --output-vcf \${name}_clean.vcf \\
     --min-af ${min_af}
     """
