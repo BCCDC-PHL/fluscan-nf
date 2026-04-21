@@ -22,25 +22,27 @@
 
 nextflow.enable.dsl = 2
 
-include { pipeline_provenance } from '../modules/provenance.nf'
-include { collect_provenance }  from '../modules/provenance.nf'
-include { prepare_consensus }   from '../modules/consensus_qc.nf'
-include { split_fasta as split_fasta_reference }         from '../modules/consensus_qc.nf'
-include { split_fasta as split_fasta_consensus }         from '../modules/consensus_qc.nf'
-include { map_reads_long }      from '../modules/alignment.nf'
-include { makeblastdb }         from '../modules/blast.nf'
-include { blastn }              from '../modules/blast.nf'
-include { genoflu }              from '../modules/genoflu.nf'
-include { flumut }               from '../modules/flumut.nf'
-include { consensus_paftools_call }   from '../modules/variant_calling.nf'
-include { consensus_sort_vcf }        from '../modules/variant_calling.nf'
-include { consensus_snpeff_annotation } from '../modules/variant_calling.nf'
-include { reformat_vcf }               from '../modules/variant_calling.nf'
+include { pipeline_provenance }                   from '../modules/provenance.nf'
+include { collect_provenance }                    from '../modules/provenance.nf'
+include { prepare_consensus }                     from '../modules/consensus_qc.nf'
+include { split_fasta as split_fasta_reference }  from '../modules/consensus_qc.nf'
+include { split_fasta as split_fasta_consensus }  from '../modules/consensus_qc.nf'
+include { map_reads_long }                        from '../modules/alignment.nf'
+include { makeblastdb }                           from '../modules/blast.nf'
+include { blastn }                                from '../modules/blast.nf'
+include { genoflu }                               from '../modules/genoflu.nf'
+include { flumut }                                from '../modules/flumut.nf'
+include { consensus_paftools_call }               from '../modules/variant_calling.nf'
+include { consensus_sort_vcf }                    from '../modules/variant_calling.nf'
+include { consensus_snpeff_annotation }           from '../modules/variant_calling.nf'
+include { reformat_vcf }                          from '../modules/variant_calling.nf'
+include { fix_mnv_codons }                        from '../modules/variant_calling.nf'
+
 
 
 workflow CONSENSUS {
 
-    def extractSegment = { sample_id, fasta ->
+    def extract_segment = { sample_id, fasta ->
         def segment = fasta =~ /.*_([A-z0-9-]+)\.s.*/
         segment = segment[0][1] ? segment[0][1] : "unknown_segment"
         return [sample_id, segment, fasta]
@@ -93,8 +95,8 @@ workflow CONSENSUS {
 
         flumut(prepare_consensus.out.cleaned)
 
-        ch_consensus_segment = split_fasta_consensus(prepare_consensus.out.cleaned).transpose().map(extractSegment)
-        ch_reference_segment = split_fasta_reference(blastn.out.ref).transpose().map(extractSegment)
+        ch_consensus_segment = split_fasta_consensus(prepare_consensus.out.cleaned).transpose().map(extract_segment)
+        ch_reference_segment = split_fasta_reference(blastn.out.ref).transpose().map(extract_segment)
         
         ch_segment_sequences = ch_consensus_segment.join(ch_reference_segment, by: [0,1]) 
 
@@ -108,6 +110,9 @@ workflow CONSENSUS {
 
         // --- Step 7: Annotate amino-acid impacts with SnpEff ---
         consensus_snpeff_annotation(consensus_sort_vcf.out.vcf.combine(ch_snpeff_config))
+
+        // --- Step 7: Fix MNV codons using fix_mnv_codons.py ---
+        fix_mnv_codons(consensus_snpeff_annotation.out.vcf)
 
         // // --- Step 8: Reformat annotated VCF to summary TSV ---
         //reformat_vcf(consensus_snpeff_annotation.out.vcf)
