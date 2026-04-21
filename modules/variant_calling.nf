@@ -64,7 +64,7 @@ process consensus_paftools_call {
 
     tag { "${name}" }
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${name}_raw.vcf", mode: 'copy'
+    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${name}_raw.vcf", mode: 'copy'
 
     input:
     tuple val(sample_id), val(segment), path(alignment_paf), path(reference_fasta) 
@@ -94,7 +94,7 @@ process consensus_sort_vcf {
 
     tag { name }
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${name}_sorted.vcf", mode: 'copy'
+    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${name}_sorted.vcf", mode: 'copy'
 
     input:
     tuple val(sample_id), val(segment), path(raw_vcf), val(snpeff_db_name)
@@ -120,14 +120,14 @@ process snpeff_annotation {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*vcf", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*__anno.vcf", mode: 'copy'
 
     input:
     tuple val(sample_id), path(vcf), path(vcf_index), path(snpeff_config_path)
 
     output:
-    tuple val(sample_id), path("${sample_id}_all_anno.vcf"), emit: vcf
-    tuple val(sample_id), path("${sample_id}*anno.vcf"), emit: all_vcf
+    tuple val(sample_id), path("${sample_id}_all_anno.vcf"), emit: all_vcf
+    tuple val(sample_id), path("${sample_id}*__anno.vcf"), emit: vcfs
     tuple val(sample_id), path("${sample_id}_snpeff_provenance.yml"), emit: provenance
 
     script:
@@ -149,13 +149,13 @@ process consensus_snpeff_annotation {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_anno.vcf", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*__anno.vcf", mode: 'copy'
 
     input:
     tuple val(sample_id), val(segment), path(vcf), val(snpeff_db_name), path(snpeff_config_path)
 
     output:
-    tuple val(sample_id), path("${sample_id}*_anno.vcf"), emit: vcf
+    tuple val(sample_id), val(segment), path("${sample_id}*_anno.vcf"), emit: vcf
     tuple val(sample_id), path("${sample_id}_consensus_snpeff_provenance.yml"), emit: provenance
 
     script:
@@ -181,17 +181,15 @@ process consensus_snpeff_annotation {
 
 
 process fix_mnv_codons {
-    tag { sample_id }
+    tag { "${sample_id}_${segment}" }
 
-    conda "${projectDir}/environments/fluscan.yml"
-
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_mnvcorrected.vcf", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_anno_clean.vcf", mode: 'copy'
 
     input:
-    tuple val(sample_id), path(vcf)
+    tuple val(sample_id), val(segment), path(vcf)
 
     output:
-    tuple val(sample_id), path("${sample_id}*.vcf"), emit: vcf
+    tuple val(sample_id), path("${sample_id}*_anno_clean.vcf"), emit: vcf
     tuple val(sample_id), path("${sample_id}_fix_mnv_codons_provenance.yml"), emit: provenance
 
     script:
@@ -202,10 +200,14 @@ process fix_mnv_codons {
     printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_fix_mnv_codons_provenance.yml
     printf -- "  - tool_name: fix_mnv_codons.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_fix_mnv_codons_provenance.yml
 
+    name=\$(basename ${vcf} .vcf)
+
+    echo "Processing ${vcf} with min_af=${min_af}"
+
     fix_mnv_codons.py \\
-        --input ${vcf} \\
-        --output-vcf ${sample_id}_all_anno_mnvcorrected.vcf \\
-        --min-af ${min_af}
+    --input ${vcf} \\
+    --output-vcf \${name}_clean.vcf \\
+    --min-af ${min_af}
     """
 }
 
