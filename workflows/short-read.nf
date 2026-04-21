@@ -43,6 +43,13 @@ include { make_coverage_plot }  from '../modules/plotting.nf'
 
 workflow SHORT_READ {
 
+    def extract_segment = { sample_id, vcf ->
+        def segment = vcf =~ /.+__([^_]+)__anno.vcf/
+        println "DEBUG: extract_segment - sample_id: ${sample_id}, vcf: ${vcf}, segment: ${segment}"
+        segment = segment[0] ? segment[0][1] : "unknown_segment"
+        return [sample_id, segment, vcf]
+    }
+
     ch_workflow_metadata = Channel.value([
         workflow.sessionId,
         workflow.runName,
@@ -108,7 +115,10 @@ workflow SHORT_READ {
         if (params.snpeff_config != 'NO_FILE') {
             watchlist_files = Channel.fromPath(params.watchlist_dir + "/*watchlist.csv")
             snpeff_annotation(lofreq.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
-            fix_mnv_codons(snpeff_annotation.out.vcf)
+
+            ch_segment_vcfs = snpeff_annotation.out.vcfs.transpose().map(extract_segment)
+
+            fix_mnv_codons(ch_segment_vcfs)
             reformat_vcf(fix_mnv_codons.out.vcf)
             mutation_watch(reformat_vcf.out.tsv.combine(watchlist_files))
         }
