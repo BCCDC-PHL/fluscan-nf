@@ -73,7 +73,10 @@ process map_reads_long {
     printf -- "  tools: \\n" >> ${provenance_file}
     printf -- "  - tool_name: minimap2\\n    tool_version: \$(minimap2 --version 2>&1 | head -n1)\\n" >> ${provenance_file}
 
-    minimap2 -cx asm20 --cs ${reference_fasta} ${consensus_fasta} > ${name}.paf
+    minimap2 -cx asm20 --cs ${reference_fasta} ${consensus_fasta} > ${name}_raw.paf
+    sort -k6,6 -k8,8n ${name}_raw.paf > ${name}.paf
+    rm ${name}_raw.paf
+
     """
 }
 
