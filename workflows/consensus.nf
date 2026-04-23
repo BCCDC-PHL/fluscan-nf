@@ -112,7 +112,7 @@ workflow CONSENSUS {
         consensus_snpeff_annotation(consensus_sort_vcf.out.vcf.combine(ch_snpeff_config))
 
         // --- Step 7: Fix MNV codons using fix_mnv_codons.py ---
-        fix_mnv_codons(consensus_snpeff_annotation.out.vcf)
+        fix_mnv_codons(consensus_snpeff_annotation.out.vcf.join(ch_reference_segment, by: [0,1]))
 
         // // --- Step 8: Reformat annotated VCF to summary TSV ---
         //reformat_vcf(consensus_snpeff_annotation.out.vcf)
