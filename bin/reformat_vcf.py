@@ -57,7 +57,7 @@ AA_CODES = {
     'Ter': '*'
 }
 
-INFO_FIELDS = "DP RO AO AF CIGAR TYPE ANN".split()
+INFO_FIELDS = "DP AF SB DP4 ANN".split()
 DROP_COLS = "ID allele FILTER ANN INFO unknown transcript_biotype rank_total distance_to_feature errors_warnings_info".split()
 
 
