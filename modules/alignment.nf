@@ -21,8 +21,63 @@ process map_reads {
     printf -- "  tools: \\n  - tool_name: bwa\\n    tool_version: \$(bwa 2>&1 | head -n3 | tail -n1 | cut -d' ' -f2)\\n" >> ${sample_id}-bwa-provenance.yml
 
     bwa index ${reference}
-	bwa mem -t ${task.cpus} ${reference} ${reads_1} ${reads_2} > ${sample_id}.sam
+	bwa mem -A 1 -B 2 -O 5,5 -E 1,1 -T 20 -t ${task.cpus} ${reference} ${reads_1} ${reads_2} > ${sample_id}.sam
 	"""
+}
+
+
+process map_reads_minimap2 {
+
+    tag {sample_id}
+
+    errorStrategy 'ignore'
+
+	label 'heavy'
+
+    input:
+    tuple val(sample_id), path(reads_1), path(reads_2), path(reference)
+
+    output:
+    tuple val(sample_id), path("${sample_id}.sam"), emit: sam
+    tuple val(sample_id), path("${sample_id}-*-provenance.yml"), emit:provenance
+
+    script:
+	"""
+    printf -- "- process_name: map_reads_minimap2\\n" > ${sample_id}-minimap2-provenance.yml
+    printf -- "  tools: \\n  - tool_name: minimap2\\n    tool_version: \$(minimap2 --version 2>&1 | head -n1)\\n" >> ${sample_id}-minimap2-provenance.yml
+
+    minimap2 -a -x sr -t ${task.cpus} ${reference} ${reads_1} ${reads_2} > ${sample_id}.sam
+	"""
+}
+
+
+process map_reads_long {
+
+    tag { "${name}" }
+
+    errorStrategy 'ignore'
+    label 'heavy'
+
+    input:
+    tuple val(sample_id), val(segment), path(consensus_fasta), path(reference_fasta)
+
+    output:
+    tuple val(sample_id), val(segment), path("${name}.paf"), path(reference_fasta), emit: paf
+    tuple val(sample_id), path("${provenance_file}"), emit: provenance
+
+    script:
+    provenance_file = "${sample_id}_map_reads_long_provenance.yml"
+    name = "${sample_id}_${segment}"
+    """
+    printf -- "- process_name: map_reads_long\\n" > ${provenance_file}
+    printf -- "  tools: \\n" >> ${provenance_file}
+    printf -- "  - tool_name: minimap2\\n    tool_version: \$(minimap2 --version 2>&1 | head -n1)\\n" >> ${provenance_file}
+
+    minimap2 -cx asm20 --cs ${reference_fasta} ${consensus_fasta} > ${name}_raw.paf
+    sort -k6,6 -k8,8n ${name}_raw.paf > ${name}.paf
+    rm ${name}_raw.paf
+
+    """
 }
 
 
@@ -31,6 +86,8 @@ process sort_filter_sam {
 	tag {sample_id}
 
     publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*{depth.tsv}", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*sort.filter.bam", mode: 'symlink'
+
 
     input: 
     tuple val(sample_id), path(samfile)
@@ -116,6 +173,7 @@ process make_consensus {
     printf -- "- process_name: make_consensus\\n" > ${sample_id}-bcftools-provenance.yml
     printf -- "  tools: \\n  - tool_name: bcftools\\n    tool_version: \$(bcftools --version 2>&1 | head -n1 | cut -d' ' -f2)\\n" >> ${sample_id}-bcftools-provenance.yml
 
-    bcftools consensus -m ${mask_file} -f ${reference} ${vcf} > ${sample_id}_consensus.fasta
+    bcftools consensus -m ${mask_file} -f ${reference} ${vcf} |  sed 's/^>/>${sample_id}|/' > ${sample_id}_consensus.fasta
+
     """
 }

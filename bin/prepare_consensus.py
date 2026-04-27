@@ -21,11 +21,12 @@ The segment name is the last underscore-delimited field of the sequence ID.
 import argparse
 import sys
 import csv
+import re
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-EXPECTED_SEGMENTS = ['PB2', 'PB1', 'PA', 'HA', 'NP', 'NA', 'MP', 'NS']
+EXPECTED_SEGMENTS = ['PB2', 'PB1', 'PA', 'HA', 'NP', 'NA', 'M', 'NS']
 
 # Partially degenerate IUPAC nucleotide codes (excluding N, which is already "any")
 DEGENERATE_BASES = set('RYSWKMBDHV')
@@ -33,12 +34,12 @@ DEGENERATE_BASES = set('RYSWKMBDHV')
 # Acceptable sequence length ranges (min_len, max_len) per segment
 SEGMENT_LENGTH_RANGES = {
     'PB2': (1700, 2400),
-    'PB1': (1650, 2300),
+    'PB1': (1650, 2400),
     'PA':  (2100, 2280),
     'HA':  (1600, 1800),
     'NP':  (1450, 1600),
     'NA':  (1300, 1550),
-    'MP':  (900,  1050),
+    'M':   (900,  1050),
     'NS':  (800,   950),
 }
 
@@ -54,12 +55,27 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_segment_label(record_id):
-    """Extract the segment label (e.g., PB2, HA, MP) from the sequence ID."""
-    label = record_id.split('_')[-1].upper()
-    # Normalise M -> MP for the matrix segment
-    if label == 'M':
-        label = 'MP'
+def detect_delimiter(records):
+    """Detect the field delimiter used in FASTA headers.
+    Defaults to '|' if any header contains a pipe, otherwise '_'.
+    """
+    for rec in records:
+        if '|' in rec.id:
+            return '|'
+    return '_'
+
+
+def clean_header(record_id):
+    """Clean the sequence ID by enforcing MP label and removing trailing segment label."""
+    new_id = re.sub(r"_segment\d", "", record_id)
+    return new_id
+
+def get_segment_label(record_id, delimiter='_'):
+    """Extract the segment label (e.g., PB2, HA, M) from the sequence ID."""
+    label = record_id.split(delimiter)[-1].upper()
+    # Normalise MP -> M for the matrix segment
+    if label == 'MP':
+        label = 'M'
     return label
 
 
@@ -95,11 +111,19 @@ def main():
         print(f"ERROR: No sequences found in {args.input}", file=sys.stderr)
         sys.exit(1)
 
+    delimiter = detect_delimiter(records)
+
     # Index records by segment label
     seg_to_record = {}
     for rec in records:
-        label = get_segment_label(rec.id)
-        seg_to_record[label] = rec
+        segment = get_segment_label(rec.id, delimiter)
+        new_id = clean_header(rec.id)  # Clean the header for output
+
+        rec.id = new_id  # Update the record 
+        rec.description = new_id
+        rec.name = new_id
+
+        seg_to_record[segment] = rec
 
     # --- a) Check for 8 expected segments ---
     found_segments = set(seg_to_record.keys())
@@ -134,10 +158,10 @@ def main():
 
         # --- b) Enforce MP label in the header ---
         new_id = rec.id
-        label_in_id = rec.id.split('_')[-1].upper()
-        if label_in_id == 'M':
-            # Replace the trailing _M with _MP in the sequence ID
-            new_id = '_'.join(rec.id.split('_')[:-1]) + '_MP'
+        label_in_id = rec.id.split(delimiter)[-1].upper()
+        if label_in_id == 'MP':
+            # Replace the trailing {delimiter}MP with {delimiter}M in the sequence ID
+            new_id = delimiter.join(rec.id.split(delimiter)[:-1]) + delimiter + 'M'
 
         # --- f) Check sequence length ---
         seq_len = len(seq_clean)

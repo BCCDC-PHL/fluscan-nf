@@ -7,8 +7,8 @@ dataset from BLAST results and run Nextclade.
 
 The BLAST filter TSV (produced by filter_alignments.py) contains a 'sseqid'
 column with the format:
-  accession|strain|subtype|segment
-  e.g. NC_026438.1|A/California/07/2009|H1N1|PB2
+  accession|subtype|segment
+  e.g. NC_026438.1|H1N1|PB2
 
 The Nextclade datasets directory is expected to be organised as:
   <datasets_dir>/<subtype_lower>/<segment_lower>/

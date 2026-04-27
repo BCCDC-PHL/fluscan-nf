@@ -62,7 +62,6 @@ process assembly {
     spades.py \
         --threads ${task.cpus} \
         --rnaviral \
-        --isolate \
         -1 ${fwd_reads} \
         -2 ${rev_reads} \
         -o ${sample_id}_spades

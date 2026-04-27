@@ -3,7 +3,7 @@ import argparse
 import logging
 import os
 import tempfile
-
+import re
 import pandas as pd
 from subprocess import run
 
@@ -16,13 +16,26 @@ log = logging.getLogger(__name__)
 def rename_chrom(df):
     """Strip pipe-delimited prefix from CHROM, keeping only the accession."""
     df = df.copy()
-    df['CHROM'] = df['CHROM'].str.split("|").str[-1]
+    df['CHROM'] = df['CHROM'].str.split("|").str[0]
     return df
+
+
+def filter_contig_headers(header_lines, accession):
+    """Return header_lines with only the ##contig line matching *accession*."""
+    filtered = []
+    for line in header_lines:
+        if line.startswith("##contig"):
+            if accession in line:
+                line = re.sub(r'ID=[^,]+', f"ID={accession}", line)
+                filtered.append(line)
+        else:
+            filtered.append(line)
+    return filtered
 
 
 def run_snpeff(input_path, genome, output_path, config_path):
     """Run snpEff annotation and write the result to *output_path*."""
-    command = ['snpEff', '-config', config_path, genome, input_path]
+    command = ['snpEff', '-hgvs1LetterAa', '-config', config_path, genome, input_path]
     process = run(command, capture_output=True, check=True, timeout=600)
 
     with open(output_path, 'w') as outfile:
@@ -51,19 +64,21 @@ def main():
 
         # Parse out segment and subtype information from the CHROM field
         ref_name_fields = ref_name.split("|")
-        segment = ref_name_fields[0]
-        subtype = ref_name_fields[2].lower()
+        segment = ref_name_fields[-1]
+        subtype = ref_name_fields[-2]
 
         # Rename CHROM entries to match the snpEff database entry names
         renamed_df = rename_chrom(seg_df)
+        accession = renamed_df['CHROM'].iloc[0]
+        seg_header_lines = filter_contig_headers(header_lines, accession)
 
         # Use a temporary file for the single-segment VCF
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_vcf = os.path.join(tmpdir, 'segment.vcf')
-            output_vcf = f'{args.outname}_{segment}_anno.vcf'
+            output_vcf = f'{args.outname}__{accession}__{subtype}__{segment}__anno.vcf'
 
-            write_vcf(renamed_df, header_lines, tmp_vcf)
-            run_snpeff(tmp_vcf, f'influenza_{subtype}', output_vcf, args.config)
+            write_vcf(renamed_df, seg_header_lines, tmp_vcf)
+            run_snpeff(tmp_vcf, f'influenza_{subtype.lower()}', output_vcf, args.config)
 
         # Read back the annotated VCF and accumulate
         ann_df, ann_header_lines = read_vcf(output_vcf)

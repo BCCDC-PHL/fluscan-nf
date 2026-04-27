@@ -12,32 +12,43 @@ nextflow.enable.dsl = 2
 include { hash_files }          from '../modules/hash_files.nf'
 include { pipeline_provenance } from '../modules/provenance.nf'
 include { collect_provenance }  from '../modules/provenance.nf'
-include { fastp }               from '../modules/fastp.nf'
-include { cutadapt }            from '../modules/cutadapt.nf'
+include { fastp }               from '../modules/short_read_qc.nf'
+include { cutadapt }            from '../modules/short_read_qc.nf'
+include { multiqc }             from '../modules/short_read_qc.nf'
+include { fastqc }              from '../modules/short_read_qc.nf'
 include { sample_reads }        from '../modules/assembly.nf'
 include { assembly }            from '../modules/assembly.nf'
-include { multiqc }             from '../modules/multiqc.nf'
-include { fastqc }              from '../modules/fastqc.nf'
 include { clade_calling }       from '../modules/clade_calling.nf'
 include { snp_calling }         from '../modules/snp_calling.nf'
 include { pull_genoflu }        from '../modules/genoflu.nf'
 include { checkout_genoflu }    from '../modules/genoflu.nf'
 include { genoflu }             from '../modules/genoflu.nf'
+include { flumut }              from '../modules/flumut.nf'
 
 include { makeblastdb }         from '../modules/blast.nf'
 include { blastn }              from '../modules/blast.nf'
 include { map_reads }           from '../modules/alignment.nf'
+include { map_reads_minimap2 }  from '../modules/alignment.nf'
 include { sort_filter_sam }     from '../modules/alignment.nf'
 include { make_pileup }         from '../modules/alignment.nf'
 include { mask_low_coverage }   from '../modules/alignment.nf'
 include { make_consensus }      from '../modules/alignment.nf'
-include { freebayes }           from '../modules/variant_calling.nf'
+include { lofreq }              from '../modules/variant_calling.nf'
 include { snpeff_annotation }   from '../modules/variant_calling.nf'
+include { fix_mnv_codons }      from '../modules/variant_calling.nf'
+include { reformat_vcf }        from '../modules/variant_calling.nf'
 include { mutation_watch }      from '../modules/variant_calling.nf'
 include { make_coverage_plot }  from '../modules/plotting.nf'
 
 
 workflow SHORT_READ {
+
+    def extract_segment = { sample_id, vcf ->
+        def segment = vcf =~ /.+__([^_]+)__anno.vcf/
+        println "DEBUG: extract_segment - sample_id: ${sample_id}, vcf: ${vcf}, segment: ${segment}"
+        segment = segment[0] ? segment[0][1] : "unknown_segment"
+        return [sample_id, segment, vcf]
+    }
 
     ch_workflow_metadata = Channel.value([
         workflow.sessionId,
@@ -84,38 +95,45 @@ workflow SHORT_READ {
         multiqc(fastp.out.json.mix( cutadapt.out.log, ch_fastqc_collected ).collect().ifEmpty([]) )
 
         // Build BLAST database, then search assembled contigs against it to select references
-        makeblastdb(ch_nt_database)
-        blastn(assembly.out.contigs, makeblastdb.out.db)
+        makeblastdb(ch_nt_database).first().set{ch_blastdb}
+        blastn(assembly.out.contigs, ch_blastdb)
 
         // NOTE: Currently mapping raw reads (ch_fastq_input). Consider using
         // cutadapt.out.primer_trimmed_reads instead to avoid adapter/primer artifacts.
-        map_reads(ch_fastq_input.join(blastn.out.ref))
-        sort_filter_sam(map_reads.out.sam)
+        if (params.aligner == 'minimap2') {
+            map_reads_minimap2(ch_fastq_input.join(blastn.out.ref))
+            ch_sam = map_reads_minimap2.out.sam
+        } else {
+            map_reads(ch_fastq_input.join(blastn.out.ref))
+            ch_sam = map_reads.out.sam
+        }
+        sort_filter_sam(ch_sam)
         make_pileup(sort_filter_sam.out.bam)
         make_coverage_plot(sort_filter_sam.out.depth)
-        freebayes(sort_filter_sam.out.bam.join(blastn.out.ref))
+        lofreq(sort_filter_sam.out.bam.join(blastn.out.ref))
 
         if (params.snpeff_config != 'NO_FILE') {
             watchlist_files = Channel.fromPath(params.watchlist_dir + "/*watchlist.csv")
-            snpeff_annotation(freebayes.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
-            mutation_watch(snpeff_annotation.out.vcf_filter.combine(watchlist_files))
+            snpeff_annotation(lofreq.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
+
+            ch_segment_vcfs = snpeff_annotation.out.vcfs.transpose().map(extract_segment)
+
+            fix_mnv_codons(ch_segment_vcfs)
+            reformat_vcf(fix_mnv_codons.out.vcf)
+            mutation_watch(reformat_vcf.out.tsv.combine(watchlist_files))
         }
 
         mask_low_coverage(sort_filter_sam.out.bam)
-        make_consensus(freebayes.out.vcf.join(blastn.out.ref).join(mask_low_coverage.out.masked_bed))
+        make_consensus(lofreq.out.vcf.join(blastn.out.ref).join(mask_low_coverage.out.masked_bed))
+
+        flumut(make_consensus.out.consensus)
 
         //Call clades for H1 and H3 samples
         //clade_calling(make_consensus.out.consensus)
 
+        //genoflu(make_consensus.out.consensus)
         //snp_calling(make_consensus.out.consensus, ch_aa_database)
 
-        // pull_genoflu(params.genoflu_github_url)
-
-        // checkout_genoflu(pull_genoflu.out.repo, params.genoflu_version)
-
-        // genoflu(make_consensus.out.consensus.combine(pull_genoflu.out.repo))
-
-        //
         // Provenance collection processes
         // The basic idea is to build up a channel with the following structure:
         // [sample_id, [provenance_file_1.yml, provenance_file_2.yml, provenance_file_3.yml...]]
@@ -124,11 +142,8 @@ workflow SHORT_READ {
         ch_provenance = ch_provenance.join(hash_files.out.provenance).map{ it ->      [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(fastp.out.provenance).map{ it ->           [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(cutadapt.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
-        //ch_provenance = ch_provenance.join(sample_reads.out.provenance).map{ it ->    [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(assembly.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
-        //ch_provenance = ch_provenance.join(clade_calling.out.provenance).map{ it ->   [it[0], it[1] << it[2]] }
-        //ch_provenance = ch_provenance.join(snp_calling.out.provenance).map{ it ->     [it[0], it[1] << it[2]] }
-        //ch_provenance = ch_provenance.join(genoflu.out.provenance).map{ it ->         [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it ->         [it[0], it[1] << it[2]] }
         collect_provenance(ch_provenance)
 
 }

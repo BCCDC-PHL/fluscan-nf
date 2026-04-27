@@ -1,21 +1,35 @@
 # fluscan-nf
 
-This is a Nextflow pipeline for reference-based read mapping with a strong focus on calling nucleotide and amino acid mutations for Influenza A short-read sequence data. 
-The pipeline further produces QC reports, coverage plots, pileups, consensus sequences, HA and NA subtype calls, clade calls, and more. 
+This is a Nextflow pipeline for Influenza A mutation analysis from either short-read FASTQ data or pre-built consensus FASTA files.
+The short-read workflow performs trimming, assembly, mapping, LoFreq variant calling, SnpEff annotation, and consensus generation. The consensus workflow validates the supplied FASTA, selects a subtype-matched reference with BLAST, aligns per-segment with `minimap2`, calls differences with `paftools.js`, sorts with `bcftools`, annotates with SnpEff, and fixes multi-nucleotide variant codons.
 
 ## Analyses
 
+### Short-read workflow
 - Read trimming & QC: [fastp](https://github.com/OpenGene/fastp)
 - Primer removal with [cutadapt](https://github.com/marcelm/cutadapt)
 - FASTQ quality reporting with [FastQC](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/)
 - Aggregate the reports with [MultiQC](https://multiqc.info/)
-- De-novo assembly 
-- Automated reference selection from built in database
-- Reference-based read mapping
-- Nucleotide variant calling using FreeBayes
+- De-novo assembly
+- Automated reference selection from built-in database via BLAST
+- Reference-based read mapping (BWA or minimap2)
+- Nucleotide variant calling using [LoFreq](https://csb5.github.io/lofreq/)
 - Annotation of amino acid variant calls using SnpEff
-- Detection of mutations of interest via watchlist scanning 
-- Consensus sequence generation 
+- MNV codon correction
+- Detection of mutations of interest via watchlist scanning
+- Consensus sequence generation
+- Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
+
+### Consensus workflow
+- Consensus FASTA validation and header normalisation
+- Automated reference selection from built-in database via BLAST
+- Per-segment alignment using minimap2 (`asm20` mode)
+- Variant calling using `paftools.js`
+- VCF sorting with `bcftools sort`
+- Annotation of amino acid variant calls using SnpEff
+- MNV codon correction
+- Genotype calling with [GenoFLU](https://github.com/USDA-VS/GenoFLU/)
+- Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
 
 ```mermaid
 flowchart TD
@@ -33,84 +47,127 @@ flowchart TD
     cutadapt -- log --> multiqc
     fastqc -- zip --> multiqc
 
-    %% Reference mapping and variant calling
+    %% Reference selection via BLAST
     assembly -- contigs --> blastn
     nt_db[NT Database] --> blastn
+
+    %% Read mapping and variant calling
     input --> map_reads
     blastn -- reference --> map_reads
     map_reads --> sort_filter_sam
     sort_filter_sam -- bam --> make_pileup
     sort_filter_sam -- depth --> make_coverage_plot
-    sort_filter_sam -- bam --> freebayes
-    blastn -- reference --> freebayes
-    
-    %% SNPEff annotation
-    freebayes -- vcf --> snpeff_annotation
+    sort_filter_sam -- bam --> lofreq
+    blastn -- reference --> lofreq
+
+    %% SnpEff annotation and MNV correction
+    lofreq -- vcf --> snpeff_annotation
     snpeff_config[SNPEff Config] --> snpeff_annotation
-    snpeff_annotation --> mutation_watch
+    snpeff_annotation --> fix_mnv_codons
+    fix_mnv_codons --> reformat_vcf
+    reformat_vcf --> mutation_watch
     mutation_watchlist[Mutation Watchlist] --> mutation_watch
 
     %% Consensus generation
     sort_filter_sam -- bam --> mask_low_coverage
-    freebayes -- vcf --> make_consensus
+    lofreq -- vcf --> make_consensus
     blastn -- reference --> make_consensus
     mask_low_coverage -- masked_bed --> make_consensus
 
+    %% FluMut
+    make_consensus -- consensus --> flumut
 ```
 
 
 ## Input
 
-Short read Illumina sequences, files ending in '.fastq.gz', '.fq.gz', '.fastq', '.fq'
+**Short-read workflow:** Illumina paired-end FASTQ files (`*.fastq.gz`, `*.fq.gz`, `*.fastq`, `*.fq`), or a samplesheet CSV with columns `ID`, `R1`, `R2`.
+
+**Consensus workflow:** Consensus FASTA files (one multi-FASTA per sample, one sequence per influenza segment). Expected header format: `>SAMPLE_ID_segmentN_SEGMENT` (e.g. `>WIN-AH-2024-FAV-0415_segment1_PB2`).
 
 ## Usage
 
-**Additional requirements for use:**  
-- Package management is via Conda.  In addition, note the `-profile` and `--cache` switches, essential for proper operation of Conda on BCCDC systems.
-- NOTE: if you have problems when first running the pipeline, it can be due to problems resolving the Conda environment.  If this is the case you can use mamba instead.
-
-
-**Example command:**
+**Example command (short-read):**
 ```
 nextflow run BCCDC-PHL/fluscan-nf \
   -r v0.1.0 \
   -profile conda \
   --cache ~/.conda/envs \
   --fastq_input /path/to/your_fastqs \
-  --watchlist_dir /path/to/multiple/watchlists \
+  --outdir /path/to/output_dir
+```
+
+Optional short-read parameters:
+- `--samplesheet_input` — CSV samplesheet (`ID,R1,R2`) as an alternative to `--fastq_input`
+- `--watchlist_dir` — directory containing `*watchlist.csv` files for mutation-of-interest scanning
+- `--snpeff_config` — path to a custom SnpEff config (defaults to the built-in database)
+- `--aligner` — `bwa` (default) or `minimap2`
+
+**Consensus FASTA example:**
+```
+nextflow run BCCDC-PHL/fluscan-nf \
+  -r v0.1.0 \
+  -profile conda \
+  --cache ~/.conda/envs \
+  --fasta_input /path/to/consensus_fastas \
   --snpeff_config /path/to/snpeff.config \
   --outdir /path/to/output_dir
 ```
 
+> **Note:** `--snpeff_config` is **required** for the consensus workflow. It is optional for the short-read workflow, which falls back to the built-in SnpEff database.
+
+**Package management:**
+- Conda is used for dependency management. The `-profile conda` flag and `--cache` parameter are required on BCCDC systems.
+- If environment resolution fails on first run, ensure `mamba` is available (the pipeline uses `conda.useMamba = true`).
+
 ## Output
 
-Outputs are written to the directory specified with the `--outdir` parameter. 
-One folder is produced per sample 
+Outputs are written to the directory specified with the `--outdir` parameter.
+One folder is produced per sample.
 
+### Short-read workflow outputs (per sample)
 
+| File | Description |
+|------|-------------|
+| `*_consensus.fasta` | Multi-FASTA containing the consensus sequences for each segment |
+| `*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
+| `*_blast.tsv` | BLAST search results of assembled contigs against the reference database |
+| `*_blast_filter.tsv` | Filtered BLAST search results |
+| `*_coverage.png` | Line plots describing mapping coverage across all 8 flu segments |
+| `*_pileup.tsv` | Pileup TSV with raw counts of all 4 nucleotides and gaps |
+| `*_depth.tsv` | Per-position alignment depth (samtools depth) |
+| `vcf/*.vcf.gz` | Variants in VCF format called by LoFreq relative to the reference sequence |
+| `vcf/*__anno.vcf` | Per-segment VCF annotated with amino acid consequences by SnpEff |
+| `vcf/*_anno_clean.vcf` | Per-segment VCF with MNV codon corrections applied |
+| `vcf/*_mutations.tsv` | Reformatted, filtered VCF to simplify mutation identification |
+| `vcf/*_mut_watch.tsv` | Mutations that are also present on the provided watchlist |
+| `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
+| `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
+| `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
+| `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers |
 
-Output for each sample includes:
+### Consensus workflow outputs (per sample)
 
-| File                        | Description                                                                                |
-|-----------------------------|--------------------------------------------------------------------------------------------|
-| `*_consensus.fasta`         | multifasta containing the consensus sequences for each segment                              |
-| `*_ref.fasta`               | multifasta containing the optimal reference sequences selected for each segment                              |
-| `*_blast.tsv`               | BLAST search results of assembled contigs against the reference database |
-| `*_blast_filter.tsv`         | Filtered form of the BLAST search results above        |
-| `*_coverage.png`            | line plots describing mapping coverage across all 8 flu segments                           |
-| `*_pileup.tsv`              | Pileup in TSV containing raw counts of all 4 nucleotides and gaps                          |
-| `*_depth.tsv`               | Simple TSV reporting the depth values at every position in the alignment (samtools depth)    |
-| `vcf/*.vcf.gz`             | list of mutations in variant call format (VCF) called relative to the reference sequence (FreeBayes)  |
-| `vcf/*_anno.vcf`            | VCF with amino acid annotations provided by SnpEff    |
-| `vcf/*_mutations.tsv`            | Filtered, reformatted VCF used to make mutation identification easier                     |
-| `vcf/*_mut_watch.tsv`            | A filtered list of mutations that are also present on the provided watchlist          |
-| `genoflu/*_stats.tsv`       | tabular list of genotype call information for the sample's consensus sequences             |
+| File | Description |
+|------|-------------|
+| `*_cleaned.fasta` | Validated, header-normalised consensus FASTA |
+| `*_qc_report.tsv` | QC report from consensus preparation |
+| `*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
+| `*_blast.tsv` | BLAST search results against the reference database |
+| `*_blast_filter.tsv` | Filtered BLAST search results |
+| `vcf/*__anno.vcf` | Per-segment VCF annotated with amino acid consequences by SnpEff |
+| `vcf/*_anno_clean.vcf` | Per-segment VCF with MNV codon corrections applied |
+| `genoflu/*_stats.tsv` | Tabular genotype call information from GenoFLU |
+| `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
+| `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
+| `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
+| `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers |
 
-Output for each run includes:
+### Run-level outputs
 
-| File                  | Description                                                                     |
-|-----------------------|---------------------------------------------------------------------------------|
-| `multiqc_report.html` | MultiQC report summarizing the fastp results for the all the samples in the run |
+| File | Description |
+|------|-------------|
+| `multiqc_report.html` | MultiQC report summarising fastp, cutadapt, and FastQC results for all samples (short-read workflow only) |
 
 
 ## Provenance files
@@ -141,19 +198,16 @@ For each pipeline invocation, each sample will produce a `provenance.yml` file w
   tools:
     - tool_name: spades
       tool_version: v3.15.3
-process_name: nextclade
-tools:
-  - tool_name: nextclade
-    tool_version: 3.8.1
-    subcommand: run
-- process_name: snp_calling
+- process_name: lofreq
   tools:
-    - tool_name: blastn
-      tool_version: 2.15.0+
-  databases:
-    - database_name: blastn_db.fasta
-- process_name: genoflu
+    - tool_name: samtools
+      tool_version: 1.18
+    - tool_name: lofreq
+      tool_version: 2.1.5
+    - tool_name: bcftools
+      tool_version: 1.18
+- process_name: flumut
   tools:
-    - tool_name: genoflu
-      tool_version: 1.03
+    - tool_name: flumut
+      tool_version: 0.8.0
 ```
