@@ -35,7 +35,7 @@ include { flumut }                                from '../modules/flumut.nf'
 include { consensus_paftools_call }               from '../modules/variant_calling.nf'
 include { consensus_sort_vcf }                    from '../modules/variant_calling.nf'
 include { consensus_snpeff_annotation }           from '../modules/variant_calling.nf'
-include { reformat_vcf }                          from '../modules/variant_calling.nf'
+include { summarize_vcf }                          from '../modules/variant_calling.nf'
 include { fix_mnv_codons }                        from '../modules/variant_calling.nf'
 
 
@@ -115,7 +115,7 @@ workflow CONSENSUS {
         fix_mnv_codons(consensus_snpeff_annotation.out.vcf.join(ch_reference_segment, by: [0,1]))
 
         // // --- Step 8: Reformat annotated VCF to summary TSV ---
-        //reformat_vcf(consensus_snpeff_annotation.out.vcf)
+        //summarize_vcf(consensus_snpeff_annotation.out.vcf)
 
         // // --- Provenance collection ---
         // ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it ->      [it[0], [it[1]]] }
@@ -124,7 +124,7 @@ workflow CONSENSUS {
         // ch_provenance = ch_provenance.join(consensus_paftools_call.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         // ch_provenance = ch_provenance.join(consensus_sort_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         // ch_provenance = ch_provenance.join(consensus_snpeff_annotation.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        // ch_provenance = ch_provenance.join(reformat_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        // ch_provenance = ch_provenance.join(summarize_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         // collect_provenance(ch_provenance)
 
 }

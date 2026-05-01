@@ -217,7 +217,7 @@ process fix_mnv_codons {
 }
 
 
-process reformat_vcf {
+process summarize_vcf {
     tag { sample_id }
 
     errorStrategy 'ignore'
@@ -231,16 +231,16 @@ process reformat_vcf {
 
     output:
     tuple val(sample_id), path("${sample_id}_mutations.tsv"), emit: tsv
-    tuple val(sample_id), path("${sample_id}_reformat_vcf_provenance.yml"), emit: provenance
+    tuple val(sample_id), path("${sample_id}_summarize_vcf_provenance.yml"), emit: provenance
 
     script:
     """
-    printf -- "- process_name: reformat_vcf\\n" > ${sample_id}_reformat_vcf_provenance.yml
-    printf -- "  tools: \\n" >> ${sample_id}_reformat_vcf_provenance.yml
-    printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_reformat_vcf_provenance.yml
-    printf -- "  - tool_name: reformat_vcf.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_reformat_vcf_provenance.yml
+    printf -- "- process_name: summarize_vcf\\n" > ${sample_id}_summarize_vcf_provenance.yml
+    printf -- "  tools: \\n" >> ${sample_id}_summarize_vcf_provenance.yml
+    printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_summarize_vcf_provenance.yml
+    printf -- "  - tool_name: summarize_vcf.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_summarize_vcf_provenance.yml
 
-    reformat_vcf.py --input ${vcf} --output ${sample_id}_mutations.tsv
+    summarize_vcf.py --input ${vcf} --output ${sample_id}_mutations.tsv
     """
 }
 

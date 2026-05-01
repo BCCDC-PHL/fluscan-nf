@@ -67,8 +67,8 @@ Usage
         --output-tsv sample_anno_mnv_corrected.tsv \\
         --min-af 0.5
 
-Pipeline integration (after snpEff, before reformat_vcf):
-    run_snpeff.py -> fix_mnv_codons_v2.py -> reformat_vcf_cyvcf2.py
+Pipeline integration (after snpEff, before summarize_vcf):
+    run_snpeff.py -> fix_mnv_codons_v2.py -> summarize_vcf_cyvcf2.py
 """
 
 import argparse

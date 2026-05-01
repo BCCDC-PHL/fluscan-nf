@@ -148,7 +148,7 @@ def split_aa_muts(df):
     return split_aa_df
 
 
-def reformat_vcf(df: pd.DataFrame) -> pd.DataFrame:
+def summarize_vcf(df: pd.DataFrame) -> pd.DataFrame:
     """
     Extract snpEff annotations from INFO field and create separate columns.
 
@@ -207,7 +207,7 @@ def main():
     vcf_df, _ = read_vcf(args.input)
 
     log.info("Reformatting VCF ...")
-    vcf_df = reformat_vcf(vcf_df)
+    vcf_df = summarize_vcf(vcf_df)
 
     log.info("Filtering for relevant rows/columns ...")
     vcf_df_final = filter_vcf(vcf_df)
