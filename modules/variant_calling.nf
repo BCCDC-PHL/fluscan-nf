@@ -180,25 +180,25 @@ process consensus_snpeff_annotation {
 }
 
 
-process fix_mnv_codons {
+process post_process_vcf {
     tag { "${sample_id}_${segment}" }
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_anno_clean.vcf", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_final.vcf", mode: 'copy'
 
     input:
     tuple val(sample_id), val(segment), path(vcf), path(reference)
 
     output:
-    tuple val(sample_id), val(segment), path("${sample_id}*_anno_clean.vcf"), emit: vcf
-    tuple val(sample_id), val(segment), path("${sample_id}_fix_mnv_codons_provenance.yml"), emit: provenance
+    tuple val(sample_id), val(segment), path("${sample_id}*_final.vcf"), emit: vcf
+    tuple val(sample_id), val(segment), path("${sample_id}_post_process_vcf_provenance.yml"), emit: provenance
 
     script:
     def min_af = params.mnv_min_af ?: 0.5
     """
-    printf -- "- process_name: fix_mnv_codons\\n" > ${sample_id}_fix_mnv_codons_provenance.yml
-    printf -- "  tools: \\n" >> ${sample_id}_fix_mnv_codons_provenance.yml
-    printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_fix_mnv_codons_provenance.yml
-    printf -- "  - tool_name: fix_mnv_codons.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_fix_mnv_codons_provenance.yml
+    printf -- "- process_name: post_process_vcf\\n" > ${sample_id}_post_process_vcf_provenance.yml
+    printf -- "  tools: \\n" >> ${sample_id}_post_process_vcf_provenance.yml
+    printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_post_process_vcf_provenance.yml
+    printf -- "  - tool_name: fix_mnv_codons.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_post_process_vcf_provenance.yml
 
     name=\$(basename ${vcf} .vcf)
 
@@ -213,6 +213,10 @@ process fix_mnv_codons {
     --reference ${reference} \\
     --output-vcf \${name}_clean.vcf \\
     --min-af ${min_af}
+
+    echo "Reformatting VCF for FreeBayes compatibility"
+
+    paftools_to_freebayes_vcf.py --input \${name}_clean.vcf --output \${name}_final.vcf
     """
 }
 

@@ -36,7 +36,7 @@ include { consensus_paftools_call }               from '../modules/variant_calli
 include { consensus_sort_vcf }                    from '../modules/variant_calling.nf'
 include { consensus_snpeff_annotation }           from '../modules/variant_calling.nf'
 include { summarize_vcf }                          from '../modules/variant_calling.nf'
-include { fix_mnv_codons }                        from '../modules/variant_calling.nf'
+include { post_process_vcf }                    from '../modules/variant_calling.nf'
 
 
 
@@ -111,8 +111,8 @@ workflow CONSENSUS {
         // --- Step 7: Annotate amino-acid impacts with SnpEff ---
         consensus_snpeff_annotation(consensus_sort_vcf.out.vcf.combine(ch_snpeff_config))
 
-        // --- Step 7: Fix MNV codons using fix_mnv_codons.py ---
-        fix_mnv_codons(consensus_snpeff_annotation.out.vcf.join(ch_reference_segment, by: [0,1]))
+        // --- Step 7: Post-process annotated VCF ---
+        post_process_vcf(consensus_snpeff_annotation.out.vcf.join(ch_reference_segment, by: [0,1]))
 
         // // --- Step 8: Reformat annotated VCF to summary TSV ---
         //summarize_vcf(consensus_snpeff_annotation.out.vcf)

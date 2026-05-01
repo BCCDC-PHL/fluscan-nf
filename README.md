@@ -63,9 +63,9 @@ flowchart TD
     %% SnpEff annotation and MNV correction
     lofreq -- vcf --> snpeff_annotation
     snpeff_config[SNPEff Config] --> snpeff_annotation
-    snpeff_annotation --> fix_mnv_codons
-    fix_mnv_codons --> reformat_vcf
-    reformat_vcf --> mutation_watch
+    snpeff_annotation --> post_process_vcf
+    post_process_vcf --> summarize_vcf
+    summarize_vcf --> mutation_watch
     mutation_watchlist[Mutation Watchlist] --> mutation_watch
 
     %% Consensus generation

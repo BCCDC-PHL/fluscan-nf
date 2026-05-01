@@ -35,7 +35,7 @@ include { mask_low_coverage }   from '../modules/alignment.nf'
 include { make_consensus }      from '../modules/alignment.nf'
 include { lofreq }              from '../modules/variant_calling.nf'
 include { snpeff_annotation }   from '../modules/variant_calling.nf'
-include { fix_mnv_codons }      from '../modules/variant_calling.nf'
+include { post_process_vcf }    from '../modules/variant_calling.nf'
 include { summarize_vcf }        from '../modules/variant_calling.nf'
 include { mutation_watch }      from '../modules/variant_calling.nf'
 include { make_coverage_plot }  from '../modules/plotting.nf'
@@ -118,7 +118,7 @@ workflow SHORT_READ {
 
             ch_segment_vcfs = snpeff_annotation.out.vcfs.transpose().map(extract_segment)
 
-            fix_mnv_codons(ch_segment_vcfs)
+            post_process_vcf(ch_segment_vcfs.join(blastn.out.ref))
             summarize_vcf(post_process_vcf.out.vcf)
             mutation_watch(summarize_vcf.out.tsv.combine(watchlist_files))
         }
