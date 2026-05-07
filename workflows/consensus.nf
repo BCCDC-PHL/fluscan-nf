@@ -91,7 +91,7 @@ workflow CONSENSUS {
         // --- Step 3: BLAST cleaned consensus against reference database ---
         blastn(prepare_consensus.out.cleaned, ch_blastdb)
 
-        genoflu(prepare_consensus.out.cleaned)
+        //genoflu(prepare_consensus.out.cleaned)
 
         flumut(prepare_consensus.out.cleaned)
 
