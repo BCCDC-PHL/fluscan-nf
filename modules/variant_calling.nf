@@ -206,7 +206,7 @@ process post_process_vcf {
 
     echo "Renaming reference "
 
-    sed -i -E 's/^>([^\|]+)\|.+/>\1/g' ${reference}
+    sed -i -E 's/^>([^\\|]+)\\|.+/>\\1/g' ${reference}
 
     fix_mnv_codons.py \\
     --input ${vcf} \\
