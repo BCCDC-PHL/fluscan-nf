@@ -13,7 +13,7 @@
  *     >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
  *
  *   Segment datasets are resolved from --nextclade_datasets_dir by lowercasing
- *   the segment label (e.g. HA → ha, MP → mp).
+ *   the segment label (e.g. HA -> ha, M -> m).
  */
 
 nextflow.enable.dsl = 2

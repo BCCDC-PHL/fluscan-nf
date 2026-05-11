@@ -6,7 +6,7 @@ Validates and prepares influenza consensus FASTA files for the consensus workflo
 
 Steps performed:
   a) Check for presence of 8 expected influenza segments
-  b) Enforce MP label for the matrix segment (rename M -> MP if needed)
+    b) Enforce M label for the matrix segment by normalising legacy labels
   c) Replace partially degenerate IUPAC nucleotides (R,Y,S,W,K,M,B,D,H,V) with N
   d) Record the proportion of ambiguous (N) bases per sequence
   e) Enforce uppercase
@@ -66,14 +66,14 @@ def detect_delimiter(records):
 
 
 def clean_header(record_id):
-    """Clean the sequence ID by enforcing MP label and removing trailing segment label."""
+    """Clean the sequence ID by removing the trailing segment ordinal."""
     new_id = re.sub(r"_segment\d", "", record_id)
     return new_id
 
 def get_segment_label(record_id, delimiter='_'):
     """Extract the segment label (e.g., PB2, HA, M) from the sequence ID."""
     label = record_id.split(delimiter)[-1].upper()
-    # Normalise MP -> M for the matrix segment
+    # Normalise legacy matrix labels to M.
     if label == 'MP':
         label = 'M'
     return label
@@ -156,11 +156,11 @@ def main():
         # --- d) N proportion after degenerate replacement ---
         n_prop_after = n_proportion(seq_clean)
 
-        # --- b) Enforce MP label in the header ---
+        # --- b) Enforce M label in the header ---
         new_id = rec.id
         label_in_id = rec.id.split(delimiter)[-1].upper()
         if label_in_id == 'MP':
-            # Replace the trailing {delimiter}MP with {delimiter}M in the sequence ID
+            # Replace the trailing legacy matrix label with M in the sequence ID.
             new_id = delimiter.join(rec.id.split(delimiter)[:-1]) + delimiter + 'M'
 
         # --- f) Check sequence length ---
