@@ -33,6 +33,7 @@ import re
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Optional
 
 from Bio import SeqIO
 from Bio.Seq import Seq
@@ -925,6 +926,18 @@ def get_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+_SEED_COVER_RE = re.compile(r"seed alignment covers (\d+(?:\.\d+)?%)")
+
+
+def _extract_seed_cover(error_messages: list[str]) -> Optional[str]:
+    """Return the seed-cover percentage from Nextclade 'Unable to align' messages, or None."""
+    for msg in error_messages:
+        m = _SEED_COVER_RE.search(msg)
+        if m:
+            return m.group(1)
+    return None
+
+
 def main() -> None:
     args = get_args()
     chrom, ref_seq = load_reference(args.reference)
@@ -950,6 +963,29 @@ def main() -> None:
                 continue
             sample = args.sample or result.get("seqName", "SAMPLE")
             results.append((sample, variants_from_json_result(result, ref_seq, chrom, args.qual)))
+
+        # Tolerate top-level alignment failures reported by Nextclade.
+        # Each entry in data["errors"] represents a sequence that could not be processed.
+        # Emit a header-only VCF (full header, zero variant rows) for each such sample.
+        for error_entry in data.get("errors", []):
+            seq_name = error_entry.get("seqName", "UNKNOWN")
+            sample = args.sample or seq_name
+            error_messages = error_entry.get("errors", [])
+            if any("Unable to align" in msg for msg in error_messages):
+                seed_cover = _extract_seed_cover(error_messages)
+                if seed_cover:
+                    log.warning(
+                        "Unable to align '%s' (seed alignment covers %s); writing empty VCF",
+                        sample, seed_cover,
+                    )
+                else:
+                    log.warning("Unable to align '%s'; writing empty VCF", sample)
+            else:
+                log.warning(
+                    "Nextclade errors for '%s': %s; writing empty VCF",
+                    sample, "; ".join(str(m) for m in error_messages),
+                )
+            results.append((sample, []))
 
     if not results:
         log.error("No results found in %s", args.input)
