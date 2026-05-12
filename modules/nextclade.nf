@@ -6,8 +6,8 @@ process nextclade_run {
 
     tag { "${sample_id}_${segment}" }
 
-    publishDir "${params.outdir}/${sample_id}/nextclade/${segment}/", pattern: "${sample_id}_${segment}_nextclade.json", mode: 'copy'
-    publishDir "${params.outdir}/${sample_id}/nextclade/${segment}/", pattern: "${sample_id}_${segment}_nextclade.tsv",  mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/nextclade", pattern: "${sample_id}_${segment}_nextclade.json", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/nextclade", pattern: "${sample_id}_${segment}_nextclade.tsv",  mode: 'copy'
 
     input:
     tuple val(sample_id), val(segment), path(consensus_fa), path(dataset_dir)
@@ -33,7 +33,7 @@ process nextclade_to_vcf {
 
     tag { "${sample_id}_${segment}" }
 
-    publishDir "${params.outdir}/${sample_id}/nextclade/${segment}/", pattern: "${sample_id}_${segment}.vcf", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/nextclade", pattern: "${sample_id}_${segment}.vcf", mode: 'copy'
 
     input:
     tuple val(sample_id), val(segment), path(nextclade_json), path(dataset_dir)
