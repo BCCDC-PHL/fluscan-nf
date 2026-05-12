@@ -1,32 +1,23 @@
 #!/usr/bin/env python3
-"""Convert nextclade JSON or TSV output to a freebayes-format VCF.
+"""Convert nextclade JSON output to a freebayes-format VCF with snpEff-compatible ANN= annotations.
 
-Synthesises depth-1 (consensus-quality) freebayes INFO/FORMAT fields so that
-reformat_vcf_cyvcf2.py can parse the output unchanged.
+Reads a per-segment GFF3 annotation (the same file Nextclade consumed) to resolve CDS
+structure, then annotates each variant with per-transcript HGVS.c / HGVS.p entries for
+main CDS transcripts, mature-peptide transcripts, intronic positions, upstream regions,
+and intergenic positions — matching the annotation style produced by snpEff in the
+paftools pipeline.
 
-For JSON input, emits snpEff-compatible ANN= annotations directly in the INFO
-column, sourced from Nextclade's per-CDS amino-acid data.  This bypasses the
-need for snpEff and correctly handles Influenza's overlapping reading frames
-(M1/M2, NS1/NEP, PB1/PB1-F2).
+Handles overlapping influenza ORFs (M1/M2, NS1/NEP, PB1/PB1-F2, PA/PA-X) and
+spliced CDSes (M2, NEP, PA-X) natively from GFF3 segment data.
 
-TSV input does not provide per-CDS resolution of overlapping ORFs and therefore
-does not emit ANN annotations.
-
-Requires the reference FASTA used during nextclade run to resolve the contig ID
-and anchor bases for insertion/deletion records.
+Requires:
+  -i    Nextclade v3 JSON (per-segment)
+  -d    Nextclade reference dataset directory (must contain reference.fasta and genome_annotation.gff3)
 
 Pipeline position: after nextclade run, before reformat_vcf_cyvcf2.py.
-
-Critical evaluation — pandas / cyvcf2:
-  pandas:  csv.DictReader is sufficient for row-by-row TSV streaming; pandas
-           adds dependency weight with no benefit here.
-  cyvcf2:  Writer requires a parsed template header; creating Variant objects
-           from scratch is not supported. Plain text output is cleaner and has
-           no extra dependencies.
 """
 
 import argparse
-import csv
 import json
 import logging
 import re
@@ -42,7 +33,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Freebayes header definitions (verbatim from paftools_to_freebayes_vcf.py)
+# Freebayes header definitions
 # ---------------------------------------------------------------------------
 
 _FREEBAYES_INFO = [
@@ -91,30 +82,18 @@ _FREEBAYES_INFO = [
 
 _FREEBAYES_FORMAT = [
     ("GT",  "1", "String",  "Genotype"),
-    ("GQ",  "1", "Float",   "Genotype Quality, the Phred-scaled marginal (or unconditional) probability of the called genotype"),
-    ("GL",  "G", "Float",   "Genotype Likelihood, log10-scaled likelihoods of the data given the called genotype for each possible genotype generated from the reference and alternate alleles given the sample ploidy"),
     ("DP",  "1", "Integer", "Read Depth"),
     ("AD",  "R", "Integer", "Number of observation for each allele"),
     ("RO",  "1", "Integer", "Reference allele observation count"),
     ("QR",  "1", "Integer", "Sum of quality of the reference observations"),
     ("AO",  "A", "Integer", "Alternate allele observation count"),
     ("QA",  "A", "Integer", "Sum of quality of the alternate observations"),
+    ("GL",  "G", "Float",   "Genotype Likelihood, log10-scaled likelihoods of the data given the called genotype for each possible genotype generated from the reference and alternate alleles given the sample ploidy"),
+    ("GQ",  "1", "Float",   "Genotype Quality, the Phred-scaled marginal (or unconditional) probability of the called genotype"),
 ]
 
 # ---------------------------------------------------------------------------
-# Amino acid 1-letter to 3-letter code map
-# ---------------------------------------------------------------------------
-
-_AA1_TO_AA3 = {
-    "A": "Ala", "R": "Arg", "N": "Asn", "D": "Asp", "C": "Cys",
-    "Q": "Gln", "E": "Glu", "G": "Gly", "H": "His", "I": "Ile",
-    "L": "Leu", "K": "Lys", "M": "Met", "F": "Phe", "P": "Pro",
-    "S": "Ser", "T": "Thr", "W": "Trp", "Y": "Tyr", "V": "Val",
-    "*": "Ter", "X": "Xaa", "-": "del",
-}
-
-# ---------------------------------------------------------------------------
-# Variant classification (verbatim from paftools_to_freebayes_vcf.py)
+# Variant classification
 # ---------------------------------------------------------------------------
 
 def classify(ref: str, alt: str) -> tuple[str, str, int]:
@@ -141,6 +120,378 @@ def load_reference(ref_path: str) -> tuple[str, str]:
     """Return (chrom_id, sequence_uppercase) from a single-record FASTA."""
     rec = SeqIO.read(ref_path, "fasta")
     return rec.id, str(rec.seq).upper()
+
+# ---------------------------------------------------------------------------
+# GFF3 parsing
+# ---------------------------------------------------------------------------
+
+def _parse_gff3_attrs(attr_str: str) -> dict:
+    attrs = {}
+    for part in attr_str.strip().split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            attrs[k.strip()] = v.strip()
+    return attrs
+
+
+def load_gff3(gff_path: str) -> tuple[list, list]:
+    """Parse GFF3; return (genes, transcripts).
+
+    genes: [{gene_name, gene_id, begin_0, end_0}]
+    transcripts: [{transcript_kind, gene_name, gene_id, feature_id, protein_id,
+                   strand, segments, is_mature, warnings, cds_length, aa_length}]
+
+    segments is a sorted list of (begin_0, end_0) half-open intervals.
+    protein_id matches Nextclade's cdsName key in nucToAaMuts/aaSubstitutions.
+    For main CDS transcripts, feature_id == gene_id (locus_tag).
+    For mature peptide transcripts, feature_id == protein_id.
+    aa_length excludes the stop codon (cds_length // 3 - 1).
+    """
+    genes: list = []
+    gene_by_locus_tag: dict = {}     # locus_tag → (gene_name, gene_id)
+    cds_segments: dict = {}          # protein_id → [(begin_0, end_0)]
+    cds_meta: dict = {}              # protein_id → {gene_name, gene_id, strand}
+    mature_list: list = []           # raw mature peptide rows
+
+    with open(gff_path) as fh:
+        for line in fh:
+            if line.startswith("#") or not line.strip():
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 9:
+                continue
+            ftype  = parts[2]
+            b0     = int(parts[3]) - 1   # GFF3 1-based inclusive → 0-based
+            e0     = int(parts[4])        # 1-based inclusive → 0-based half-open
+            strand = parts[6]
+            attrs  = _parse_gff3_attrs(parts[8])
+
+            if ftype == "gene":
+                gname    = attrs.get("Name", "")
+                ltag     = attrs.get("locus_tag", "")
+                genes.append({"gene_name": gname, "gene_id": ltag,
+                               "begin_0": b0, "end_0": e0})
+                gene_by_locus_tag[ltag] = (gname, ltag)
+
+            elif ftype == "CDS":
+                pid    = attrs.get("protein_id", "")
+                parent = attrs.get("Parent", "")
+                ltag   = parent[len("gene-"):] if parent.startswith("gene-") else parent
+                gname, gid = gene_by_locus_tag.get(ltag, ("", ltag))
+                if pid not in cds_segments:
+                    cds_segments[pid] = []
+                    cds_meta[pid] = {"gene_name": gname, "gene_id": gid, "strand": strand}
+                cds_segments[pid].append((b0, e0))
+
+            elif ftype == "mature_protein_region_of_CDS":
+                pid    = attrs.get("protein_id", "")
+                parent = attrs.get("Parent", "")
+                # parent like "cds-YP_308669.1"
+                parent_cds_pid = parent[len("cds-"):] if parent.startswith("cds-") else parent
+                mature_list.append({
+                    "protein_id":     pid,
+                    "parent_cds_pid": parent_cds_pid,
+                    "begin_0":        b0,
+                    "end_0":          e0,
+                    "strand":         strand,
+                })
+
+    transcripts: list = []
+
+    for pid, segs in cds_segments.items():
+        meta    = cds_meta[pid]
+        segs_s  = sorted(segs)
+        cds_len = sum(e - b for b, e in segs_s)
+        transcripts.append({
+            "transcript_kind": "cds",
+            "gene_name":   meta["gene_name"],
+            "gene_id":     meta["gene_id"],
+            "feature_id":  meta["gene_id"],   # main CDS → locus_tag as Feature_ID
+            "protein_id":  pid,               # matches Nextclade cdsName
+            "strand":      meta["strand"],
+            "segments":    segs_s,
+            "is_mature":   False,
+            "warnings":    "",
+            "cds_length":  cds_len,
+            "aa_length":   max(cds_len // 3 - 1, 0),
+        })
+
+    for me in mature_list:
+        meta    = cds_meta.get(me["parent_cds_pid"], {"gene_name": "", "gene_id": ""})
+        seg_len = me["end_0"] - me["begin_0"]
+        transcripts.append({
+            "transcript_kind": "mature_peptide",
+            "gene_name":   meta["gene_name"],
+            "gene_id":     meta["gene_id"],
+            "feature_id":  me["protein_id"],   # mature peptide uses its own protein_id
+            "protein_id":  me["protein_id"],
+            "strand":      me["strand"],
+            "segments":    [(me["begin_0"], me["end_0"])],
+            "is_mature":   True,
+            "warnings":    "WARNING_TRANSCRIPT_NO_START_CODON",
+            "cds_length":  seg_len,
+            "aa_length":   max(seg_len // 3 - 1, 0),
+        })
+
+    return genes, transcripts
+
+# ---------------------------------------------------------------------------
+# CDS position helpers
+# ---------------------------------------------------------------------------
+
+def _cds_pos_from_genomic(tx: dict, pos_0: int) -> tuple:
+    """Return (cds_local_1, exon_rank, exon_count) if pos_0 is inside a CDS segment, else (None,None,None)."""
+    segments = tx["segments"]
+    running  = 0
+    for i, (b, e) in enumerate(segments):
+        if b <= pos_0 < e:
+            if tx["strand"] == "+":
+                local_1 = running + (pos_0 - b) + 1
+            else:
+                local_1 = running + (e - 1 - pos_0) + 1
+            return local_1, i + 1, len(segments)
+        running += (e - b)
+    return None, None, None
+
+
+def _intron_info(tx: dict, pos_0: int) -> Optional[tuple]:
+    """For a spliced transcript, return (cds_end_1, offset, intron_rank, n_introns) if pos_0 is in an intron."""
+    segs     = tx["segments"]
+    n_introns = len(segs) - 1
+    if n_introns == 0:
+        return None
+    running = 0
+    for i, (b, e) in enumerate(segs[:-1]):
+        next_b = segs[i + 1][0]
+        running += (e - b)
+        if e <= pos_0 < next_b:
+            offset = pos_0 - e + 1   # 1-based distance into intron
+            return running, offset, i + 1, n_introns
+    return None
+
+
+def _is_in_gene(genes: list, pos_0: int) -> bool:
+    return any(g["begin_0"] <= pos_0 < g["end_0"] for g in genes)
+
+
+def _intergenic_name(genes: list, pos_0: int) -> tuple[str, str, str]:
+    """Return (gene_name_str, gene_id_str, feature_id_str) for an intergenic entry."""
+    sorted_g    = sorted(genes, key=lambda g: g["begin_0"])
+    upstream    = [g for g in sorted_g if g["end_0"] <= pos_0]
+    downstream  = [g for g in sorted_g if g["begin_0"] > pos_0]
+    prev_name   = upstream[-1]["gene_name"] if upstream else "CHR_START"
+    prev_id     = upstream[-1]["gene_id"]   if upstream else "CHR_START"
+    next_name   = downstream[0]["gene_name"] if downstream else "CHR_END"
+    next_id     = downstream[0]["gene_id"]   if downstream else "CHR_END"
+    gene_name   = f"{prev_name}-{next_name}"
+    gene_id     = f"{prev_id}-{next_id}"
+    return gene_name, gene_id, gene_id
+
+# ---------------------------------------------------------------------------
+# Codon helpers
+# ---------------------------------------------------------------------------
+
+def _translate_codon(codon: str) -> str:
+    try:
+        return str(Seq(codon).translate())
+    except Exception:
+        return "X"
+
+
+def _cds_to_genomic(cds_pos_0: int, segments: list, strand: str) -> Optional[int]:
+    """Map 0-based CDS-local position to 0-based genomic position."""
+    running = 0
+    for b, e in segments:
+        seg_len = e - b
+        if running + seg_len > cds_pos_0:
+            if strand == "+":
+                return b + (cds_pos_0 - running)
+            else:
+                return e - 1 - (cds_pos_0 - running)
+        running += seg_len
+    return None
+
+
+def _synonymous_aa_change(ref_seq: str, tx: dict, pos_0: int, ref_nt: str, alt_nt: str) -> tuple[str, str, int]:
+    """Return (refAa, altAa, aa_pos_1) by direct codon translation from the reference.
+
+    Falls back to ('X','X',0) when the codon cannot be determined (e.g. minus strand,
+    segment-boundary ambiguity, or out-of-range position).
+    """
+    segs   = tx["segments"]
+    strand = tx["strand"]
+
+    # CDS-local 0-based position
+    running = 0
+    cds_local_0 = None
+    for b, e in segs:
+        if b <= pos_0 < e:
+            cds_local_0 = (running + (pos_0 - b)) if strand == "+" else (running + (e - 1 - pos_0))
+            break
+        running += (e - b)
+    if cds_local_0 is None:
+        return "X", "X", 0
+
+    codon_idx    = cds_local_0 // 3
+    codon_offset = cds_local_0 % 3
+    aa_pos_1     = codon_idx + 1
+
+    # Genomic positions for all 3 codon bases
+    gpos = [_cds_to_genomic(codon_idx * 3 + i, segs, strand) for i in range(3)]
+    if None in gpos:
+        return "X", "X", aa_pos_1
+
+    if strand == "+":
+        ref_codon = "".join(ref_seq[g] for g in gpos)
+        alt_codon = ref_codon[:codon_offset] + alt_nt + ref_codon[codon_offset + 1:]
+    else:
+        # minus strand: reading direction is reversed; just fall back
+        return "X", "X", aa_pos_1
+
+    return _translate_codon(ref_codon), _translate_codon(alt_codon), aa_pos_1
+
+# ---------------------------------------------------------------------------
+# HGVS formatters  (1-letter amino-acid codes, matching paftools/snpEff output)
+# ---------------------------------------------------------------------------
+
+def _format_hgvs_c_snp(cds_local_1: int, ref_nt: str, alt_nt: str) -> str:
+    return f"c.{cds_local_1}{ref_nt}>{alt_nt}"
+
+
+def _format_hgvs_c_del(start_1: int, end_1: int) -> str:
+    if start_1 == end_1:
+        return f"c.{start_1}del"
+    return f"c.{start_1}_{end_1}del"
+
+
+def _format_hgvs_c_ins(anchor_1: int, ins_seq: str) -> str:
+    return f"c.{anchor_1}_{anchor_1 + 1}ins{ins_seq}"
+
+
+def _format_hgvs_c_intron(cds_end_1: int, offset: int, ref_nt: str, alt_nt: str) -> str:
+    return f"c.{cds_end_1}+{offset}{ref_nt}>{alt_nt}"
+
+
+def _format_hgvs_p_sub(ref_aa: str, aa_pos_1: int, alt_aa: str) -> str:
+    return f"p.{ref_aa}{aa_pos_1}{alt_aa}"
+
+
+def _format_hgvs_p_syn(ref_aa: str, aa_pos_1: int) -> str:
+    return f"p.{ref_aa}{aa_pos_1}{ref_aa}"
+
+
+def _format_hgvs_p_del(aa_changes: list) -> str:
+    """Return HGVS.p for an in-frame deletion given list of (refAa, aa_pos_1)."""
+    if not aa_changes:
+        return ""
+    sc = sorted(aa_changes, key=lambda x: x[1])
+    if len(sc) == 1:
+        return f"p.{sc[0][0]}{sc[0][1]}del"
+    return f"p.{sc[0][0]}{sc[0][1]}_{sc[-1][0]}{sc[-1][1]}del"
+
+
+def _format_hgvs_p_ins(aa_pos_1: int, ins_aa_seq: str) -> str:
+    return f"p.{aa_pos_1}_{aa_pos_1 + 1}ins{ins_aa_seq}"
+
+
+def _format_hgvs_p_fs(ref_aa: str, aa_pos_1: int) -> str:
+    return f"p.{ref_aa}{aa_pos_1}fs"
+
+# ---------------------------------------------------------------------------
+# Consequence classification
+# ---------------------------------------------------------------------------
+
+def _classify_aa_consequence(ref_aa: str, alt_aa: str, aa_pos_1: int) -> tuple[str, str]:
+    if ref_aa == alt_aa:
+        return "synonymous_variant", "LOW"
+    if alt_aa == "*":
+        return "stop_gained", "HIGH"
+    if ref_aa == "*":
+        return "stop_lost", "HIGH"
+    if aa_pos_1 == 1 and ref_aa == "M":
+        return "start_lost", "HIGH"
+    return "missense_variant", "MODERATE"
+
+# ---------------------------------------------------------------------------
+# ANN entry builder
+# ---------------------------------------------------------------------------
+
+def _build_ann_entry(
+    allele:             str,
+    annotation:         str,
+    impact:             str,
+    gene_name:          str,
+    gene_id:            str,
+    feature_id:         str,
+    transcript_biotype: str,
+    hgvs_c:             str,
+    hgvs_p:             str,
+    cds_pos:            int,
+    cds_len:            int,
+    aa_pos:             int,
+    aa_len:             int,
+    distance:           str = "",
+    feature_type:       str = "transcript",
+    rank_str:           str = "",
+    warnings:           str = "",
+) -> str:
+    cds_str = f"{cds_pos}/{cds_len}" if cds_len > 0 else ""
+    aa_str  = f"{aa_pos}/{aa_len}"   if aa_len  > 0 else ""
+    if not rank_str and feature_type == "transcript" and cds_len > 0:
+        rank_str = "1/1"
+    return "|".join([
+        allele, annotation, impact,
+        gene_name, gene_id,
+        feature_type, feature_id, transcript_biotype,
+        rank_str, hgvs_c, hgvs_p,
+        cds_str, cds_str,  # cDNA.pos/length repeated for CDS.pos/length
+        aa_str, distance, warnings,
+    ])
+
+# ---------------------------------------------------------------------------
+# Indel anchor helpers
+# ---------------------------------------------------------------------------
+
+def _deletion_alleles(ref_seq: str, begin: int, end: int) -> tuple[int, str, str]:
+    if begin > 0:
+        anchor = begin - 1
+        return anchor + 1, ref_seq[anchor] + ref_seq[begin:end], ref_seq[anchor]
+    return 1, ref_seq[begin:end] + ref_seq[end], ref_seq[end]
+
+
+def _insertion_alleles(ref_seq: str, pos: int, ins_seq: str) -> tuple[int, str, str]:
+    anchor = pos
+    return anchor + 1, ref_seq[anchor], ref_seq[anchor] + ins_seq
+
+# ---------------------------------------------------------------------------
+# VCF row helpers
+# ---------------------------------------------------------------------------
+
+def _info(type_str: str, cigar: str, length: int, qual: int) -> str:
+    return (
+        f"NS=1;DP=1;DPB=1.0;AC=1;AN=1;AF=1.0;RO=0;AO=1;PRO=0.0;PAO=0.0;"
+        f"QR=0;QA={qual};PQR=0.0;PQA=0.0;SRF=0;SRR=0;SAF=0;SAR=0;SRP=0.0;SAP=0.0;"
+        f"AB=0.0;ABP=0.0;RUN=1;RPP=0.0;RPPR=0.0;RPL=0.0;RPR=0.0;EPP=0.0;EPPR=0.0;"
+        f"DPRA=0.0;ODDS=0.0;GTI=0;TYPE={type_str};CIGAR={cigar};NUMALT=1;MEANALT=1.0;"
+        f"LEN={length};MQM=60.0;MQMR=60.0;PAIRED=0.0;PAIREDR=0.0"
+    )
+
+
+def _sample(qual: int) -> str:
+    gl = f"{-qual / 10:.3f},0"
+    return f"1:1:0,1:0:0:1:{qual}:{gl}:{qual}"
+
+
+def variant_row(chrom: str, pos: int, ref: str, alt: str, qual: int, ann: str = "") -> str:
+    type_str, cigar, length = classify(ref, alt)
+    info = _info(type_str, cigar, length, qual)
+    if ann:
+        info = f"{info};{ann}"
+    return (
+        f"{chrom}\t{pos}\t.\t{ref}\t{alt}\t{qual}\tPASS"
+        f"\t{info}"
+        f"\tGT:DP:AD:RO:QR:AO:QA:GL:GQ\t{_sample(qual)}"
+    )
 
 # ---------------------------------------------------------------------------
 # VCF header
@@ -171,321 +522,6 @@ def build_header(chrom: str, ref_len: int, ref_path: str, sample: str) -> str:
     return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
-# Single variant row
-# ---------------------------------------------------------------------------
-
-def _info(type_str: str, cigar: str, length: int, qual: int) -> str:
-    return (
-        f"NS=1;DP=1;DPB=1.0;AC=1;AN=1;AF=1.0;RO=0;AO=1;PRO=0.0;PAO=0.0;"
-        f"QR=0;QA={qual};PQR=0.0;PQA=0.0;SRF=0;SRR=0;SAF=0;SAR=0;SRP=0.0;SAP=0.0;"
-        f"AB=0.0;ABP=0.0;RUN=1;RPP=0.0;RPPR=0.0;RPL=0.0;RPR=0.0;EPP=0.0;EPPR=0.0;"
-        f"DPRA=0.0;ODDS=0.0;GTI=0;TYPE={type_str};CIGAR={cigar};NUMALT=1;MEANALT=1.0;"
-        f"LEN={length};MQM=60.0;MQMR=60.0;PAIRED=0.0;PAIREDR=0.0"
-    )
-
-
-def _sample(qual: int) -> str:
-    gl = f"{-qual / 10:.3f},0"
-    return f"1:1:0,1:0:0:1:{qual}:{gl}"
-
-
-def variant_row(chrom: str, pos: int, ref: str, alt: str, qual: int, ann: str = "") -> str:
-    type_str, cigar, length = classify(ref, alt)
-    info = _info(type_str, cigar, length, qual)
-    if ann:
-        info = f"{info};{ann}"
-    return (
-        f"{chrom}\t{pos}\t.\t{ref}\t{alt}\t{qual}\tPASS"
-        f"\t{info}"
-        f"\tGT:DP:AD:RO:QR:AO:QA:GL\t{_sample(qual)}"
-    )
-
-# ---------------------------------------------------------------------------
-# Indel anchor helpers
-# ---------------------------------------------------------------------------
-
-def _deletion_alleles(ref_seq: str, begin: int, end: int) -> tuple[int, str, str]:
-    """Return (vcf_pos_1based, ref_allele, alt_allele) for a deletion."""
-    if begin > 0:
-        anchor = begin - 1
-        return anchor + 1, ref_seq[anchor] + ref_seq[begin:end], ref_seq[anchor]
-    # deletion at position 0: use trailing anchor
-    return 1, ref_seq[begin:end] + ref_seq[end], ref_seq[end]
-
-
-def _insertion_alleles(ref_seq: str, pos: int, ins_seq: str) -> tuple[int, str, str]:
-    """Return (vcf_pos_1based, ref_allele, alt_allele) for an insertion."""
-    anchor = pos  # 0-based position of anchor base
-    return anchor + 1, ref_seq[anchor], ref_seq[anchor] + ins_seq
-
-# ---------------------------------------------------------------------------
-# CDS index helpers
-# ---------------------------------------------------------------------------
-
-def _sample_to_ref(s: int, del_ranges: list[tuple[int, int]]) -> int:
-    """Convert a 0-based sample position to the corresponding 0-based reference position.
-
-    annotation.genes[].range is in the sample's coordinate space (after deletions).
-    Nucleotide positions in substitutions/nucToAaMuts are in the reference coordinate
-    space.  This function bridges the gap so the CDS index uses reference coordinates.
-
-    del_ranges must be sorted by start position.
-    """
-    r = s
-    for _ in range(200):
-        deleted = 0
-        for b, e in del_ranges:
-            if b >= r:
-                break
-            deleted += min(e, r) - b
-        new_r = s + deleted
-        if new_r == r:
-            break
-        r = new_r
-    # Advance past any deleted range that starts at r (deleted positions have
-    # no sample equivalent; the next non-deleted position is the correct answer).
-    changed = True
-    while changed:
-        changed = False
-        for b, e in del_ranges:
-            if b <= r < e:
-                r = e
-                changed = True
-                break
-    return r
-
-
-def _build_cds_index(annotation: dict, deletions: list[dict], ref_seq: str) -> list[dict]:
-    """Parse annotation.genes into a flat list of CDS segment records.
-
-    annotation.genes[].range is in sample coordinates; this function converts
-    them to reference coordinates using the deletions list so that CDS positions
-    are directly comparable with substitutions.pos / nucToAaMuts keys.
-
-    Nextclade CDS annotations sometimes include 5' UTR before the ATG.  The
-    'atg_begin' field stores the first ATG at or after 'begin' (up to 60 nt
-    ahead) and is used for HGVS nucleotide position calculations so that HGVS.c
-    numbering is consistent with the AA positions reported by nucToAaMuts.
-    """
-    del_ranges = sorted(
-        [(d["range"]["begin"], d["range"]["end"]) for d in deletions]
-    )
-    index = []
-    for gene in annotation.get("genes", []):
-        for cds in gene.get("cdses", []):
-            for seg in cds.get("segments", []):
-                ref_begin = _sample_to_ref(seg["range"]["begin"], del_ranges)
-                ref_end   = _sample_to_ref(seg["range"]["end"],   del_ranges)
-                strand    = seg.get("strand", "+")
-                length    = ref_end - ref_begin
-                aa_length = length // 3
-
-                # Find the true ATG start for HGVS.c numbering.
-                # For + strand, search forward from ref_begin up to 60 nt.
-                # For - strand, fall back to ref_begin (rare in flu).
-                atg_begin = ref_begin
-                if strand == "+":
-                    for i in range(ref_begin, min(ref_begin + 60, ref_end - 2)):
-                        if ref_seq[i:i + 3].upper() == "ATG":
-                            atg_begin = i
-                            break
-
-                index.append({
-                    "gene_name": gene["name"],
-                    "gene_id":   gene["id"],
-                    "cds_id":    cds["id"],
-                    "cds_name":  cds["name"],
-                    "begin":     ref_begin,
-                    "end":       ref_end,
-                    "atg_begin": atg_begin,
-                    "strand":    strand,
-                    "length":    length,
-                    "aa_length": aa_length,
-                })
-    return index
-
-
-def _locate_cds(cds_index: list[dict], pos_0: int) -> list[dict]:
-    """Return every CDS record whose range contains 0-based position pos_0."""
-    return [c for c in cds_index if c["begin"] <= pos_0 < c["end"]]
-
-
-def _cds_local_pos(cds: dict, pos_0: int, use_atg: bool = False) -> int:
-    """Return 1-based CDS-local nucleotide position for genomic 0-based pos_0.
-
-    When use_atg=True, numbering is relative to the ATG start codon (correct
-    for HGVS.c).  When False, numbering is relative to the annotation start
-    (used for CDS boundary arithmetic).
-    """
-    if cds["strand"] == "-":
-        return cds["end"] - pos_0
-    start = cds["atg_begin"] if use_atg else cds["begin"]
-    return pos_0 - start + 1
-
-
-def _translate_codon(codon: str) -> str:
-    try:
-        return str(Seq(codon).translate())
-    except Exception:
-        return "X"
-
-
-def _synonymous_aa_change(
-    ref_seq: str, cds: dict, pos_0: int, ref_nt: str, alt_nt: str
-) -> tuple[str, str, int]:
-    """Return (refAa, altAa, aa_pos_1based) for a substitution at pos_0.
-
-    Computes codon translation from the reference sequence.  If the result
-    turns out to be non-synonymous (refAa != altAa), the caller should emit
-    a missense_variant annotation rather than synonymous_variant.
-    """
-    if cds["strand"] == "+":
-        atg = cds["atg_begin"]
-        cds_local_0 = pos_0 - atg
-        codon_idx   = cds_local_0 // 3
-        codon_start = atg + codon_idx * 3
-        if codon_start + 3 > len(ref_seq):
-            return "X", "X", codon_idx + 1
-        ref_codon = ref_seq[codon_start:codon_start + 3]
-        offset    = cds_local_0 % 3
-        alt_codon = ref_codon[:offset] + alt_nt + ref_codon[offset + 1:]
-        return _translate_codon(ref_codon), _translate_codon(alt_codon), codon_idx + 1
-    else:
-        # - strand: codon is the reverse complement of the genomic triplet
-        cds_local_0 = cds["end"] - 1 - pos_0
-        codon_idx   = cds_local_0 // 3
-        codon_start = cds["end"] - (codon_idx + 1) * 3
-        if codon_start < 0:
-            return "X", "X", codon_idx + 1
-        ref_codon_fwd = ref_seq[codon_start:codon_start + 3]
-        rc_ref = str(Seq(ref_codon_fwd).reverse_complement())
-        offset_fwd    = pos_0 - codon_start
-        alt_codon_fwd = ref_codon_fwd[:offset_fwd] + alt_nt + ref_codon_fwd[offset_fwd + 1:]
-        rc_alt = str(Seq(alt_codon_fwd).reverse_complement())
-        return _translate_codon(rc_ref), _translate_codon(rc_alt), codon_idx + 1
-
-
-def _aa_pos_to_nuc_range(cds: dict, aa_pos_0: int) -> tuple[int, int]:
-    """Return (begin_0, end_0) genomic nuc range for a 0-based AA position in CDS."""
-    if cds["strand"] == "+":
-        begin = cds["begin"] + aa_pos_0 * 3
-        return begin, begin + 3
-    else:
-        end = cds["end"] - aa_pos_0 * 3
-        return end - 3, end
-
-# ---------------------------------------------------------------------------
-# HGVS formatters
-# ---------------------------------------------------------------------------
-
-def _format_hgvs_c_snp(cds_local_1: int, ref_nt: str, alt_nt: str) -> str:
-    return f"c.{cds_local_1}{ref_nt}>{alt_nt}"
-
-
-def _format_hgvs_c_del(start_1: int, end_1: int) -> str:
-    if start_1 == end_1:
-        return f"c.{start_1}del"
-    return f"c.{start_1}_{end_1}del"
-
-
-def _format_hgvs_c_ins(anchor_1: int, ins_seq: str) -> str:
-    return f"c.{anchor_1}_{anchor_1 + 1}ins{ins_seq}"
-
-
-def _format_hgvs_p_sub(ref_aa: str, aa_pos_1: int, alt_aa: str) -> str:
-    ref3 = _AA1_TO_AA3.get(ref_aa, ref_aa)
-    alt3 = _AA1_TO_AA3.get(alt_aa, alt_aa)
-    return f"p.{ref3}{aa_pos_1}{alt3}"
-
-
-def _format_hgvs_p_syn(ref_aa: str, aa_pos_1: int) -> str:
-    ref3 = _AA1_TO_AA3.get(ref_aa, ref_aa)
-    return f"p.{ref3}{aa_pos_1}="
-
-
-def _format_hgvs_p_del(aa_changes: list[tuple[str, int]]) -> str:
-    """Return HGVS.p for an in-frame deletion given list of (refAa, aa_pos_1)."""
-    if not aa_changes:
-        return ""
-    sorted_ch = sorted(aa_changes, key=lambda x: x[1])
-    first = sorted_ch[0]
-    last  = sorted_ch[-1]
-    first3 = _AA1_TO_AA3.get(first[0], first[0])
-    if len(sorted_ch) == 1:
-        return f"p.{first3}{first[1]}del"
-    last3 = _AA1_TO_AA3.get(last[0], last[0])
-    return f"p.{first3}{first[1]}_{last3}{last[1]}del"
-
-
-def _format_hgvs_p_ins(aa_pos_1: int, ins_aa_seq: str) -> str:
-    ins3 = "".join(_AA1_TO_AA3.get(aa, aa) for aa in ins_aa_seq)
-    return f"p.{aa_pos_1}_{aa_pos_1 + 1}ins{ins3}"
-
-
-def _format_hgvs_p_fs(ref_aa: str, aa_pos_1: int) -> str:
-    ref3 = _AA1_TO_AA3.get(ref_aa, ref_aa)
-    return f"p.{ref3}{aa_pos_1}fs"
-
-# ---------------------------------------------------------------------------
-# Consequence classification
-# ---------------------------------------------------------------------------
-
-def _classify_aa_consequence(ref_aa: str, alt_aa: str, aa_pos_1: int) -> tuple[str, str]:
-    """Return (SO_term, impact) for a substitution-derived AA change."""
-    if ref_aa == alt_aa:
-        return "synonymous_variant", "LOW"
-    if alt_aa == "*":
-        return "stop_gained", "HIGH"
-    if ref_aa == "*":
-        return "stop_lost", "HIGH"
-    if aa_pos_1 == 1 and ref_aa == "M":
-        return "start_lost", "HIGH"
-    return "missense_variant", "MODERATE"
-
-# ---------------------------------------------------------------------------
-# ANN entry builder
-# ---------------------------------------------------------------------------
-
-def _build_ann_entry(
-    allele:            str,
-    annotation:        str,
-    impact:            str,
-    gene_name:         str,
-    gene_id:           str,
-    feature_id:        str,
-    transcript_biotype: str,
-    hgvs_c:            str,
-    hgvs_p:            str,
-    cds_pos:           int,
-    cds_len:           int,
-    aa_pos:            int,
-    aa_len:            int,
-    distance:          str = "",
-    feature_type:      str = "transcript",
-) -> str:
-    cds_str  = f"{cds_pos}/{cds_len}" if cds_len > 0 else ""
-    aa_str   = f"{aa_pos}/{aa_len}"   if aa_len  > 0 else ""
-    rank_str = "1/1" if feature_type == "transcript" else ""
-    return "|".join([
-        allele,
-        annotation,
-        impact,
-        gene_name,
-        gene_id,
-        feature_type,
-        feature_id,
-        transcript_biotype,
-        rank_str,
-        hgvs_c,
-        hgvs_p,
-        cds_str,   # cDNA.pos/cDNA.length
-        cds_str,   # CDS.pos/CDS.length
-        aa_str,
-        distance,
-        "",        # ERRORS/WARNINGS/INFO
-    ])
-
-# ---------------------------------------------------------------------------
 # Per-variant ANN field builders
 # ---------------------------------------------------------------------------
 
@@ -494,115 +530,135 @@ def _ann_field_for_sub(
     ref_nt:     str,
     alt_nt:     str,
     nuc_to_aa:  dict,
-    cds_index:  list[dict],
+    genes:      list,
+    transcripts: list,
     ref_seq:    str,
 ) -> str:
-    """Return 'ANN=...' INFO sub-field for a nucleotide substitution, or ''."""
+    """Return 'ANN=...' INFO sub-field for a nucleotide substitution."""
     entries: list[str] = []
 
-    aa_changes = nuc_to_aa.get(str(pos_0), [])
-    if aa_changes:
-        for change in aa_changes:
-            cds_name = change["cdsName"]
-            aa_pos_0 = change["pos"]
-            ref_aa   = change["refAa"]
-            qry_aa   = change["qryAa"]
-            aa_pos_1 = aa_pos_0 + 1
-
-            cds_list = [c for c in cds_index if c["cds_name"] == cds_name]
-            if not cds_list:
-                continue
-            cds = cds_list[0]
-
-            # use_atg=True: HGVS.c numbered from ATG, consistent with AA pos
-            cds_local_1            = _cds_local_pos(cds, pos_0, use_atg=True)
-            annotation, impact     = _classify_aa_consequence(ref_aa, qry_aa, aa_pos_1)
-            hgvs_c                 = _format_hgvs_c_snp(cds_local_1, ref_nt, alt_nt)
-            if annotation == "synonymous_variant":
-                hgvs_p = _format_hgvs_p_syn(ref_aa, aa_pos_1)
+    # --- 1. Main CDS transcripts: in-CDS or intronic ---
+    for tx in transcripts:
+        if tx["is_mature"]:
+            continue
+        cds_local_1, exon_rank, exon_count = _cds_pos_from_genomic(tx, pos_0)
+        if cds_local_1 is not None:
+            rank_str = f"{exon_rank}/{exon_count}"
+            aa_changes = [c for c in nuc_to_aa.get(str(pos_0), [])
+                          if c["cdsName"] == tx["protein_id"]]
+            if aa_changes:
+                ch      = aa_changes[0]
+                ref_aa  = ch["refAa"]
+                alt_aa  = ch["qryAa"]
+                aa_pos_1 = ch["pos"] + 1
             else:
-                hgvs_p = _format_hgvs_p_sub(ref_aa, aa_pos_1, qry_aa)
+                ref_aa, alt_aa, aa_pos_1 = _synonymous_aa_change(ref_seq, tx, pos_0, ref_nt, alt_nt)
+
+            annotation, impact = _classify_aa_consequence(ref_aa, alt_aa, aa_pos_1)
+            hgvs_c = _format_hgvs_c_snp(cds_local_1, ref_nt, alt_nt)
+            hgvs_p = (_format_hgvs_p_syn(ref_aa, aa_pos_1)
+                      if annotation == "synonymous_variant"
+                      else _format_hgvs_p_sub(ref_aa, aa_pos_1, alt_aa))
 
             entries.append(_build_ann_entry(
-                allele=alt_nt,
-                annotation=annotation,
-                impact=impact,
-                gene_name=cds["gene_name"],
-                gene_id=cds["gene_id"],
-                feature_id=cds["cds_id"],
+                allele=alt_nt, annotation=annotation, impact=impact,
+                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+                feature_id=tx["feature_id"],
                 transcript_biotype="protein_coding",
-                hgvs_c=hgvs_c,
-                hgvs_p=hgvs_p,
-                cds_pos=cds_local_1,
-                cds_len=cds["length"],
-                aa_pos=aa_pos_1,
-                aa_len=cds["aa_length"],
+                hgvs_c=hgvs_c, hgvs_p=hgvs_p,
+                cds_pos=cds_local_1, cds_len=tx["cds_length"],
+                aa_pos=aa_pos_1, aa_len=tx["aa_length"],
+                rank_str=rank_str,
             ))
-    else:
-        cds_hits = _locate_cds(cds_index, pos_0)
-        if cds_hits:
-            for cds in cds_hits:
-                # Positions in [begin, atg_begin) are 5' UTR within the gene annotation.
-                if pos_0 < cds["atg_begin"]:
-                    entries.append(_build_ann_entry(
-                        allele=alt_nt,
-                        annotation="5_prime_UTR_variant",
-                        impact="MODIFIER",
-                        gene_name=cds["gene_name"],
-                        gene_id=cds["gene_id"],
-                        feature_id=cds["cds_id"],
-                        transcript_biotype="protein_coding",
-                        hgvs_c=f"c.-{cds['atg_begin'] - pos_0}{ref_nt}>{alt_nt}",
-                        hgvs_p="",
-                        cds_pos=0,
-                        cds_len=cds["length"],
-                        aa_pos=0,
-                        aa_len=cds["aa_length"],
-                    ))
-                    continue
-                ref_aa, alt_aa, aa_pos_1 = _synonymous_aa_change(
-                    ref_seq, cds, pos_0, ref_nt, alt_nt
-                )
-                cds_local_1        = _cds_local_pos(cds, pos_0, use_atg=True)
-                annotation, impact = _classify_aa_consequence(ref_aa, alt_aa, aa_pos_1)
-                hgvs_c             = _format_hgvs_c_snp(cds_local_1, ref_nt, alt_nt)
-                if annotation == "synonymous_variant":
-                    hgvs_p = _format_hgvs_p_syn(ref_aa, aa_pos_1)
-                else:
-                    hgvs_p = _format_hgvs_p_sub(ref_aa, aa_pos_1, alt_aa)
+            continue
 
-                entries.append(_build_ann_entry(
-                    allele=alt_nt,
-                    annotation=annotation,
-                    impact=impact,
-                    gene_name=cds["gene_name"],
-                    gene_id=cds["gene_id"],
-                    feature_id=cds["cds_id"],
-                    transcript_biotype="protein_coding",
-                    hgvs_c=hgvs_c,
-                    hgvs_p=hgvs_p,
-                    cds_pos=cds_local_1,
-                    cds_len=cds["length"],
-                    aa_pos=aa_pos_1,
-                    aa_len=cds["aa_length"],
-                ))
-        else:
+        # Check for intron position in spliced transcripts
+        intron = _intron_info(tx, pos_0)
+        if intron is not None:
+            cds_end_1, offset, intron_rank, n_introns = intron
+            rank_str = f"{intron_rank}/{n_introns}"
+            hgvs_c = _format_hgvs_c_intron(cds_end_1, offset, ref_nt, alt_nt)
             entries.append(_build_ann_entry(
-                allele=alt_nt,
-                annotation="intergenic_region",
-                impact="MODIFIER",
-                gene_name="",
-                gene_id="",
-                feature_id="",
-                transcript_biotype="",
-                hgvs_c=f"n.{pos_0 + 1}{ref_nt}>{alt_nt}",
-                hgvs_p="",
-                cds_pos=0,
-                cds_len=0,
-                aa_pos=0,
-                aa_len=0,
-                feature_type="intergenic_region",
+                allele=alt_nt, annotation="intron_variant", impact="MODIFIER",
+                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+                feature_id=tx["feature_id"],
+                transcript_biotype="protein_coding",
+                hgvs_c=hgvs_c, hgvs_p="",
+                cds_pos=0, cds_len=0, aa_pos=0, aa_len=0,
+                rank_str=rank_str,
             ))
+
+    # --- 2. Mature peptide transcripts: in-region or upstream ---
+    for tx in transcripts:
+        if not tx["is_mature"]:
+            continue
+        seg_begin = tx["segments"][0][0]
+        seg_end   = tx["segments"][-1][1]
+
+        if seg_begin <= pos_0 < seg_end:
+            cds_local_1, exon_rank, exon_count = _cds_pos_from_genomic(tx, pos_0)
+            if cds_local_1 is None:
+                continue
+            rank_str = f"{exon_rank}/{exon_count}"
+            ref_aa, alt_aa, aa_pos_1 = _synonymous_aa_change(ref_seq, tx, pos_0, ref_nt, alt_nt)
+            annotation, impact = _classify_aa_consequence(ref_aa, alt_aa, aa_pos_1)
+            hgvs_c = _format_hgvs_c_snp(cds_local_1, ref_nt, alt_nt)
+            hgvs_p = (_format_hgvs_p_syn(ref_aa, aa_pos_1)
+                      if annotation == "synonymous_variant"
+                      else _format_hgvs_p_sub(ref_aa, aa_pos_1, alt_aa))
+            entries.append(_build_ann_entry(
+                allele=alt_nt, annotation=annotation, impact=impact,
+                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+                feature_id=tx["feature_id"],
+                transcript_biotype="protein_coding",
+                hgvs_c=hgvs_c, hgvs_p=hgvs_p,
+                cds_pos=cds_local_1, cds_len=tx["cds_length"],
+                aa_pos=aa_pos_1, aa_len=tx["aa_length"],
+                rank_str=rank_str,
+                warnings=tx["warnings"],
+            ))
+        elif pos_0 < seg_begin:
+            distance = seg_begin - pos_0
+            hgvs_c   = f"c.-{distance}{ref_nt}>{alt_nt}"
+            entries.append(_build_ann_entry(
+                allele=alt_nt, annotation="upstream_gene_variant", impact="MODIFIER",
+                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+                feature_id=tx["feature_id"],
+                transcript_biotype="protein_coding",
+                hgvs_c=hgvs_c, hgvs_p="",
+                cds_pos=0, cds_len=0, aa_pos=0, aa_len=0,
+                distance=str(distance), warnings=tx["warnings"],
+            ))
+
+    # --- 3. Upstream entries for main CDS transcripts ---
+    for tx in transcripts:
+        if tx["is_mature"]:
+            continue
+        tx_start = tx["segments"][0][0]
+        if pos_0 < tx_start:
+            distance = tx_start - pos_0
+            hgvs_c   = f"c.-{distance}{ref_nt}>{alt_nt}"
+            entries.append(_build_ann_entry(
+                allele=alt_nt, annotation="upstream_gene_variant", impact="MODIFIER",
+                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+                feature_id=tx["feature_id"],
+                transcript_biotype="protein_coding",
+                hgvs_c=hgvs_c, hgvs_p="",
+                cds_pos=0, cds_len=0, aa_pos=0, aa_len=0,
+                distance=str(distance),
+            ))
+
+    # --- 4. Intergenic (when outside all gene boundaries) ---
+    if not _is_in_gene(genes, pos_0):
+        gname, gid, fid = _intergenic_name(genes, pos_0)
+        entries.append(_build_ann_entry(
+            allele=alt_nt, annotation="intergenic_region", impact="MODIFIER",
+            gene_name=gname, gene_id=gid, feature_id=fid,
+            transcript_biotype="",
+            hgvs_c=f"n.{pos_0 + 1}{ref_nt}>{alt_nt}", hgvs_p="",
+            cds_pos=0, cds_len=0, aa_pos=0, aa_len=0,
+            feature_type="intergenic_region",
+        ))
 
     if not entries:
         return ""
@@ -610,139 +666,129 @@ def _ann_field_for_sub(
 
 
 def _ann_field_for_del(
-    begin_0:     int,
-    end_0:       int,
-    ref_allele:  str,
-    alt_allele:  str,
-    aa_dels:     list,
+    begin_0:      int,
+    end_0:        int,
+    ref_allele:   str,
+    alt_allele:   str,
+    aa_dels:      list,
     frame_shifts: list,
-    cds_index:   list[dict],
+    genes:        list,
+    transcripts:  list,
 ) -> str:
-    """Return 'ANN=...' INFO sub-field for a nucleotide deletion, or ''."""
+    """Return 'ANN=...' INFO sub-field for a nucleotide deletion."""
     entries: list[str] = []
     del_len = end_0 - begin_0
 
-    overlapping = [
-        c for c in cds_index if c["begin"] < end_0 and c["end"] > begin_0
-    ]
+    for tx in transcripts:
+        if tx["is_mature"]:
+            continue
+        # Check if deletion overlaps any segment of this transcript
+        overlap = any(b < end_0 and begin_0 < e for b, e in tx["segments"])
+        if not overlap:
+            continue
 
-    if not overlapping:
-        entries.append(_build_ann_entry(
-            allele=alt_allele,
-            annotation="intergenic_region",
-            impact="MODIFIER",
-            gene_name="", gene_id="", feature_id="",
-            transcript_biotype="",
-            hgvs_c=f"n.{begin_0 + 1}_{end_0}del",
-            hgvs_p="", cds_pos=0, cds_len=0, aa_pos=0, aa_len=0,
-            feature_type="intergenic_region",
-        ))
-        return "ANN=" + ",".join(entries)
-
-    for cds in overlapping:
         is_frameshift = (del_len % 3 != 0) or any(
-            fs.get("cdsName") == cds["cds_name"] for fs in frame_shifts
+            fs.get("cdsName") == tx["protein_id"] for fs in frame_shifts
         )
 
-        cds_start_1 = _cds_local_pos(cds, max(begin_0, cds["begin"]), use_atg=True)
-        cds_end_1   = _cds_local_pos(cds, min(end_0 - 1, cds["end"] - 1), use_atg=True)
-        hgvs_c      = _format_hgvs_c_del(cds_start_1, cds_end_1)
-        aa_pos_1    = (max(begin_0, cds["atg_begin"]) - cds["atg_begin"]) // 3 + 1
+        # CDS-local 1-based start of deletion
+        del_in_seg_start = max(begin_0, tx["segments"][0][0])
+        cds_start_1, _, _ = _cds_pos_from_genomic(tx, del_in_seg_start)
+        if cds_start_1 is None:
+            cds_start_1 = 1  # fallback
+
+        del_in_seg_end = min(end_0 - 1, tx["segments"][-1][1] - 1)
+        cds_end_1, _, _ = _cds_pos_from_genomic(tx, del_in_seg_end)
+        if cds_end_1 is None:
+            cds_end_1 = cds_start_1
+
+        hgvs_c  = _format_hgvs_c_del(cds_start_1, cds_end_1)
+        aa_pos_1 = (cds_start_1 - 1) // 3 + 1
 
         if is_frameshift:
-            matching = [d for d in aa_dels if d["cdsName"] == cds["cds_name"]]
+            matching = [d for d in aa_dels if d["cdsName"] == tx["protein_id"]]
             if matching:
-                first = min(matching, key=lambda d: d["pos"])
+                first    = min(matching, key=lambda d: d["pos"])
                 ref_aa   = first.get("refAa", "X")
                 aa_pos_1 = first["pos"] + 1
             else:
                 ref_aa = "X"
             hgvs_p = _format_hgvs_p_fs(ref_aa, aa_pos_1)
             entries.append(_build_ann_entry(
-                allele=alt_allele,
-                annotation="frameshift_variant",
-                impact="HIGH",
-                gene_name=cds["gene_name"],
-                gene_id=cds["gene_id"],
-                feature_id=cds["cds_id"],
+                allele=alt_allele, annotation="frameshift_variant", impact="HIGH",
+                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+                feature_id=tx["feature_id"],
                 transcript_biotype="protein_coding",
-                hgvs_c=hgvs_c,
-                hgvs_p=hgvs_p,
-                cds_pos=cds_start_1,
-                cds_len=cds["length"],
-                aa_pos=aa_pos_1,
-                aa_len=cds["aa_length"],
+                hgvs_c=hgvs_c, hgvs_p=hgvs_p,
+                cds_pos=cds_start_1, cds_len=tx["cds_length"],
+                aa_pos=aa_pos_1, aa_len=tx["aa_length"],
             ))
         else:
             matching = [
                 d for d in aa_dels
-                if d["cdsName"] == cds["cds_name"]
-                and cds["atg_begin"] + d["pos"] * 3 >= begin_0
-                and cds["atg_begin"] + d["pos"] * 3 < end_0
+                if d["cdsName"] == tx["protein_id"]
+                and tx["segments"][0][0] + d["pos"] * 3 >= begin_0
+                and tx["segments"][0][0] + d["pos"] * 3 < end_0
             ]
             if matching:
                 aa_changes = [(d.get("refAa", "X"), d["pos"] + 1) for d in matching]
                 hgvs_p = _format_hgvs_p_del(aa_changes)
             else:
                 hgvs_p = f"p.{aa_pos_1}del"
-
             entries.append(_build_ann_entry(
-                allele=alt_allele,
-                annotation="conservative_inframe_deletion",
-                impact="MODERATE",
-                gene_name=cds["gene_name"],
-                gene_id=cds["gene_id"],
-                feature_id=cds["cds_id"],
+                allele=alt_allele, annotation="conservative_inframe_deletion", impact="MODERATE",
+                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+                feature_id=tx["feature_id"],
                 transcript_biotype="protein_coding",
-                hgvs_c=hgvs_c,
-                hgvs_p=hgvs_p,
-                cds_pos=cds_start_1,
-                cds_len=cds["length"],
-                aa_pos=aa_pos_1,
-                aa_len=cds["aa_length"],
+                hgvs_c=hgvs_c, hgvs_p=hgvs_p,
+                cds_pos=cds_start_1, cds_len=tx["cds_length"],
+                aa_pos=aa_pos_1, aa_len=tx["aa_length"],
             ))
 
-    return "ANN=" + ",".join(entries)
+    if not entries:
+        if not _is_in_gene(genes, begin_0):
+            gname, gid, fid = _intergenic_name(genes, begin_0)
+            entries.append(_build_ann_entry(
+                allele=alt_allele, annotation="intergenic_region", impact="MODIFIER",
+                gene_name=gname, gene_id=gid, feature_id=fid,
+                transcript_biotype="",
+                hgvs_c=f"n.{begin_0 + 1}_{end_0}del", hgvs_p="",
+                cds_pos=0, cds_len=0, aa_pos=0, aa_len=0,
+                feature_type="intergenic_region",
+            ))
+
+    return ("ANN=" + ",".join(entries)) if entries else ""
 
 
 def _ann_field_for_ins(
-    pos_0:       int,
-    ins_seq:     str,
-    alt_allele:  str,
-    aa_ins:      list,
+    pos_0:        int,
+    ins_seq:      str,
+    alt_allele:   str,
+    aa_ins:       list,
     frame_shifts: list,
-    cds_index:   list[dict],
+    genes:        list,
+    transcripts:  list,
 ) -> str:
-    """Return 'ANN=...' INFO sub-field for a nucleotide insertion, or ''."""
+    """Return 'ANN=...' INFO sub-field for a nucleotide insertion."""
     entries: list[str] = []
     ins_len = len(ins_seq)
 
-    overlapping = _locate_cds(cds_index, pos_0)
+    for tx in transcripts:
+        if tx["is_mature"]:
+            continue
+        cds_anchor_1, exon_rank, exon_count = _cds_pos_from_genomic(tx, pos_0)
+        if cds_anchor_1 is None:
+            continue
 
-    if not overlapping:
-        entries.append(_build_ann_entry(
-            allele=alt_allele,
-            annotation="intergenic_region",
-            impact="MODIFIER",
-            gene_name="", gene_id="", feature_id="",
-            transcript_biotype="",
-            hgvs_c=f"n.{pos_0}_{pos_0 + 1}ins{ins_seq}",
-            hgvs_p="", cds_pos=0, cds_len=0, aa_pos=0, aa_len=0,
-            feature_type="intergenic_region",
-        ))
-        return "ANN=" + ",".join(entries)
-
-    for cds in overlapping:
+        rank_str      = f"{exon_rank}/{exon_count}"
+        aa_pos_1      = (pos_0 - tx["segments"][0][0]) // 3 + 1
+        hgvs_c        = _format_hgvs_c_ins(cds_anchor_1, ins_seq)
         is_frameshift = (ins_len % 3 != 0) or any(
-            fs.get("cdsName") == cds["cds_name"] for fs in frame_shifts
+            fs.get("cdsName") == tx["protein_id"] for fs in frame_shifts
         )
 
-        cds_anchor_1 = _cds_local_pos(cds, pos_0, use_atg=True)
-        aa_pos_1     = (pos_0 - cds["atg_begin"]) // 3 + 1
-        hgvs_c       = _format_hgvs_c_ins(cds_anchor_1, ins_seq)
-
         if is_frameshift:
-            matching = [i for i in aa_ins if i["cdsName"] == cds["cds_name"]]
+            matching = [i for i in aa_ins if i["cdsName"] == tx["protein_id"]]
             if matching:
                 first    = min(matching, key=lambda i: i["pos"])
                 aa_pos_1 = first["pos"] + 1
@@ -751,25 +797,20 @@ def _ann_field_for_ins(
                 ref_aa = "X"
             hgvs_p = _format_hgvs_p_fs(ref_aa, aa_pos_1)
             entries.append(_build_ann_entry(
-                allele=alt_allele,
-                annotation="frameshift_variant",
-                impact="HIGH",
-                gene_name=cds["gene_name"],
-                gene_id=cds["gene_id"],
-                feature_id=cds["cds_id"],
+                allele=alt_allele, annotation="frameshift_variant", impact="HIGH",
+                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+                feature_id=tx["feature_id"],
                 transcript_biotype="protein_coding",
-                hgvs_c=hgvs_c,
-                hgvs_p=hgvs_p,
-                cds_pos=cds_anchor_1,
-                cds_len=cds["length"],
-                aa_pos=aa_pos_1,
-                aa_len=cds["aa_length"],
+                hgvs_c=hgvs_c, hgvs_p=hgvs_p,
+                cds_pos=cds_anchor_1, cds_len=tx["cds_length"],
+                aa_pos=aa_pos_1, aa_len=tx["aa_length"],
+                rank_str=rank_str,
             ))
         else:
             matching = [
                 i for i in aa_ins
-                if i["cdsName"] == cds["cds_name"]
-                and cds["atg_begin"] + i["pos"] * 3 == pos_0 + 1
+                if i["cdsName"] == tx["protein_id"]
+                and tx["segments"][0][0] + i["pos"] * 3 == pos_0 + 1
             ]
             if matching:
                 first    = matching[0]
@@ -777,102 +818,70 @@ def _ann_field_for_ins(
                 hgvs_p   = _format_hgvs_p_ins(aa_pos_1, first.get("ins", ""))
             else:
                 hgvs_p = f"p.{aa_pos_1}_{aa_pos_1 + 1}ins"
-
             entries.append(_build_ann_entry(
-                allele=alt_allele,
-                annotation="conservative_inframe_insertion",
-                impact="MODERATE",
-                gene_name=cds["gene_name"],
-                gene_id=cds["gene_id"],
-                feature_id=cds["cds_id"],
+                allele=alt_allele, annotation="conservative_inframe_insertion", impact="MODERATE",
+                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+                feature_id=tx["feature_id"],
                 transcript_biotype="protein_coding",
-                hgvs_c=hgvs_c,
-                hgvs_p=hgvs_p,
-                cds_pos=cds_anchor_1,
-                cds_len=cds["length"],
-                aa_pos=aa_pos_1,
-                aa_len=cds["aa_length"],
+                hgvs_c=hgvs_c, hgvs_p=hgvs_p,
+                cds_pos=cds_anchor_1, cds_len=tx["cds_length"],
+                aa_pos=aa_pos_1, aa_len=tx["aa_length"],
+                rank_str=rank_str,
             ))
 
-    return "ANN=" + ",".join(entries)
+    if not entries:
+        if not _is_in_gene(genes, pos_0):
+            gname, gid, fid = _intergenic_name(genes, pos_0)
+            entries.append(_build_ann_entry(
+                allele=alt_allele, annotation="intergenic_region", impact="MODIFIER",
+                gene_name=gname, gene_id=gid, feature_id=fid,
+                transcript_biotype="",
+                hgvs_c=f"n.{pos_0}_{pos_0 + 1}ins{ins_seq}", hgvs_p="",
+                cds_pos=0, cds_len=0, aa_pos=0, aa_len=0,
+                feature_type="intergenic_region",
+            ))
+
+    return ("ANN=" + ",".join(entries)) if entries else ""
 
 # ---------------------------------------------------------------------------
 # Mutation extraction: JSON
 # ---------------------------------------------------------------------------
 
 def variants_from_json_result(
-    result: dict, ref_seq: str, chrom: str, qual: int
+    result:      dict,
+    ref_seq:     str,
+    chrom:       str,
+    genes:       list,
+    transcripts: list,
+    qual:        int,
 ) -> list[tuple[int, str]]:
     """Return sorted list of (vcf_pos, vcf_row) for one nextclade result."""
     rows: list[tuple[int, str]] = []
 
-    cds_index    = _build_cds_index(result.get("annotation", {}), result.get("deletions", []), ref_seq)
     nuc_to_aa    = result.get("nucToAaMuts", {})
     aa_dels      = result.get("aaDeletions", [])
     aa_ins       = result.get("aaInsertions", [])
     frame_shifts = result.get("frameShifts", [])
 
     for sub in result.get("substitutions", []):
-        vcf_pos = sub["pos"] + 1  # nextclade pos is 0-based
+        vcf_pos = sub["pos"] + 1
         ann     = _ann_field_for_sub(
             sub["pos"], sub["refNuc"], sub["qryNuc"],
-            nuc_to_aa, cds_index, ref_seq,
+            nuc_to_aa, genes, transcripts, ref_seq,
         )
         rows.append((vcf_pos, variant_row(chrom, vcf_pos, sub["refNuc"], sub["qryNuc"], qual, ann=ann)))
 
     for dele in result.get("deletions", []):
-        begin = dele["range"]["begin"]  # 0-based inclusive
-        end   = dele["range"]["end"]    # 0-based exclusive
+        begin   = dele["range"]["begin"]
+        end     = dele["range"]["end"]
         vcf_pos, ref_a, alt_a = _deletion_alleles(ref_seq, begin, end)
-        ann = _ann_field_for_del(begin, end, ref_a, alt_a, aa_dels, frame_shifts, cds_index)
+        ann = _ann_field_for_del(begin, end, ref_a, alt_a, aa_dels, frame_shifts, genes, transcripts)
         rows.append((vcf_pos, variant_row(chrom, vcf_pos, ref_a, alt_a, qual, ann=ann)))
 
     for ins in result.get("insertions", []):
-        # pos: 0-based position of the last ref base before the insertion
         vcf_pos, ref_a, alt_a = _insertion_alleles(ref_seq, ins["pos"], ins["ins"])
-        ann = _ann_field_for_ins(ins["pos"], ins["ins"], alt_a, aa_ins, frame_shifts, cds_index)
+        ann = _ann_field_for_ins(ins["pos"], ins["ins"], alt_a, aa_ins, frame_shifts, genes, transcripts)
         rows.append((vcf_pos, variant_row(chrom, vcf_pos, ref_a, alt_a, qual, ann=ann)))
-
-    rows.sort(key=lambda x: x[0])
-    return rows
-
-# ---------------------------------------------------------------------------
-# Mutation extraction: TSV
-# ---------------------------------------------------------------------------
-
-_SUB_RE = re.compile(r"([A-Z])(\d+)([A-Z])")
-_DEL_RE = re.compile(r"(\d+)-(\d+)")
-_INS_RE = re.compile(r"(\d+):([A-Za-z]+)")
-
-
-def variants_from_tsv_row(
-    row: dict, ref_seq: str, chrom: str, qual: int
-) -> list[tuple[int, str]]:
-    """Return sorted list of (vcf_pos, vcf_row) for one TSV row.
-
-    NOTE: TSV input does not provide per-CDS amino-acid resolution and therefore
-    does not emit ANN= annotations.  Use JSON input for annotated output.
-    """
-    rows: list[tuple[int, str]] = []
-
-    subs_str = (row.get("substitutions") or "").strip()
-    for m in _SUB_RE.finditer(subs_str):
-        vcf_pos = int(m.group(2))  # TSV positions are 1-based
-        rows.append((vcf_pos, variant_row(chrom, vcf_pos, m.group(1), m.group(3), qual)))
-
-    dels_str = (row.get("deletions") or "").strip()
-    for m in _DEL_RE.finditer(dels_str):
-        begin = int(m.group(1)) - 1  # TSV is 1-based inclusive → 0-based
-        end   = int(m.group(2))      # TSV end is 1-based inclusive → 0-based exclusive
-        vcf_pos, ref_a, alt_a = _deletion_alleles(ref_seq, begin, end)
-        rows.append((vcf_pos, variant_row(chrom, vcf_pos, ref_a, alt_a, qual)))
-
-    ins_str = (row.get("insertions") or "").strip()
-    for m in _INS_RE.finditer(ins_str):
-        # TSV format: "{1-based-last-ref-pos}:{inserted-sequence}"
-        anchor_0 = int(m.group(1)) - 1  # convert to 0-based
-        vcf_pos, ref_a, alt_a = _insertion_alleles(ref_seq, anchor_0, m.group(2))
-        rows.append((vcf_pos, variant_row(chrom, vcf_pos, ref_a, alt_a, qual)))
 
     rows.sort(key=lambda x: x[0])
     return rows
@@ -883,11 +892,11 @@ def variants_from_tsv_row(
 
 def write_vcf(
     output_path: str,
-    chrom: str,
-    ref_len: int,
-    ref_path: str,
-    sample: str,
-    rows: list[tuple[int, str]],
+    chrom:       str,
+    ref_len:     int,
+    ref_path:    str,
+    sample:      str,
+    rows:        list[tuple[int, str]],
 ) -> int:
     header = build_header(chrom, ref_len, ref_path, sample)
     with open(output_path, "w") as fh:
@@ -905,20 +914,16 @@ def write_vcf(
 def get_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Convert nextclade JSON or TSV output to a freebayes-format VCF. "
-            "Synthesises depth-1 freebayes INFO/FORMAT fields for use with "
-            "reformat_vcf_cyvcf2.py.  JSON input emits snpEff-compatible ANN= "
-            "annotations; TSV input does not."
+            "Convert nextclade JSON output to a freebayes-format VCF with "
+            "snpEff-compatible ANN= annotations sourced from a GFF3 annotation file."
         )
     )
-    p.add_argument("-i", "--input",     required=True,
-                   help="nextclade JSON (default) or TSV (use --tsv) input file")
-    p.add_argument("-r", "--reference", required=True,
-                   help="Reference FASTA used during nextclade run (single sequence)")
-    p.add_argument("-o", "--output",    required=True,
+    p.add_argument("-i", "--input",   required=True,
+                   help="Nextclade v3 JSON input file")
+    p.add_argument("-d", "--dataset", required=True,
+                   help="Nextclade reference dataset directory (must contain reference.fasta and genome_annotation.gff3)")
+    p.add_argument("-o", "--output",  required=True,
                    help="Output VCF file (used as prefix when input has multiple samples)")
-    p.add_argument("--tsv",    action="store_true",
-                   help="Treat input as TSV instead of JSON")
     p.add_argument("--sample", default=None,
                    help="Override sample name (single-sample inputs only)")
     p.add_argument("--qual",   type=int, default=60,
@@ -930,7 +935,6 @@ _SEED_COVER_RE = re.compile(r"seed alignment covers (\d+(?:\.\d+)?%)")
 
 
 def _extract_seed_cover(error_messages: list[str]) -> Optional[str]:
-    """Return the seed-cover percentage from Nextclade 'Unable to align' messages, or None."""
     for msg in error_messages:
         m = _SEED_COVER_RE.search(msg)
         if m:
@@ -940,52 +944,56 @@ def _extract_seed_cover(error_messages: list[str]) -> Optional[str]:
 
 def main() -> None:
     args = get_args()
-    chrom, ref_seq = load_reference(args.reference)
+
+    dataset_dir = Path(args.dataset)
+    ref_path    = dataset_dir / "reference.fasta"
+    gff_path    = dataset_dir / "genome_annotation.gff3"
+
+    for p in (ref_path, gff_path):
+        if not p.exists():
+            log.error("Expected file not found in dataset directory: %s", p)
+            sys.exit(1)
+
+    chrom, ref_seq = load_reference(str(ref_path))
     ref_len = len(ref_seq)
-    log.info("Loaded reference %s (length %d) from %s", chrom, ref_len, args.reference)
+    log.info("Loaded reference %s (length %d) from %s", chrom, ref_len, ref_path)
+
+    genes, transcripts = load_gff3(str(gff_path))
+    log.info(
+        "Loaded GFF3 %s: %d gene(s), %d transcript(s)",
+        gff_path, len(genes), len(transcripts),
+    )
+
+    with open(args.input) as fh:
+        data = json.load(fh)
 
     results: list[tuple[str, list[tuple[int, str]]]] = []
 
-    if args.tsv:
-        with open(args.input) as fh:
-            for row in csv.DictReader(fh, delimiter="\t"):
-                if row.get("errors"):
-                    log.warning("Skipping %s: errors=%s", row.get("seqName", "?"), row["errors"])
-                    continue
-                sample = args.sample or row.get("seqName", "SAMPLE")
-                results.append((sample, variants_from_tsv_row(row, ref_seq, chrom, args.qual)))
-    else:
-        with open(args.input) as fh:
-            data = json.load(fh)
-        for result in data.get("results", []):
-            if result.get("errors"):
-                log.warning("Skipping %s: errors=%s", result.get("seqName", "?"), result["errors"])
-                continue
-            sample = args.sample or result.get("seqName", "SAMPLE")
-            results.append((sample, variants_from_json_result(result, ref_seq, chrom, args.qual)))
+    for result in data.get("results", []):
+        if result.get("errors"):
+            log.warning("Skipping %s: errors=%s", result.get("seqName", "?"), result["errors"])
+            continue
+        sample = args.sample or result.get("seqName", "SAMPLE")
+        results.append((
+            sample,
+            variants_from_json_result(result, ref_seq, chrom, genes, transcripts, args.qual),
+        ))
 
-        # Tolerate top-level alignment failures reported by Nextclade.
-        # Each entry in data["errors"] represents a sequence that could not be processed.
-        # Emit a header-only VCF (full header, zero variant rows) for each such sample.
-        for error_entry in data.get("errors", []):
-            seq_name = error_entry.get("seqName", "UNKNOWN")
-            sample = args.sample or seq_name
-            error_messages = error_entry.get("errors", [])
-            if any("Unable to align" in msg for msg in error_messages):
-                seed_cover = _extract_seed_cover(error_messages)
-                if seed_cover:
-                    log.warning(
-                        "Unable to align '%s' (seed alignment covers %s); writing empty VCF",
-                        sample, seed_cover,
-                    )
-                else:
-                    log.warning("Unable to align '%s'; writing empty VCF", sample)
+    for error_entry in data.get("errors", []):
+        seq_name = error_entry.get("seqName", "UNKNOWN")
+        sample   = args.sample or seq_name
+        msgs     = error_entry.get("errors", [])
+        if any("Unable to align" in m for m in msgs):
+            seed_cover = _extract_seed_cover(msgs)
+            if seed_cover:
+                log.warning("Unable to align '%s' (seed alignment covers %s); writing empty VCF",
+                            sample, seed_cover)
             else:
-                log.warning(
-                    "Nextclade errors for '%s': %s; writing empty VCF",
-                    sample, "; ".join(str(m) for m in error_messages),
-                )
-            results.append((sample, []))
+                log.warning("Unable to align '%s'; writing empty VCF", sample)
+        else:
+            log.warning("Nextclade errors for '%s': %s; writing empty VCF",
+                        sample, "; ".join(str(m) for m in msgs))
+        results.append((sample, []))
 
     if not results:
         log.error("No results found in %s", args.input)
@@ -995,15 +1003,15 @@ def main() -> None:
 
     if len(results) == 1:
         sample, rows = results[0]
-        n = write_vcf(str(output_path), chrom, ref_len, args.reference, sample, rows)
+        n = write_vcf(str(output_path), chrom, ref_len, str(ref_path), sample, rows)
         log.info("Wrote %d records for '%s' -> %s", n, sample, output_path)
     else:
         if args.sample:
             log.warning("--sample ignored for multi-sample input")
         for sample, rows in results:
             safe = re.sub(r"[^\w.-]", "_", sample)
-            out = output_path.parent / f"{output_path.stem}_{safe}.vcf"
-            n = write_vcf(str(out), chrom, ref_len, args.reference, sample, rows)
+            out  = output_path.parent / f"{output_path.stem}_{safe}.vcf"
+            n    = write_vcf(str(out), chrom, ref_len, str(ref_path), sample, rows)
             log.info("Wrote %d records for '%s' -> %s", n, sample, out)
 
 
