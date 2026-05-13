@@ -186,7 +186,7 @@ process post_process_vcf {
     publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_final.vcf", mode: 'copy'
 
     input:
-    tuple val(sample_id), val(segment), path(vcf), path(reference)
+    tuple val(sample_id), val(segment), path(vcf), path(reference), path(coverage_tsv)
 
     output:
     tuple val(sample_id), val(segment), path("${sample_id}*_final.vcf"), emit: vcf
@@ -217,6 +217,18 @@ process post_process_vcf {
     echo "Reformatting VCF for FreeBayes compatibility"
 
     paftools_to_freebayes_vcf.py --input \${name}_clean.vcf --output \${name}_final.vcf
+
+    # Inject alignment-coverage status into the VCF header
+    COV_STATUS=\$(awk 'NR==2 {print \$11}' ${coverage_tsv})
+    COV_FRAC=\$(awk 'NR==2 {print \$6}' ${coverage_tsv})
+    COV_FIRST=\$(awk 'NR==2 {print \$7}' ${coverage_tsv})
+    COV_LAST=\$(awk 'NR==2 {print \$8}' ${coverage_tsv})
+
+    awk -v hdr="##fluscan_alignment_coverage=STATUS=\${COV_STATUS};fraction=\${COV_FRAC};range=\${COV_FIRST}-\${COV_LAST}" \\
+      'FNR==1 && /^##fileformat/{print; print hdr; next} {print}' \\
+      \${name}_final.vcf > \${name}_final_hdr.vcf
+
+    mv \${name}_final_hdr.vcf \${name}_final.vcf
     """
 }
 
