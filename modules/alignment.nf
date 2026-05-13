@@ -81,6 +81,53 @@ process map_reads_long {
 }
 
 
+process paf_coverage_check {
+
+    tag { "${sample_id}__${segment}" }
+
+    publishDir "${params.outdir}/${sample_id}/alignment_qc", mode: 'copy', pattern: "*.tsv"
+
+    input:
+    tuple val(sample_id), val(segment), path(paf), path(reference)
+
+    output:
+    tuple val(sample_id), val(segment), path("${sample_id}_${segment}_coverage.tsv"), emit: coverage
+
+    script:
+    """
+    paf_coverage_check.py \\
+      --paf ${paf} \\
+      --sample ${sample_id} \\
+      --segment ${segment} \\
+      --reference ${reference} \\
+      --pass-thresh ${params.min_segment_coverage} \\
+      --warn-thresh ${params.min_segment_coverage_strict} \\
+      --out-tsv ${sample_id}_${segment}_coverage.tsv
+    """
+}
+
+
+process aggregate_coverage_report {
+
+    publishDir "${params.outdir}/_run_summary", mode: 'copy'
+
+    input:
+    path(tsv_files)
+
+    output:
+    path("run_coverage_summary.tsv"), emit: tsv
+    path("run_coverage_summary.md"),  emit: md
+
+    script:
+    """
+    aggregate_coverage_report.py \\
+      --out-tsv run_coverage_summary.tsv \\
+      --out-md  run_coverage_summary.md \\
+      ${tsv_files}
+    """
+}
+
+
 process sort_filter_sam {
 
 	tag {sample_id}
