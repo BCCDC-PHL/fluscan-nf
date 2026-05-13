@@ -45,7 +45,7 @@ process nextclade_to_vcf {
     """
     nextclade_to_freebayes_vcf.py \
         -i ${nextclade_json} \
-        -r ${dataset_dir}/reference.fasta \
+        -d ${dataset_dir} \
         -o ${sample_id}_${segment}.vcf \
         --sample ${sample_id}
     """
