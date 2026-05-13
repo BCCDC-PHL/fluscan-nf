@@ -183,13 +183,13 @@ process consensus_snpeff_annotation {
 process post_process_vcf {
     tag { "${sample_id}_${segment}" }
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_final.vcf", mode: 'copy'
+    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_final.vcf", mode: 'copy'
 
     input:
     tuple val(sample_id), val(segment), path(vcf), path(reference), path(coverage_tsv)
 
     output:
-    tuple val(sample_id), val(segment), path("${sample_id}*_final.vcf"), emit: vcf
+    tuple val(sample_id), val(segment), path("${sample_id}*_clean.vcf"), emit: vcf
     tuple val(sample_id), val(segment), path("${sample_id}_post_process_vcf_provenance.yml"), emit: provenance
 
     script:
@@ -204,7 +204,7 @@ process post_process_vcf {
 
     echo "Processing ${vcf} with min_af=${min_af}"
 
-    echo "Renaming reference "
+    echo "Renaming reference..."
 
     sed -i -E 's/^>([^\\|]+)\\|.+/>\\1/g' ${reference}
 
@@ -213,8 +213,24 @@ process post_process_vcf {
     --reference ${reference} \\
     --output-vcf \${name}_clean.vcf \\
     --min-af ${min_af}
+    """
+}
 
-    echo "Reformatting VCF for FreeBayes compatibility"
+process paftools_to_freebayes_vcf {
+    tag { "${sample_id}_${segment}" }
+
+
+    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_final.vcf", mode: 'copy'
+
+    input:
+    tuple val(sample_id), val(segment), path(paftools_vcf)
+
+    output:
+    tuple val(sample_id), val(segment), path("${sample_id}*_final.vcf"), emit: vcf
+
+    script:
+    """
+    name=\$(basename ${paftools_vcf} .vcf)
 
     paftools_to_freebayes_vcf.py --input \${name}_clean.vcf --output \${name}_final.vcf
 
@@ -229,6 +245,8 @@ process post_process_vcf {
       \${name}_final.vcf > \${name}_final_hdr.vcf
 
     mv \${name}_final_hdr.vcf \${name}_final.vcf
+
+
     """
 }
 
