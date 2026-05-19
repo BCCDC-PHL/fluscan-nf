@@ -37,8 +37,9 @@ include { flumut }                                from '../modules/flumut.nf'
 include { consensus_paftools_call }               from '../modules/variant_calling.nf'
 include { consensus_sort_vcf }                    from '../modules/variant_calling.nf'
 include { consensus_snpeff_annotation }           from '../modules/variant_calling.nf'
-include { summarize_vcf }                          from '../modules/variant_calling.nf'
-include { post_process_vcf }                    from '../modules/variant_calling.nf'
+include { paftools_to_freebayes_vcf }             from '../modules/variant_calling.nf'
+include { summarize_vcf }                         from '../modules/variant_calling.nf'
+include { post_process_vcf }                      from '../modules/variant_calling.nf'
 
 
 
@@ -117,12 +118,13 @@ workflow CONSENSUS {
         // --- Step 7: Annotate amino-acid impacts with SnpEff ---
         consensus_snpeff_annotation(consensus_sort_vcf.out.vcf.combine(ch_snpeff_config))
 
+        paftools_to_freebayes_vcf(consensus_snpeff_annotation.out.vcf.join(paf_coverage_check.out.coverage, by: [0,1]))
+
         // --- Step 8: Post-process annotated VCF (coverage TSV threaded through for header injection) ---
         post_process_vcf(
-            consensus_snpeff_annotation.out.vcf
-                .join(ch_reference_segment,            by: [0,1])
-                .join(paf_coverage_check.out.coverage, by: [0,1])
+            paftools_to_freebayes_vcf.out.vcf.join(ch_reference_segment, by: [0,1])
         )
+
 
         // // --- Step 8: Reformat annotated VCF to summary TSV ---
         //summarize_vcf(consensus_snpeff_annotation.out.vcf)

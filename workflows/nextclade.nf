@@ -23,7 +23,7 @@ include { split_fasta as split_fasta_consensus } from '../modules/consensus_qc.n
 include { flumut }                               from '../modules/flumut.nf'
 include { nextclade_run }                        from '../modules/nextclade.nf'
 include { nextclade_to_vcf }                     from '../modules/nextclade.nf'
-
+include { post_process_vcf }                     from '../modules/variant_calling.nf'
 
 workflow NEXTCLADE {
 
@@ -61,8 +61,8 @@ workflow NEXTCLADE {
             .transpose()
             .map(extract_segment)
             .map { sample_id, segment, fa ->
-                def dsDir = file("${params.nextclade_datasets_dir}/${segment.toLowerCase()}")
-                tuple(sample_id, segment, fa, dsDir)
+                def dataset_dir = file("${params.nextclade_datasets_dir}/${segment.toLowerCase()}")
+                return [sample_id, segment, fa, dataset_dir]
             }
 
         // --- Step 4: Align each segment to its Nextclade dataset ---
@@ -70,5 +70,13 @@ workflow NEXTCLADE {
 
         // --- Step 5: Convert nextclade.json to freebayes-style VCF ---
         nextclade_to_vcf(nextclade_run.out.json_with_ref)
+
+        // --- Step 6: Post-process VCF (e.g. fix MNV codons) ---
+        post_process_vcf(
+            nextclade_to_vcf.out.vcf.map{ sample_id, segment, vcf, dataset_dir ->
+                def reference = file("${dataset_dir}/reference.fasta")
+                return [sample_id, segment, vcf, reference]
+            }
+        )
 
 }
