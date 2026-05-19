@@ -1,3 +1,5 @@
+// shared/provenance.nf - Pipeline and sample provenance tracking (shared by all workflows)
+
 process collect_provenance {
 
   tag { sample_id }

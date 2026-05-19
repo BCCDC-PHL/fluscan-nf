@@ -1,3 +1,6 @@
+// short_read/clade_calling.nf - Nextclade-based clade calling for the SHORT_READ workflow
+// NOTE: Currently disabled (call site commented out in workflows/short-read.nf)
+
 process clade_calling {
 
     conda "${projectDir}/environments/nextclade.yml"
@@ -31,7 +34,7 @@ process clade_calling {
         else
 	    dataset=${params.h1_dataset}
 	fi
-    elif [ `grep "H3" ${ha_consensus_seq}` ]; then 
+    elif [ `grep "H3" ${ha_consensus_seq}` ]; then
         if [ ${params.h3_dataset} == "NO_FILE" ]; then
             dataset="flu_h3n2_ha"
             nextclade dataset get --name \$dataset --output-dir \$dataset
@@ -45,7 +48,7 @@ process clade_calling {
         else
             dataset=${params.h5_dataset}
         fi
-    else 
+    else
         echo "WARNING: None of H1, H3, or H5 were detected in the HA consensus file. No dataset available. Exiting."
         exit 10
     fi

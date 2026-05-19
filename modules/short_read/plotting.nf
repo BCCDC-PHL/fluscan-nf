@@ -1,4 +1,6 @@
-process make_coverage_plot {
+// short_read/plotting.nf - Coverage visualization for the SHORT_READ workflow
+
+process short_read_make_coverage_plot {
 
     errorStrategy 'ignore'
 

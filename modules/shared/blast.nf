@@ -1,4 +1,4 @@
-// blast.nf - BLAST-related processes
+// shared/blast.nf - BLAST database construction and search (shared by SHORT_READ and PAFTOOLS workflows)
 
 process makeblastdb {
 
@@ -35,7 +35,7 @@ process blastn {
     publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*filter.tsv" , mode:'copy'
     publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*fasta" , mode:'copy'
 
-    input: 
+    input:
     tuple val(sample_id), path(query)
     path(blast_db)
 
@@ -64,6 +64,6 @@ process blastn {
     filter_alignments.py ${sample_id}_blastn.tsv \
     --seqs ${blast_db_name} \
     --out_tsv ${sample_id}_blastn_filter.tsv \
-    --out_fasta ${sample_id}_ref.fasta 
+    --out_fasta ${sample_id}_ref.fasta
     """
 }
