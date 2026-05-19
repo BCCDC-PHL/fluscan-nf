@@ -38,7 +38,7 @@ workflow {
     if (params.fastq_input != 'NO_FILE') {
         SHORT_READ()
     } else if (params.fasta_input != 'NO_FILE') {
-        CONSENSUS()
+        //CONSENSUS()
         NEXTCLADE()
     } else {
         error "ERROR: Please provide either --fastq_input (short-read workflow) or --fasta_input (consensus workflow)."
