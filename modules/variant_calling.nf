@@ -6,7 +6,7 @@ process lofreq {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*{gz,csi}", mode: 'copy'
+    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*{gz,csi}", mode: 'copy'
 
     input:
 	tuple val(sample_id), path(bamfile), path(bam_index), path(reference)
@@ -120,7 +120,7 @@ process snpeff_annotation {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*__anno.vcf", mode: 'copy'
+    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*__anno.vcf", mode: 'copy'
 
     input:
     tuple val(sample_id), path(vcf), path(vcf_index), path(snpeff_config_path)
@@ -149,13 +149,13 @@ process consensus_snpeff_annotation {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*__anno.vcf", mode: 'copy'
+    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*__anno.vcf", mode: 'copy'
 
     input:
     tuple val(sample_id), val(segment), path(vcf), val(snpeff_db_name), path(snpeff_config_path)
 
     output:
-    tuple val(sample_id), val(segment), path("${sample_id}*_anno.vcf"), emit: vcf
+    tuple val(sample_id), val(segment), path("${sample_id}*.vcf"), emit: vcf
     tuple val(sample_id), path("${sample_id}_consensus_snpeff_provenance.yml"), emit: provenance
 
     script:
@@ -171,11 +171,40 @@ process consensus_snpeff_annotation {
     REF_NAME_FIELDS=(\${REF_NAME//|/ })
 
     awk 'BEGIN{OFS="\\t"} /^##contig=/{gsub(/\\|[^,>]*/, ""); print; next} /^#/{print; next} {split(\$1,a,"|"); \$1=a[1]; print}' ${vcf} \\
-     > ${name}_rename.vcf
+     > rename.vcf
 
-    OUTPUT_FILENAME="${sample_id}__\${REF_NAME_FIELDS[0]}__\${REF_NAME_FIELDS[1]}__\${REF_NAME_FIELDS[2]}__anno.vcf"
+    OUTPUT_FILENAME="${sample_id}__\${REF_NAME_FIELDS[0]}__\${REF_NAME_FIELDS[1]}__\${REF_NAME_FIELDS[2]}.vcf"
 
-    snpEff -Xmx4g -noStats -hgvs1LetterAa -config ${snpeff_config_path} ${snpeff_db_name} ${name}_rename.vcf > \${OUTPUT_FILENAME}
+    snpEff -Xmx4g -noStats -hgvs1LetterAa -config ${snpeff_config_path} ${snpeff_db_name} rename.vcf > \${OUTPUT_FILENAME}
+    """
+}
+
+process paftools_to_freebayes_vcf {
+    tag { "${sample_id}_${segment}" }
+
+    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_reformat.vcf", mode: 'copy'
+
+    input:
+    tuple val(sample_id), val(segment), path(paftools_vcf), path(coverage_tsv)
+
+    output:
+    tuple val(sample_id), val(segment), path("${sample_id}*.vcf"), emit: vcf
+
+    script:
+    """
+    name=\$(basename ${paftools_vcf} .vcf)
+
+    paftools_to_freebayes_vcf.py --input ${paftools_vcf} --output tmp.vcf
+
+    # Inject alignment-coverage status into the VCF header
+    COV_STATUS=\$(awk 'NR==2 {print \$11}' ${coverage_tsv})
+    COV_FRAC=\$(awk 'NR==2 {print \$6}' ${coverage_tsv})
+    COV_FIRST=\$(awk 'NR==2 {print \$7}' ${coverage_tsv})
+    COV_LAST=\$(awk 'NR==2 {print \$8}' ${coverage_tsv})
+
+    awk -v hdr="##fluscan_alignment_coverage=STATUS=\${COV_STATUS};fraction=\${COV_FRAC};range=\${COV_FIRST}-\${COV_LAST}" \\
+      'FNR==1 && /^##fileformat/{print; print hdr; next} {print}' \\
+      tmp.vcf > \${name}_paf.vcf
     """
 }
 
@@ -183,17 +212,18 @@ process consensus_snpeff_annotation {
 process post_process_vcf {
     tag { "${sample_id}_${segment}" }
 
-    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_final.vcf", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/${workflow}", pattern: "${sample_id}*_final.vcf", mode: 'copy'
 
     input:
-    tuple val(sample_id), val(segment), path(vcf), path(reference), path(coverage_tsv)
+    tuple val(sample_id), val(segment), path(vcf), path(reference)
 
     output:
-    tuple val(sample_id), val(segment), path("${sample_id}*_clean.vcf"), emit: vcf
+    tuple val(sample_id), val(segment), path("${sample_id}*_final.vcf"), emit: vcf
     tuple val(sample_id), val(segment), path("${sample_id}_post_process_vcf_provenance.yml"), emit: provenance
 
     script:
     def min_af = params.mnv_min_af ?: 0.5
+    workflow = task.ext.workflow ?: "unknown_workflow"
     """
     printf -- "- process_name: post_process_vcf\\n" > ${sample_id}_post_process_vcf_provenance.yml
     printf -- "  tools: \\n" >> ${sample_id}_post_process_vcf_provenance.yml
@@ -211,44 +241,11 @@ process post_process_vcf {
     fix_mnv_codons.py \\
     --input ${vcf} \\
     --reference ${reference} \\
-    --output-vcf \${name}_clean.vcf \\
+    --output-vcf \${name}_final.vcf \\
     --min-af ${min_af}
     """
 }
 
-process paftools_to_freebayes_vcf {
-    tag { "${sample_id}_${segment}" }
-
-
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_final.vcf", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(segment), path(paftools_vcf)
-
-    output:
-    tuple val(sample_id), val(segment), path("${sample_id}*_final.vcf"), emit: vcf
-
-    script:
-    """
-    name=\$(basename ${paftools_vcf} .vcf)
-
-    paftools_to_freebayes_vcf.py --input \${name}_clean.vcf --output \${name}_final.vcf
-
-    # Inject alignment-coverage status into the VCF header
-    COV_STATUS=\$(awk 'NR==2 {print \$11}' ${coverage_tsv})
-    COV_FRAC=\$(awk 'NR==2 {print \$6}' ${coverage_tsv})
-    COV_FIRST=\$(awk 'NR==2 {print \$7}' ${coverage_tsv})
-    COV_LAST=\$(awk 'NR==2 {print \$8}' ${coverage_tsv})
-
-    awk -v hdr="##fluscan_alignment_coverage=STATUS=\${COV_STATUS};fraction=\${COV_FRAC};range=\${COV_FIRST}-\${COV_LAST}" \\
-      'FNR==1 && /^##fileformat/{print; print hdr; next} {print}' \\
-      \${name}_final.vcf > \${name}_final_hdr.vcf
-
-    mv \${name}_final_hdr.vcf \${name}_final.vcf
-
-
-    """
-}
 
 
 process summarize_vcf {
@@ -258,7 +255,7 @@ process summarize_vcf {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*tsv", mode: 'copy'
+    // publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*tsv", mode: 'copy'
 
     input:
     tuple val(sample_id), path(vcf)
@@ -284,7 +281,7 @@ process mutation_watch {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*{tsv}", mode: 'copy'
+    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*{tsv}", mode: 'copy'
 
     input: 
 	tuple val(sample_id), path(vcf_filter), path(watchlist)
