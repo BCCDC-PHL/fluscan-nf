@@ -9,36 +9,36 @@
 
 nextflow.enable.dsl = 2
 
-include { hash_files }          from '../modules/hash_files.nf'
-include { pipeline_provenance } from '../modules/provenance.nf'
-include { collect_provenance }  from '../modules/provenance.nf'
-include { fastp }               from '../modules/short_read_qc.nf'
-include { cutadapt }            from '../modules/short_read_qc.nf'
-include { multiqc }             from '../modules/short_read_qc.nf'
-include { fastqc }              from '../modules/short_read_qc.nf'
-include { sample_reads }        from '../modules/assembly.nf'
-include { assembly }            from '../modules/assembly.nf'
-include { clade_calling }       from '../modules/clade_calling.nf'
-include { snp_calling }         from '../modules/snp_calling.nf'
-include { pull_genoflu }        from '../modules/genoflu.nf'
-include { checkout_genoflu }    from '../modules/genoflu.nf'
-include { genoflu }             from '../modules/genoflu.nf'
-include { flumut }              from '../modules/flumut.nf'
+include { short_read_hash_files }          from '../modules/short_read/hash_files.nf'
+include { pipeline_provenance }            from '../modules/shared/provenance.nf'
+include { collect_provenance }             from '../modules/shared/provenance.nf'
+include { short_read_fastp }               from '../modules/short_read/qc.nf'
+include { short_read_cutadapt }            from '../modules/short_read/qc.nf'
+include { short_read_multiqc }             from '../modules/short_read/qc.nf'
+include { short_read_fastqc }              from '../modules/short_read/qc.nf'
+include { short_read_sample_reads }        from '../modules/short_read/assembly.nf'
+include { short_read_assembly }            from '../modules/short_read/assembly.nf'
+include { clade_calling }                  from '../modules/short_read/clade_calling.nf'
+include { snp_calling }                    from '../modules/short_read/snp_calling.nf'
+include { pull_genoflu }                   from '../modules/shared/genoflu.nf'
+include { checkout_genoflu }               from '../modules/shared/genoflu.nf'
+include { genoflu }                        from '../modules/shared/genoflu.nf'
+include { flumut }                         from '../modules/shared/flumut.nf'
 
-include { makeblastdb }         from '../modules/blast.nf'
-include { blastn }              from '../modules/blast.nf'
-include { map_reads }           from '../modules/alignment.nf'
-include { map_reads_minimap2 }  from '../modules/alignment.nf'
-include { sort_filter_sam }     from '../modules/alignment.nf'
-include { make_pileup }         from '../modules/alignment.nf'
-include { mask_low_coverage }   from '../modules/alignment.nf'
-include { make_consensus }      from '../modules/alignment.nf'
-include { lofreq }              from '../modules/variant_calling.nf'
-include { snpeff_annotation }   from '../modules/variant_calling.nf'
-include { post_process_vcf }    from '../modules/variant_calling.nf'
-include { summarize_vcf }        from '../modules/variant_calling.nf'
-include { mutation_watch }      from '../modules/variant_calling.nf'
-include { make_coverage_plot }  from '../modules/plotting.nf'
+include { makeblastdb }                    from '../modules/shared/blast.nf'
+include { blastn }                         from '../modules/shared/blast.nf'
+include { short_read_map_reads_bwa }       from '../modules/short_read/alignment.nf'
+include { short_read_map_reads_minimap2 }  from '../modules/short_read/alignment.nf'
+include { short_read_sort_filter_sam }     from '../modules/short_read/alignment.nf'
+include { short_read_make_pileup }         from '../modules/short_read/alignment.nf'
+include { short_read_mask_low_coverage }   from '../modules/short_read/alignment.nf'
+include { short_read_make_consensus }      from '../modules/short_read/alignment.nf'
+include { short_read_lofreq }              from '../modules/short_read/variant_calling.nf'
+include { short_read_snpeff_annotation }   from '../modules/short_read/variant_calling.nf'
+include { post_process_vcf }               from '../modules/shared/post_process.nf'
+include { short_read_summarize_vcf }       from '../modules/short_read/variant_calling.nf'
+include { short_read_mutation_watch }      from '../modules/short_read/variant_calling.nf'
+include { short_read_make_coverage_plot }  from '../modules/short_read/plotting.nf'
 
 
 workflow SHORT_READ {
@@ -78,71 +78,71 @@ workflow SHORT_READ {
         ch_provenance = ch_fastq_input.map{ it -> it[0] }
 
         // Generate hashes for input files
-        hash_files(ch_fastq_input.map{ it -> [it[0], [it[1], it[2]]] }.combine(Channel.of("fastq_input")))
+        short_read_hash_files(ch_fastq_input.map{ it -> [it[0], [it[1], it[2]]] }.combine(Channel.of("fastq_input")))
 
         // Clean up reads - remove adapters (fastp) and primers (cutadapt)
-        fastp(ch_fastq_input)
-        cutadapt(fastp.out.trimmed_reads.combine(ch_primers))
-        fastqc(cutadapt.out.primer_trimmed_reads)
+        short_read_fastp(ch_fastq_input)
+        short_read_cutadapt(short_read_fastp.out.trimmed_reads.combine(ch_primers))
+        short_read_fastqc(short_read_cutadapt.out.primer_trimmed_reads)
 
-        sample_reads(cutadapt.out.primer_trimmed_reads)
+        short_read_sample_reads(short_read_cutadapt.out.primer_trimmed_reads)
 
-        // Run assembly 
-        assembly(sample_reads.out.reads)
+        // Run assembly
+        short_read_assembly(short_read_sample_reads.out.reads)
 
         // Collect all the relevant files for multiqc
-        ch_fastqc_collected = fastqc.out.zip.map{ it -> [it[1], it[2]]}.collect()
-        multiqc(fastp.out.json.mix( cutadapt.out.log, ch_fastqc_collected ).collect().ifEmpty([]) )
+        ch_fastqc_collected = short_read_fastqc.out.zip.map{ it -> [it[1], it[2]]}.collect()
+        short_read_multiqc(short_read_fastp.out.json.mix( short_read_cutadapt.out.log, ch_fastqc_collected ).collect().ifEmpty([]) )
 
         // Build BLAST database, then search assembled contigs against it to select references
         makeblastdb(ch_nt_database).first().set{ch_blastdb}
-        blastn(assembly.out.contigs, ch_blastdb)
+        blastn(short_read_assembly.out.contigs, ch_blastdb)
 
         // NOTE: Currently mapping raw reads (ch_fastq_input). Consider using
-        // cutadapt.out.primer_trimmed_reads instead to avoid adapter/primer artifacts.
+        // short_read_cutadapt.out.primer_trimmed_reads instead to avoid adapter/primer artifacts.
         if (params.aligner == 'minimap2') {
-            map_reads_minimap2(ch_fastq_input.join(blastn.out.ref))
-            ch_sam = map_reads_minimap2.out.sam
+            short_read_map_reads_minimap2(ch_fastq_input.join(blastn.out.ref))
+            ch_sam = short_read_map_reads_minimap2.out.sam
         } else {
-            map_reads(ch_fastq_input.join(blastn.out.ref))
-            ch_sam = map_reads.out.sam
+            short_read_map_reads_bwa(ch_fastq_input.join(blastn.out.ref))
+            ch_sam = short_read_map_reads_bwa.out.sam
         }
-        sort_filter_sam(ch_sam)
-        make_pileup(sort_filter_sam.out.bam)
-        make_coverage_plot(sort_filter_sam.out.depth)
-        lofreq(sort_filter_sam.out.bam.join(blastn.out.ref))
+        short_read_sort_filter_sam(ch_sam)
+        short_read_make_pileup(short_read_sort_filter_sam.out.bam)
+        short_read_make_coverage_plot(short_read_sort_filter_sam.out.depth)
+        short_read_lofreq(short_read_sort_filter_sam.out.bam.join(blastn.out.ref))
 
         if (params.snpeff_config != 'NO_FILE') {
             watchlist_files = Channel.fromPath(params.watchlist_dir + "/*watchlist.csv")
-            snpeff_annotation(lofreq.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
+            short_read_snpeff_annotation(short_read_lofreq.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
 
-            ch_segment_vcfs = snpeff_annotation.out.vcfs.transpose().map(extract_segment)
+            ch_segment_vcfs = short_read_snpeff_annotation.out.vcfs.transpose().map(extract_segment)
 
             post_process_vcf(ch_segment_vcfs.join(blastn.out.ref))
-            summarize_vcf(post_process_vcf.out.vcf)
-            mutation_watch(summarize_vcf.out.tsv.combine(watchlist_files))
+            short_read_summarize_vcf(post_process_vcf.out.vcf)
+            short_read_mutation_watch(short_read_summarize_vcf.out.tsv.combine(watchlist_files))
         }
 
-        mask_low_coverage(sort_filter_sam.out.bam)
-        make_consensus(lofreq.out.vcf.join(blastn.out.ref).join(mask_low_coverage.out.masked_bed))
+        short_read_mask_low_coverage(short_read_sort_filter_sam.out.bam)
+        short_read_make_consensus(short_read_lofreq.out.vcf.join(blastn.out.ref).join(short_read_mask_low_coverage.out.masked_bed))
 
-        flumut(make_consensus.out.consensus)
+        flumut(short_read_make_consensus.out.consensus)
 
         //Call clades for H1 and H3 samples
-        //clade_calling(make_consensus.out.consensus)
+        //clade_calling(short_read_make_consensus.out.consensus)
 
-        //genoflu(make_consensus.out.consensus)
-        //snp_calling(make_consensus.out.consensus, ch_aa_database)
+        //genoflu(short_read_make_consensus.out.consensus)
+        //snp_calling(short_read_make_consensus.out.consensus, ch_aa_database)
 
         // Provenance collection processes
         // The basic idea is to build up a channel with the following structure:
         // [sample_id, [provenance_file_1.yml, provenance_file_2.yml, provenance_file_3.yml...]]
         // ...and then concatenate them all together in the 'collect_provenance' process.
         ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it ->      [it[0], [it[1]]] }
-        ch_provenance = ch_provenance.join(hash_files.out.provenance).map{ it ->      [it[0], it[1] << it[2]] }
-        ch_provenance = ch_provenance.join(fastp.out.provenance).map{ it ->           [it[0], it[1] << it[2]] }
-        ch_provenance = ch_provenance.join(cutadapt.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
-        ch_provenance = ch_provenance.join(assembly.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(short_read_hash_files.out.provenance).map{ it ->      [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(short_read_fastp.out.provenance).map{ it ->           [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(short_read_cutadapt.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(short_read_assembly.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it ->         [it[0], it[1] << it[2]] }
         collect_provenance(ch_provenance)
 
