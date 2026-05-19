@@ -60,13 +60,13 @@ def load_consensus_by_segment(fasta_path):
     """
     Parse the consensus FASTA and index sequences by their segment label
     (last underscore-delimited field of the sequence ID, upper-cased).
-    M is normalised to MP.
+    Legacy matrix labels are normalised to M.
     """
     seqs = {}
     for rec in SeqIO.parse(fasta_path, 'fasta'):
         seg_label = rec.id.split('_')[-1].upper()
-        if seg_label == 'M':
-            seg_label = 'MP'
+        if seg_label == 'MP':
+            seg_label = 'M'
         seqs[seg_label] = rec
     return seqs
 

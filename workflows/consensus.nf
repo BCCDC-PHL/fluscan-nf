@@ -28,6 +28,8 @@ include { prepare_consensus }                     from '../modules/consensus_qc.
 include { split_fasta as split_fasta_reference }  from '../modules/consensus_qc.nf'
 include { split_fasta as split_fasta_consensus }  from '../modules/consensus_qc.nf'
 include { map_reads_long }                        from '../modules/alignment.nf'
+include { paf_coverage_check }                    from '../modules/alignment.nf'
+include { aggregate_coverage_report }             from '../modules/alignment.nf'
 include { makeblastdb }                           from '../modules/blast.nf'
 include { blastn }                                from '../modules/blast.nf'
 include { genoflu }                               from '../modules/genoflu.nf'
@@ -35,8 +37,9 @@ include { flumut }                                from '../modules/flumut.nf'
 include { consensus_paftools_call }               from '../modules/variant_calling.nf'
 include { consensus_sort_vcf }                    from '../modules/variant_calling.nf'
 include { consensus_snpeff_annotation }           from '../modules/variant_calling.nf'
-include { summarize_vcf }                          from '../modules/variant_calling.nf'
-include { post_process_vcf }                    from '../modules/variant_calling.nf'
+include { paftools_to_freebayes_vcf }             from '../modules/variant_calling.nf'
+include { summarize_vcf }                         from '../modules/variant_calling.nf'
+include { post_process_vcf }                      from '../modules/variant_calling.nf'
 
 
 
@@ -102,6 +105,10 @@ workflow CONSENSUS {
 
         map_reads_long(ch_segment_sequences)
 
+        // --- Step 4b: Check reference coverage of each alignment ---
+        paf_coverage_check(map_reads_long.out.paf)
+        aggregate_coverage_report(paf_coverage_check.out.coverage.map{ it[2] }.collect())
+
         // --- Step 5: Align consensus to reference and call variants with paftools ---
         consensus_paftools_call(map_reads_long.out.paf)
 
@@ -111,8 +118,13 @@ workflow CONSENSUS {
         // --- Step 7: Annotate amino-acid impacts with SnpEff ---
         consensus_snpeff_annotation(consensus_sort_vcf.out.vcf.combine(ch_snpeff_config))
 
-        // --- Step 7: Post-process annotated VCF ---
-        post_process_vcf(consensus_snpeff_annotation.out.vcf.join(ch_reference_segment, by: [0,1]))
+        paftools_to_freebayes_vcf(consensus_snpeff_annotation.out.vcf.join(paf_coverage_check.out.coverage, by: [0,1]))
+
+        // --- Step 8: Post-process annotated VCF (coverage TSV threaded through for header injection) ---
+        post_process_vcf(
+            paftools_to_freebayes_vcf.out.vcf.join(ch_reference_segment, by: [0,1])
+        )
+
 
         // // --- Step 8: Reformat annotated VCF to summary TSV ---
         //summarize_vcf(consensus_snpeff_annotation.out.vcf)

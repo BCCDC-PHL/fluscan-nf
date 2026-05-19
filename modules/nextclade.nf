@@ -1,0 +1,60 @@
+// nextclade.nf - Per-segment Nextclade alignment and VCF conversion processes
+
+process nextclade_run {
+
+    conda "${projectDir}/environments/nextclade.yml"
+
+    tag { "${sample_id}_${segment}" }
+
+    publishDir "${params.outdir}/${sample_id}/${workflow}/json", pattern: "${sample_id}_${segment}_nextclade.json", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/${workflow}/tsv", pattern: "${sample_id}_${segment}_nextclade.tsv",  mode: 'copy'
+
+    input:
+    tuple val(sample_id), val(segment), path(consensus_fa), path(dataset_dir)
+
+    output:
+    tuple val(sample_id), val(segment), path("${sample_id}_${segment}_nextclade.json"), path(dataset_dir), emit: json_with_ref
+    tuple val(sample_id), val(segment), path("${sample_id}_${segment}_nextclade.tsv"),                      emit: tsv
+
+    script:
+    workflow = task.ext.workflow ?: "unknown_workflow"
+
+    """
+    nextclade run \
+        --input-dataset ${dataset_dir} \
+        --output-json ${sample_id}_${segment}_nextclade.json \
+        --output-tsv  ${sample_id}_${segment}_nextclade.tsv \
+        ${consensus_fa}
+    """
+}
+
+
+process nextclade_to_vcf {
+
+    conda "${projectDir}/environments/nextclade.yml"
+
+    tag { "${sample_id}_${segment}" }
+
+    //publishDir "${params.outdir}/${sample_id}/${workflow}", pattern: "${sample_id}*nc.vcf", mode: 'copy'
+
+    input:
+    tuple val(sample_id), val(segment), path(nextclade_json), path(dataset_dir)
+
+    output:
+    tuple val(sample_id), val(segment), path("${sample_id}*nc.vcf"), path(dataset_dir), emit: vcf
+
+    script:
+    workflow = task.ext.workflow ?: "unknown_workflow"
+    """
+    REFERENCE_NAME=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/>(\\S+).+/\\1/g')
+    SUBTYPE=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/.+\\(\\S+\\((\\S+)\\)\\S*\\).+/\\1/g')
+    SEGMENT=${dataset_dir}
+    SEGMENT=\${SEGMENT^^} # uppercase
+
+    nextclade_to_freebayes_vcf.py \
+        -i ${nextclade_json} \
+        -d ${dataset_dir} \
+        -o ${sample_id}__\${REFERENCE_NAME}__\${SUBTYPE}__\${SEGMENT}_nc.vcf \
+        --sample ${sample_id}
+    """
+}
