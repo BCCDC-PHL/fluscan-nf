@@ -56,7 +56,7 @@ process blastn {
         -num_threads ${task.cpus} \
         -max_target_seqs 1 \
         -query ${query} \
-        -perc_identity ${params.blastn_perc_identity} \
+        -task blastn \
         -db ${blast_db_name} \
         -outfmt "6 qseqid sseqid pident length qlen slen qstart qend sstart send evalue bitscore score" \
         > ${sample_id}_blastn.tsv &&
