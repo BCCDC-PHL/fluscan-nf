@@ -1,4 +1,4 @@
-// nextclade.nf - Per-segment Nextclade alignment and VCF conversion processes
+// nextclade/nextclade.nf - Per-segment Nextclade alignment and VCF conversion processes
 
 process nextclade_run {
 

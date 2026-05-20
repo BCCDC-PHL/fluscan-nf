@@ -1,8 +1,8 @@
 #!/usr/bin/env nextflow
 
 /*
- *   Consensus FASTA analysis workflow
- *   ------------------------------------
+ *   PAFTOOLS workflow (consensus FASTA input)
+ *   -----------------------------------------
  *   Processes pre-assembled consensus FASTA files through quality control,
  *   subtype-aware reference selection via BLAST, minimap2/paftools variant
  *   calling, bcftools VCF sorting, SnpEff annotation, and summary extraction.
@@ -22,28 +22,28 @@
 
 nextflow.enable.dsl = 2
 
-include { pipeline_provenance }                   from '../modules/provenance.nf'
-include { collect_provenance }                    from '../modules/provenance.nf'
-include { prepare_consensus }                     from '../modules/consensus_qc.nf'
-include { split_fasta as split_fasta_reference }  from '../modules/consensus_qc.nf'
-include { split_fasta as split_fasta_consensus }  from '../modules/consensus_qc.nf'
-include { map_reads_long }                        from '../modules/alignment.nf'
-include { paf_coverage_check }                    from '../modules/alignment.nf'
-include { aggregate_coverage_report }             from '../modules/alignment.nf'
-include { makeblastdb }                           from '../modules/blast.nf'
-include { blastn }                                from '../modules/blast.nf'
-include { genoflu }                               from '../modules/genoflu.nf'
-include { flumut }                                from '../modules/flumut.nf'
-include { consensus_paftools_call }               from '../modules/variant_calling.nf'
-include { consensus_sort_vcf }                    from '../modules/variant_calling.nf'
-include { consensus_snpeff_annotation }           from '../modules/variant_calling.nf'
-include { paftools_to_freebayes_vcf }             from '../modules/variant_calling.nf'
-include { summarize_vcf }                         from '../modules/variant_calling.nf'
-include { post_process_vcf }                      from '../modules/variant_calling.nf'
+include { pipeline_provenance }                          from '../modules/shared/provenance.nf'
+include { collect_provenance }                           from '../modules/shared/provenance.nf'
+include { prepare_consensus }                            from '../modules/shared/consensus_qc.nf'
+include { split_fasta as split_fasta_reference }         from '../modules/shared/consensus_qc.nf'
+include { split_fasta as split_fasta_consensus }         from '../modules/shared/consensus_qc.nf'
+include { paftools_align }                               from '../modules/paftools/alignment.nf'
+include { paftools_coverage_check }                      from '../modules/paftools/alignment.nf'
+include { paftools_aggregate_coverage_report }           from '../modules/paftools/alignment.nf'
+include { makeblastdb }                                  from '../modules/shared/blast.nf'
+include { blastn }                                       from '../modules/shared/blast.nf'
+include { genoflu }                                      from '../modules/shared/genoflu.nf'
+include { flumut }                                       from '../modules/shared/flumut.nf'
+include { paftools_call }                                from '../modules/paftools/variant_calling.nf'
+include { paftools_sort_vcf }                            from '../modules/paftools/variant_calling.nf'
+include { paftools_snpeff_annotation }                   from '../modules/paftools/variant_calling.nf'
+include { paftools_to_freebayes_vcf }                    from '../modules/paftools/variant_calling.nf'
+include { summarize_vcf }                                from '../modules/paftools/variant_calling.nf'
+include { post_process_vcf }                             from '../modules/shared/post_process.nf'
 
 
 
-workflow CONSENSUS {
+workflow PAFTOOLS {
 
     def extract_segment = { sample_id, fasta ->
         def segment = fasta =~ /.*_([A-z0-9-]+)\.s.*/
@@ -77,7 +77,7 @@ workflow CONSENSUS {
     main:
 
         if (params.snpeff_config == 'NO_FILE') {
-            error "ERROR: --snpeff_config is required for the consensus workflow."
+            error "ERROR: --snpeff_config is required for the PAFTOOLS workflow."
         }
 
         ch_snpeff_config = Channel.fromPath(params.snpeff_config, checkIfExists: true)
@@ -100,25 +100,25 @@ workflow CONSENSUS {
 
         ch_consensus_segment = split_fasta_consensus(prepare_consensus.out.cleaned).transpose().map(extract_segment)
         ch_reference_segment = split_fasta_reference(blastn.out.ref).transpose().map(extract_segment)
-        
-        ch_segment_sequences = ch_consensus_segment.join(ch_reference_segment, by: [0,1]) 
 
-        map_reads_long(ch_segment_sequences)
+        ch_segment_sequences = ch_consensus_segment.join(ch_reference_segment, by: [0,1])
+
+        paftools_align(ch_segment_sequences)
 
         // --- Step 4b: Check reference coverage of each alignment ---
-        paf_coverage_check(map_reads_long.out.paf)
-        aggregate_coverage_report(paf_coverage_check.out.coverage.map{ it[2] }.collect())
+        paftools_coverage_check(paftools_align.out.paf)
+        paftools_aggregate_coverage_report(paftools_coverage_check.out.coverage.map{ it[2] }.collect())
 
         // --- Step 5: Align consensus to reference and call variants with paftools ---
-        consensus_paftools_call(map_reads_long.out.paf)
+        paftools_call(paftools_align.out.paf)
 
         // --- Step 6: Sort VCF for downstream annotation ---
-        consensus_sort_vcf(consensus_paftools_call.out.vcf)
+        paftools_sort_vcf(paftools_call.out.vcf)
 
         // --- Step 7: Annotate amino-acid impacts with SnpEff ---
-        consensus_snpeff_annotation(consensus_sort_vcf.out.vcf.combine(ch_snpeff_config))
+        paftools_snpeff_annotation(paftools_sort_vcf.out.vcf.combine(ch_snpeff_config))
 
-        paftools_to_freebayes_vcf(consensus_snpeff_annotation.out.vcf.join(paf_coverage_check.out.coverage, by: [0,1]))
+        paftools_to_freebayes_vcf(paftools_snpeff_annotation.out.vcf.join(paftools_coverage_check.out.coverage, by: [0,1]))
 
         // --- Step 8: Post-process annotated VCF (coverage TSV threaded through for header injection) ---
         post_process_vcf(
@@ -127,15 +127,15 @@ workflow CONSENSUS {
 
 
         // // --- Step 8: Reformat annotated VCF to summary TSV ---
-        //summarize_vcf(consensus_snpeff_annotation.out.vcf)
+        //summarize_vcf(paftools_snpeff_annotation.out.vcf)
 
         // // --- Provenance collection ---
         // ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it ->      [it[0], [it[1]]] }
         // ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         // ch_provenance = ch_provenance.join(blastn.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        // ch_provenance = ch_provenance.join(consensus_paftools_call.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        // ch_provenance = ch_provenance.join(consensus_sort_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        // ch_provenance = ch_provenance.join(consensus_snpeff_annotation.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        // ch_provenance = ch_provenance.join(paftools_call.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        // ch_provenance = ch_provenance.join(paftools_sort_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        // ch_provenance = ch_provenance.join(paftools_snpeff_annotation.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         // ch_provenance = ch_provenance.join(summarize_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         // collect_provenance(ch_provenance)
 

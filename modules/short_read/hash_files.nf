@@ -1,4 +1,6 @@
-process hash_files {
+// short_read/hash_files.nf - Input file hashing for the SHORT_READ workflow
+
+process short_read_hash_files {
 
     tag { sample_id + " / " + file_type }
 

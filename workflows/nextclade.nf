@@ -18,12 +18,12 @@
 
 nextflow.enable.dsl = 2
 
-include { prepare_consensus }                    from '../modules/consensus_qc.nf'
-include { split_fasta as split_fasta_consensus } from '../modules/consensus_qc.nf'
-include { flumut }                               from '../modules/flumut.nf'
-include { nextclade_run }                        from '../modules/nextclade.nf'
-include { nextclade_to_vcf }                     from '../modules/nextclade.nf'
-include { post_process_vcf }                     from '../modules/variant_calling.nf'
+include { prepare_consensus }                    from '../modules/shared/consensus_qc.nf'
+include { split_fasta as split_fasta_consensus } from '../modules/shared/consensus_qc.nf'
+include { flumut }                               from '../modules/shared/flumut.nf'
+include { nextclade_run }                        from '../modules/nextclade/nextclade.nf'
+include { nextclade_to_vcf }                     from '../modules/nextclade/nextclade.nf'
+include { post_process_vcf }                     from '../modules/shared/post_process.nf'
 
 workflow NEXTCLADE {
 
