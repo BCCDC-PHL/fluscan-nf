@@ -25,10 +25,10 @@ process paftools_align {
     for consensus_fa in consensus/*.s.fasta; do
         segment=\$(basename "\$consensus_fa" .s.fasta | sed -E 's/.*_([^_]+)\$/\\1/')
         reference_fa="reference/${sample_id}_\${segment}.s.fasta"
-        name="${sample_id}_\${segment}"
-        minimap2 -cx asm20 --cs "\$reference_fa" "\$consensus_fa" > "\${name}_raw.paf" || { echo "WARN: minimap2 failed for \$segment" >&2; continue; }
-        sort -k6,6 -k8,8n "\${name}_raw.paf" > "\${name}.paf"
-        rm "\${name}_raw.paf"
+        output_prefix="${sample_id}_\${segment}"
+        minimap2 -cx asm20 --cs "\$reference_fa" "\$consensus_fa" > "\${output_prefix}_raw.paf" || { echo "WARN: minimap2 failed for \$segment" >&2; continue; }
+        sort -k6,6 -k8,8n "\${output_prefix}_raw.paf" > "\${output_prefix}.paf"
+        rm "\${output_prefix}_raw.paf"
     done
     """
 }

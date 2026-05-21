@@ -22,8 +22,8 @@ process paftools_call {
     for paf_file in pafs/*.paf; do
         segment=\$(basename "\$paf_file" .paf | sed -E 's/.*_([^_]+)\$/\\1/')
         reference_fa="reference/${sample_id}_\${segment}.s.fasta"
-        name="${sample_id}_\${segment}"
-        paftools.js call -l 100 -L 100 -f "\$reference_fa" "\$paf_file" > "\${name}_raw.vcf"
+        output_prefix="${sample_id}_\${segment}"
+        paftools.js call -l 100 -L 100 -f "\$reference_fa" "\$paf_file" > "\${output_prefix}_raw.vcf"
     done
     """
 }
@@ -48,8 +48,8 @@ process paftools_sort_vcf {
     printf -- "  tools: \\n  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n" >> ${sample_id}_paftools_sort_vcf_provenance.yml
 
     for vcf_file in vcf/*_raw.vcf; do
-        name=\$(basename "\$vcf_file" _raw.vcf)
-        bcftools sort "\$vcf_file" -o "\${name}_sorted.vcf"
+        output_prefix=\$(basename "\$vcf_file" _raw.vcf)
+        bcftools sort "\$vcf_file" -o "\${output_prefix}_sorted.vcf"
     done
     """
 }
@@ -112,8 +112,8 @@ process paftools_to_freebayes_vcf {
     script:
     """
     for anno_vcf in vcf/*.vcf; do
-        name=\$(basename "\$anno_vcf" .vcf)
-        segment=\$(echo "\$name" | awk -F'__' '{print \$NF}')
+        vcf_basename=\$(basename "\$anno_vcf" .vcf)
+        segment=\$(echo "\$vcf_basename" | awk -F'__' '{print \$NF}')
         cov_tsv="cov/${sample_id}_\${segment}_coverage.tsv"
 
         paftools_to_freebayes_vcf.py --input "\$anno_vcf" --output tmp_\${segment}.vcf
@@ -123,9 +123,9 @@ process paftools_to_freebayes_vcf {
         COV_FIRST=\$(awk 'NR==2 {print \$7}' "\$cov_tsv")
         COV_LAST=\$(awk 'NR==2 {print \$8}' "\$cov_tsv")
 
-        awk -v hdr="##fluscan_alignment_coverage=STATUS=\${COV_STATUS};fraction=\${COV_FRAC};range=\${COV_FIRST}-\${COV_LAST}" \\
-          'FNR==1 && /^##fileformat/{print; print hdr; next} {print}' \\
-          tmp_\${segment}.vcf > \${name}_paf.vcf
+        awk -v coverage_header="##fluscan_alignment_coverage=STATUS=\${COV_STATUS};fraction=\${COV_FRAC};range=\${COV_FIRST}-\${COV_LAST}" \\
+          'FNR==1 && /^##fileformat/{print; print coverage_header; next} {print}' \\
+          tmp_\${segment}.vcf > \${vcf_basename}_paf.vcf
     done
     """
 }
