@@ -146,11 +146,14 @@ def load_gff3(gff_path: str) -> tuple[list, list]:
     For main CDS transcripts, feature_id == gene_id (locus_tag).
     For mature peptide transcripts, feature_id == protein_id.
     aa_length excludes the stop codon (cds_length // 3 - 1).
+
+    Tolerates custom references that lack locus_tag and protein_id by falling
+    back to gene name and the GFF3 ID attribute respectively.
     """
     genes: list = []
     gene_by_locus_tag: dict = {}     # locus_tag → (gene_name, gene_id)
-    cds_segments: dict = {}          # protein_id → [(begin_0, end_0)]
-    cds_meta: dict = {}              # protein_id → {gene_name, gene_id, strand}
+    cds_segments: dict = {}          # cds_id (GFF3 ID) → [(begin_0, end_0)]
+    cds_meta: dict = {}              # cds_id → {gene_name, gene_id, strand, protein_id}
     mature_list: list = []           # raw mature peptide rows
 
     with open(gff_path) as fh:
@@ -167,30 +170,44 @@ def load_gff3(gff_path: str) -> tuple[list, list]:
             attrs  = _parse_gff3_attrs(parts[8])
 
             if ftype == "gene":
-                gname    = attrs.get("Name", "")
-                ltag     = attrs.get("locus_tag", "")
+                gname = attrs.get("gene", attrs.get("Name", ""))
+                # Fall back to gene name when locus_tag is absent (custom references).
+                ltag  = attrs.get("locus_tag") or gname
                 genes.append({"gene_name": gname, "gene_id": ltag,
                                "begin_0": b0, "end_0": e0})
                 gene_by_locus_tag[ltag] = (gname, ltag)
 
             elif ftype == "CDS":
-                pid    = attrs.get("protein_id", "")
-                parent = attrs.get("Parent", "")
-                ltag   = parent[len("gene-"):] if parent.startswith("gene-") else parent
-                gname, gid = gene_by_locus_tag.get(ltag, ("", ltag))
-                if pid not in cds_segments:
-                    cds_segments[pid] = []
-                    cds_meta[pid] = {"gene_name": gname, "gene_id": gid, "strand": strand}
-                cds_segments[pid].append((b0, e0))
+                pid_attr = attrs.get("protein_id", "")
+                cds_id   = attrs.get("ID", "")
+                parent   = attrs.get("Parent", "")
+                ltag_p   = parent[len("gene-"):] if parent.startswith("gene-") else parent
+                gname, gid = gene_by_locus_tag.get(ltag_p, ("", ltag_p))
+                # Use the full GFF3 ID as the storage key so the Parent attribute of
+                # mature_protein_region_of_CDS rows matches verbatim (e.g. "cds-HA"
+                # or "cds-YP_308669.1"), avoiding the key mismatch when protein_id is absent.
+                storage_key = cds_id or pid_attr or attrs.get("Name", "")
+                # Nextclade uses protein_id as cdsName when present; falls back to the
+                # GFF3 ID when protein_id is absent (verified against chicken_2021 JSON).
+                nextclade_match = pid_attr or cds_id or attrs.get("Name", "")
+                if storage_key not in cds_segments:
+                    cds_segments[storage_key] = []
+                    cds_meta[storage_key] = {
+                        "gene_name":  gname,
+                        "gene_id":    gid,
+                        "strand":     strand,
+                        "protein_id": nextclade_match,
+                    }
+                cds_segments[storage_key].append((b0, e0))
 
             elif ftype == "mature_protein_region_of_CDS":
-                pid    = attrs.get("protein_id", "")
+                pid    = attrs.get("protein_id", attrs.get("product", attrs.get("Name", "")))
                 parent = attrs.get("Parent", "")
-                # parent like "cds-YP_308669.1"
-                parent_cds_pid = parent[len("cds-"):] if parent.startswith("cds-") else parent
+                # parent is already the full GFF3 ID (e.g. "cds-HA") — use it as-is
+                # so the lookup into cds_meta succeeds without stripping "cds-".
                 mature_list.append({
                     "protein_id":     pid,
-                    "parent_cds_pid": parent_cds_pid,
+                    "parent_cds_key": parent,
                     "begin_0":        b0,
                     "end_0":          e0,
                     "strand":         strand,
@@ -198,16 +215,16 @@ def load_gff3(gff_path: str) -> tuple[list, list]:
 
     transcripts: list = []
 
-    for pid, segs in cds_segments.items():
-        meta    = cds_meta[pid]
+    for storage_key, segs in cds_segments.items():
+        meta    = cds_meta[storage_key]
         segs_s  = sorted(segs)
         cds_len = sum(e - b for b, e in segs_s)
         transcripts.append({
             "transcript_kind": "cds",
             "gene_name":   meta["gene_name"],
             "gene_id":     meta["gene_id"],
-            "feature_id":  meta["gene_id"],   # main CDS → locus_tag as Feature_ID
-            "protein_id":  pid,               # matches Nextclade cdsName
+            "feature_id":  meta["gene_id"],    # Feature_ID = locus_tag, matching NCBI VCF shape
+            "protein_id":  meta["protein_id"], # matches Nextclade cdsName
             "strand":      meta["strand"],
             "segments":    segs_s,
             "is_mature":   False,
@@ -217,7 +234,7 @@ def load_gff3(gff_path: str) -> tuple[list, list]:
         })
 
     for me in mature_list:
-        meta    = cds_meta.get(me["parent_cds_pid"], {"gene_name": "", "gene_id": ""})
+        meta    = cds_meta.get(me["parent_cds_key"], {"gene_name": "", "gene_id": "", "protein_id": ""})
         seg_len = me["end_0"] - me["begin_0"]
         transcripts.append({
             "transcript_kind": "mature_peptide",
