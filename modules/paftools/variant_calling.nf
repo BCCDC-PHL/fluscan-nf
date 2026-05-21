@@ -2,121 +2,131 @@
 
 process paftools_call {
 
-    tag { "${name}" }
-
-    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${name}_raw.vcf", mode: 'copy'
+    tag { sample_id }
 
     input:
-    tuple val(sample_id), val(segment), path(alignment_paf), path(reference_fasta)
+    tuple val(sample_id),
+          path(pafs, stageAs: 'pafs/*'),
+          path(references, stageAs: 'reference/*')
 
     output:
-    tuple val(sample_id), val(segment), path("${name}_raw.vcf"), env(SNPEFF_DB_NAME), emit: vcf
+    tuple val(sample_id), path('*_raw.vcf'), path('reference/*'), emit: vcf
     tuple val(sample_id), path("${sample_id}_paftools_call_provenance.yml"), emit: provenance
 
     script:
-    name = "${sample_id}_${segment}"
     """
     printf -- "- process_name: paftools_call\\n" > ${sample_id}_paftools_call_provenance.yml
     printf -- "  tools: \\n" >> ${sample_id}_paftools_call_provenance.yml
     printf -- "  - tool_name: paftools.js\\n    tool_version: \$(paftools.js version)\\n" >> ${sample_id}_paftools_call_provenance.yml
 
-    paftools.js call -l 100 -L 100 -f ${reference_fasta} ${name}.paf > ${name}_raw.vcf
-
-    SNPEFF_DB_NAME=\$(head -n1 ${reference_fasta} | cut -d'|' -f2)
-    SNPEFF_DB_NAME="influenza_\${SNPEFF_DB_NAME,,}"
-
-    echo "influenza_\${SNPEFF_DB_NAME}" > ${name}_snpeff_db_name.txt
+    for paf_file in pafs/*.paf; do
+        segment=\$(basename "\$paf_file" .paf | sed -E 's/.*_([^_]+)\$/\\1/')
+        reference_fa="reference/${sample_id}_\${segment}.s.fasta"
+        name="${sample_id}_\${segment}"
+        paftools.js call -l 100 -L 100 -f "\$reference_fa" "\$paf_file" > "\${name}_raw.vcf"
+    done
     """
 }
 
 
 process paftools_sort_vcf {
 
-    tag { name }
-
-    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${name}_sorted.vcf", mode: 'copy'
+    tag { sample_id }
 
     input:
-    tuple val(sample_id), val(segment), path(raw_vcf), val(snpeff_db_name)
+    tuple val(sample_id),
+          path(raw_vcfs, stageAs: 'vcf/*'),
+          path(references, stageAs: 'reference/*')
 
     output:
-    tuple val(sample_id), val(segment), path("${name}_sorted.vcf"), val(snpeff_db_name), emit: vcf
+    tuple val(sample_id), path('*_sorted.vcf'), path('reference/*'), emit: vcf
     tuple val(sample_id), path("${sample_id}_paftools_sort_vcf_provenance.yml"), emit: provenance
 
     script:
-    name = "${sample_id}_${segment}"
-
     """
     printf -- "- process_name: paftools_sort_vcf\\n" > ${sample_id}_paftools_sort_vcf_provenance.yml
     printf -- "  tools: \\n  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n" >> ${sample_id}_paftools_sort_vcf_provenance.yml
 
-    bcftools sort ${raw_vcf} -o ${name}_sorted.vcf
+    for vcf_file in vcf/*_raw.vcf; do
+        name=\$(basename "\$vcf_file" _raw.vcf)
+        bcftools sort "\$vcf_file" -o "\${name}_sorted.vcf"
+    done
     """
 }
 
 
 process paftools_snpeff_annotation {
-    tag { name }
+    tag { sample_id }
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*__anno.vcf", mode: 'copy'
-
     input:
-    tuple val(sample_id), val(segment), path(vcf), val(snpeff_db_name), path(snpeff_config_path)
+    tuple val(sample_id),
+          path(sorted_vcfs, stageAs: 'vcf/*'),
+          path(references, stageAs: 'reference/*'),
+          path(snpeff_config_path)
 
     output:
-    tuple val(sample_id), val(segment), path("${sample_id}*.vcf"), emit: vcf
+    tuple val(sample_id), path("${sample_id}*.vcf"), emit: vcf
     tuple val(sample_id), path("${sample_id}_paftools_snpeff_provenance.yml"), emit: provenance
 
     script:
-    name = "${sample_id}_${segment}"
-
     """
     printf -- "- process_name: paftools_snpeff_annotation\\n" > ${sample_id}_paftools_snpeff_provenance.yml
     printf -- "  tools: \\n" >> ${sample_id}_paftools_snpeff_provenance.yml
     printf -- "  - tool_name: snpeff\\n    tool_version: \$(snpEff -version 2>&1 | cut -d\$'\\t' -f2)\\n" >> ${sample_id}_paftools_snpeff_provenance.yml
     printf -- "  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n" >> ${sample_id}_paftools_snpeff_provenance.yml
 
-    REF_NAME=\$(grep -oP "##contig=<ID=\\K([^,]+)" ${vcf})
-    REF_NAME_FIELDS=(\${REF_NAME//|/ })
+    for vcf_file in vcf/*_sorted.vcf; do
+        segment=\$(basename "\$vcf_file" _sorted.vcf | sed -E 's/.*_([^_]+)\$/\\1/')
+        reference_fa="reference/${sample_id}_\${segment}.s.fasta"
 
-    awk 'BEGIN{OFS="\\t"} /^##contig=/{gsub(/\\|[^,>]*/, ""); print; next} /^#/{print; next} {split(\$1,a,"|"); \$1=a[1]; print}' ${vcf} \\
-     > rename.vcf
+        REF_NAME=\$(grep -oP "##contig=<ID=\\K([^,]+)" "\$vcf_file")
+        REF_NAME_FIELDS=(\${REF_NAME//|/ })
 
-    OUTPUT_FILENAME="${sample_id}__\${REF_NAME_FIELDS[0]}__\${REF_NAME_FIELDS[1]}__\${REF_NAME_FIELDS[2]}.vcf"
+        SNPEFF_DB_NAME=\$(head -n1 "\$reference_fa" | cut -d'|' -f2)
+        SNPEFF_DB_NAME="influenza_\${SNPEFF_DB_NAME,,}"
 
-    snpEff -Xmx4g -noStats -hgvs1LetterAa -config ${snpeff_config_path} ${snpeff_db_name} rename.vcf > \${OUTPUT_FILENAME}
+        awk 'BEGIN{OFS="\\t"} /^##contig=/{gsub(/\\|[^,>]*/, ""); print; next} /^#/{print; next} {split(\$1,a,"|"); \$1=a[1]; print}' "\$vcf_file" \\
+         > rename_\${segment}.vcf
+
+        OUTPUT_FILENAME="${sample_id}__\${REF_NAME_FIELDS[0]}__\${REF_NAME_FIELDS[1]}__\${REF_NAME_FIELDS[2]}.vcf"
+
+        snpEff -Xmx4g -noStats -hgvs1LetterAa -config ${snpeff_config_path} "\$SNPEFF_DB_NAME" rename_\${segment}.vcf > "\${OUTPUT_FILENAME}"
+    done
     """
 }
 
 
 process paftools_to_freebayes_vcf {
-    tag { "${sample_id}_${segment}" }
-
-    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*_reformat.vcf", mode: 'copy'
+    tag { sample_id }
 
     input:
-    tuple val(sample_id), val(segment), path(paftools_vcf), path(coverage_tsv)
+    tuple val(sample_id),
+          path(anno_vcfs, stageAs: 'vcf/*'),
+          path(coverage_tsvs, stageAs: 'cov/*')
 
     output:
-    tuple val(sample_id), val(segment), path("${sample_id}*.vcf"), emit: vcf
+    tuple val(sample_id), path("${sample_id}*_paf.vcf"), emit: vcf
 
     script:
     """
-    name=\$(basename ${paftools_vcf} .vcf)
+    for anno_vcf in vcf/*.vcf; do
+        name=\$(basename "\$anno_vcf" .vcf)
+        segment=\$(echo "\$name" | awk -F'__' '{print \$NF}')
+        cov_tsv="cov/${sample_id}_\${segment}_coverage.tsv"
 
-    paftools_to_freebayes_vcf.py --input ${paftools_vcf} --output tmp.vcf
+        paftools_to_freebayes_vcf.py --input "\$anno_vcf" --output tmp_\${segment}.vcf
 
-    # Inject alignment-coverage status into the VCF header
-    COV_STATUS=\$(awk 'NR==2 {print \$11}' ${coverage_tsv})
-    COV_FRAC=\$(awk 'NR==2 {print \$6}' ${coverage_tsv})
-    COV_FIRST=\$(awk 'NR==2 {print \$7}' ${coverage_tsv})
-    COV_LAST=\$(awk 'NR==2 {print \$8}' ${coverage_tsv})
+        COV_STATUS=\$(awk 'NR==2 {print \$11}' "\$cov_tsv")
+        COV_FRAC=\$(awk 'NR==2 {print \$6}' "\$cov_tsv")
+        COV_FIRST=\$(awk 'NR==2 {print \$7}' "\$cov_tsv")
+        COV_LAST=\$(awk 'NR==2 {print \$8}' "\$cov_tsv")
 
-    awk -v hdr="##fluscan_alignment_coverage=STATUS=\${COV_STATUS};fraction=\${COV_FRAC};range=\${COV_FIRST}-\${COV_LAST}" \\
-      'FNR==1 && /^##fileformat/{print; print hdr; next} {print}' \\
-      tmp.vcf > \${name}_paf.vcf
+        awk -v hdr="##fluscan_alignment_coverage=STATUS=\${COV_STATUS};fraction=\${COV_FRAC};range=\${COV_FIRST}-\${COV_LAST}" \\
+          'FNR==1 && /^##fileformat/{print; print hdr; next} {print}' \\
+          tmp_\${segment}.vcf > \${name}_paf.vcf
+    done
     """
 }
 

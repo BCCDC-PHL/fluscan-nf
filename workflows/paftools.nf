@@ -45,12 +45,6 @@ include { post_process_vcf }                             from '../modules/shared
 
 workflow PAFTOOLS {
 
-    def extract_segment = { sample_id, fasta ->
-        def segment = fasta =~ /.*_([A-z0-9-]+)\.s.*/
-        segment = segment[0][1] ? segment[0][1] : "unknown_segment"
-        return [sample_id, segment, fasta]
-    }
-
     ch_workflow_metadata = Channel.value([
         workflow.sessionId,
         workflow.runName,
@@ -98,16 +92,20 @@ workflow PAFTOOLS {
 
         flumut(prepare_consensus.out.cleaned)
 
-        ch_consensus_segment = split_fasta_consensus(prepare_consensus.out.cleaned).transpose().map(extract_segment)
-        ch_reference_segment = split_fasta_reference(blastn.out.ref).transpose().map(extract_segment)
+        ch_consensus_segments = split_fasta_consensus(prepare_consensus.out.cleaned)
+        ch_reference_segments = split_fasta_reference(blastn.out.ref)
 
-        ch_segment_sequences = ch_consensus_segment.join(ch_reference_segment, by: [0,1])
+        ch_segment_sequences = ch_consensus_segments.join(ch_reference_segments)
 
         paftools_align(ch_segment_sequences)
 
         // --- Step 4b: Check reference coverage of each alignment ---
         paftools_coverage_check(paftools_align.out.paf)
-        paftools_aggregate_coverage_report(paftools_coverage_check.out.coverage.map{ it[2] }.collect())
+        paftools_aggregate_coverage_report(
+            paftools_coverage_check.out.coverage
+                .flatMap { sample_id, tsvs -> tsvs }
+                .collect()
+        )
 
         // --- Step 5: Align consensus to reference and call variants with paftools ---
         paftools_call(paftools_align.out.paf)
@@ -118,11 +116,13 @@ workflow PAFTOOLS {
         // --- Step 7: Annotate amino-acid impacts with SnpEff ---
         paftools_snpeff_annotation(paftools_sort_vcf.out.vcf.combine(ch_snpeff_config))
 
-        paftools_to_freebayes_vcf(paftools_snpeff_annotation.out.vcf.join(paftools_coverage_check.out.coverage, by: [0,1]))
+        paftools_to_freebayes_vcf(
+            paftools_snpeff_annotation.out.vcf.join(paftools_coverage_check.out.coverage)
+        )
 
-        // --- Step 8: Post-process annotated VCF (coverage TSV threaded through for header injection) ---
+        // --- Step 8: Post-process annotated VCF (MNV codon correction) ---
         post_process_vcf(
-            paftools_to_freebayes_vcf.out.vcf.join(ch_reference_segment, by: [0,1])
+            paftools_to_freebayes_vcf.out.vcf.join(ch_reference_segments)
         )
 
 
