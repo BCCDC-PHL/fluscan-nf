@@ -1,7 +1,7 @@
 # fluscan-nf
 
 This is a Nextflow pipeline for Influenza A mutation analysis from either short-read FASTQ data or pre-built consensus FASTA files.
-The short-read workflow performs trimming, assembly, mapping, LoFreq variant calling, SnpEff annotation, and consensus generation. The PAFTOOLS workflow (consensus FASTA input) validates the supplied FASTA, selects a subtype-matched reference with BLAST, aligns per-segment with `minimap2`, calls differences with `paftools.js`, sorts with `bcftools`, annotates with SnpEff, and fixes multi-nucleotide variant codons.
+The short-read workflow performs trimming, assembly, mapping, LoFreq variant calling, SnpEff annotation, and consensus generation. The consensus workflow validates the supplied FASTA, selects a subtype-matched reference with BLAST, aligns per-segment with `minimap2`, calls differences with `paftools.js`, sorts with `bcftools`, annotates with SnpEff, and fixes multi-nucleotide variant codons.
 
 ## Analyses
 
@@ -20,7 +20,7 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - Consensus sequence generation
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
 
-### PAFTOOLS workflow (consensus FASTA input)
+### Consensus workflow
 - Consensus FASTA validation and header normalisation
 - Automated reference selection from built-in database via BLAST
 - Per-segment alignment using minimap2 (`asm20` mode)
@@ -83,7 +83,7 @@ flowchart TD
 
 **Short-read workflow:** Illumina paired-end FASTQ files (`*.fastq.gz`, `*.fq.gz`, `*.fastq`, `*.fq`), or a samplesheet CSV with columns `ID`, `R1`, `R2`.
 
-**PAFTOOLS/NEXTCLADE workflows:** Consensus FASTA files (one multi-FASTA per sample, one sequence per influenza segment). Expected header format: `>SAMPLE_ID_segmentN_SEGMENT` (e.g. `>WIN-AH-2024-FAV-0415_segment1_PB2`).
+**Consensus workflow:** Consensus FASTA files (one multi-FASTA per sample, one sequence per influenza segment). Expected header format: `>SAMPLE_ID_segmentN_SEGMENT` (e.g. `>WIN-AH-2024-FAV-0415_segment1_PB2`).
 
 ## Usage
 
@@ -103,7 +103,7 @@ Optional short-read parameters:
 - `--snpeff_config` — path to a custom SnpEff config (defaults to the built-in database)
 - `--aligner` — `bwa` (default) or `minimap2`
 
-**PAFTOOLS workflow example (consensus FASTA input):**
+**Consensus FASTA example:**
 ```
 nextflow run BCCDC-PHL/fluscan-nf \
   -r v0.1.0 \
@@ -114,7 +114,7 @@ nextflow run BCCDC-PHL/fluscan-nf \
   --outdir /path/to/output_dir
 ```
 
-> **Note:** `--snpeff_config` is **required** for the PAFTOOLS workflow. It is optional for the short-read workflow, which falls back to the built-in SnpEff database.
+> **Note:** `--snpeff_config` is **required** for the consensus workflow. It is optional for the short-read workflow, which falls back to the built-in SnpEff database.
 
 **Package management:**
 - Conda is used for dependency management. The `-profile conda` flag and `--cache` parameter are required on BCCDC systems.
@@ -146,7 +146,7 @@ One folder is produced per sample.
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers |
 
-### PAFTOOLS workflow outputs (per sample, consensus FASTA input)
+### Consensus workflow outputs (per sample)
 
 | File | Description |
 |------|-------------|

@@ -1,4 +1,4 @@
-// shared/consensus_qc.nf - Consensus FASTA quality control processes (shared by PAFTOOLS and NEXTCLADE workflows)
+// consensus_qc.nf - Consensus FASTA quality control and Nextclade processes
 
 process prepare_consensus {
 
@@ -32,7 +32,7 @@ process prepare_consensus {
     """
 }
 
-process split_fasta {
+process split_fasta { 
     tag { sample_id }
 
     //publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}_s_*.fasta", mode: 'copy'
@@ -45,6 +45,40 @@ process split_fasta {
 
     script:
     """
-    split_fasta.py split ${fasta}
+    split_fasta.py split ${fasta} 
+    """
+}
+
+
+process nextclade_consensus {
+
+    conda "${projectDir}/environments/nextclade.yml"
+
+    errorStrategy 'ignore'
+
+    tag { sample_id }
+
+    publishDir "${params.outdir}/${sample_id}/nextclade", pattern: "${sample_id}_nextclade_*.tsv", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(cleaned_fasta), path(blast_filter)
+    val(nextclade_datasets_dir)
+
+    output:
+    tuple val(sample_id), path("${sample_id}_nextclade_*.tsv"), emit: results, optional: true
+    tuple val(sample_id), path("${sample_id}_nextclade_provenance.yml"), emit: provenance
+
+    script:
+    """
+    printf -- "- process_name: nextclade_consensus\\n"  > ${sample_id}_nextclade_provenance.yml
+    printf -- "  tools:\\n"                            >> ${sample_id}_nextclade_provenance.yml
+    printf -- "    - tool_name: nextclade\\n"          >> ${sample_id}_nextclade_provenance.yml
+    printf -- "      tool_version: \$(nextclade --version 2>&1 | cut -d ' ' -f 2)\\n" >> ${sample_id}_nextclade_provenance.yml
+
+    run_nextclade_consensus.py \
+        --fasta ${cleaned_fasta} \
+        --blast_filter ${blast_filter} \
+        --datasets_dir ${nextclade_datasets_dir} \
+        --sample_id ${sample_id}
     """
 }

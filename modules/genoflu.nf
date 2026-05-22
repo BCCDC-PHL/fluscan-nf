@@ -1,5 +1,3 @@
-// shared/genoflu.nf - GenoFLU genotype calling processes (currently disabled in all workflows)
-
 process genoflu {
 
     tag { sample_id }
@@ -32,7 +30,7 @@ process genoflu {
 }
 
 process pull_genoflu {
-
+    
     executor 'local'
     storeDir "${params.genoflu_cache}"
 
@@ -73,18 +71,18 @@ process checkout_genoflu {
         VERSION=\${LATEST_VERSION}
     else
         VERSION=${genoflu_version}
-    fi
+    fi 
 
     echo "Translated GenoFLU Version: \${VERSION}" >> \${CWD}/checkout_log.txt
-
+    
     TAG_LIST=(\$(git tag))
 
     echo "Available Tags: \${TAG_LIST[@]}" >> \${CWD}/checkout_log.txt
 
-    if ! [[ \${TAG_LIST[@]} =~ (^|[[:space:]])\$VERSION(\$|[[:space:]]) ]]; then
+    if ! [[ \${TAG_LIST[@]} =~ (^|[[:space:]])\$VERSION(\$|[[:space:]]) ]]; then 
         echo "ERROR: The provided version does not exist on the GitHub repo after pulling. Exiting."
         exit 1
-    fi
+    fi 
 
     git checkout tags/\${VERSION} 2>> \${CWD}/checkout_log.txt
 

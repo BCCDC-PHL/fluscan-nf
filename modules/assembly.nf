@@ -1,6 +1,4 @@
-// short_read/assembly.nf - De-novo assembly processes for the SHORT_READ workflow
-
-process short_read_sample_reads {
+process sample_reads {
     tag { sample_id }
 
     input:
@@ -13,22 +11,22 @@ process short_read_sample_reads {
     script:
     max_memory_gb = task.memory.toString().split(" ")[0]
     """
-    printf -- "- process_name: short_read_sample_reads\\n"        >> ${sample_id}_sample_reads_provenance.yml
-    printf -- "  tools:\\n"                                        >> ${sample_id}_sample_reads_provenance.yml
-    printf -- "    - tool_name: seqtk\\n"                         >> ${sample_id}_sample_reads_provenance.yml
+    printf -- "- process_name: sample_reads\\n"                >> ${sample_id}_sample_reads_provenance.yml
+    printf -- "  tools:\\n"                                       >> ${sample_id}_sample_reads_provenance.yml
+    printf -- "    - tool_name: seqtk\\n"                        >> ${sample_id}_sample_reads_provenance.yml
     printf -- "      tool_version: \$(seqtk 2>&1 | grep "Version" | cut -d' ' -f2)\\n" >> ${sample_id}_sample_reads_provenance.yml
-
+    
     READ_COUNT_1=\$(zcat ${reads_1} | grep "^@"  | wc -l)
     READ_COUNT_2=\$(zcat ${reads_2} | grep "^@"  | wc -l)
     let "TARGET_COUNT = ${params.target_depth} * ${params.genome_size}"
 
-    if [ \${READ_COUNT_1} -gt \${TARGET_COUNT} ]; then
+    if [ \${READ_COUNT_1} -gt \${TARGET_COUNT} ]; then 
         sample_reads.py -s 12 -n \${TARGET_COUNT} \
         -f1 ${reads_1} \
         -f2 ${reads_2}  \
         -o1 ${sample_id}_R1_sample.fq.gz \
         -o2 ${sample_id}_R2_sample.fq.gz
-
+        
         echo "Completed random downsample on reads.\nOriginal read count: \${READ_COUNT_1} \nNew read count: \${TARGET_COUNT}"
     else
         ln -s ${reads_1} ${sample_id}_R1_sample.fq.gz
@@ -37,37 +35,37 @@ process short_read_sample_reads {
     fi
 
     """
-
+    
 }
 
-process short_read_assembly {
-
-    tag { sample_id }
+process assembly {
+    
+    tag { sample_id } 
 
     publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*fasta", mode: 'copy'
-
+    
     input:
     tuple val(sample_id), path(fwd_reads), path(rev_reads)
-
+    
     output:
     tuple val(sample_id), path("${sample_id}_spades"), emit: spades_dir
     tuple val(sample_id), path("${sample_id}_contigs.fasta"), emit: contigs
     tuple val(sample_id), path("${sample_id}*.yml"), emit: provenance
-
+    
     script:
     """
-    printf -- "- process_name: short_read_assembly\\n"                   >> ${sample_id}_assembly_provenance.yml
-    printf -- "  tools:\\n"                                              >> ${sample_id}_assembly_provenance.yml
-    printf -- "    - tool_name: assembly\\n"                             >> ${sample_id}_assembly_provenance.yml
+    printf -- "- process_name: assembly\\n"                >> ${sample_id}_assembly_provenance.yml
+    printf -- "  tools:\\n"                                       >> ${sample_id}_assembly_provenance.yml
+    printf -- "    - tool_name: assembly\\n"                        >> ${sample_id}_assembly_provenance.yml
     printf -- "      tool_version: \$(spades.py --version | cut -d' ' -f4)\\n" >> ${sample_id}_assembly_provenance.yml
-
+    
     spades.py \
         --threads ${task.cpus} \
         --rnaviral \
         -1 ${fwd_reads} \
         -2 ${rev_reads} \
         -o ${sample_id}_spades
-
+    
     cp ${sample_id}_spades/contigs.fasta ./${sample_id}_contigs.fasta
     """
 }
