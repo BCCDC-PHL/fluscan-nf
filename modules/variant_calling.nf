@@ -212,6 +212,8 @@ process paftools_to_freebayes_vcf {
 process post_process_vcf {
     tag { "${sample_id}_${segment}" }
 
+    conda "${projectDir}/environments/fluscan.yml"
+
     publishDir "${params.outdir}/${sample_id}/${workflow}", pattern: "${sample_id}*_final.vcf", mode: 'copy'
 
     input:
@@ -238,8 +240,10 @@ process post_process_vcf {
 
     sed -i -E 's/^>([^\\|]+)\\|.+/>\\1/g' ${reference}
 
+    bcftools norm -f ${reference} -o ${name}_norm.vcf ${vcf}
+
     fix_mnv_codons.py \\
-    --input ${vcf} \\
+    --input ${name}_norm.vcf \\
     --reference ${reference} \\
     --output-vcf \${name}_final.vcf \\
     --min-af ${min_af}
