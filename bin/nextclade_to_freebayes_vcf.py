@@ -460,8 +460,11 @@ def _deletion_alleles(ref_seq: str, begin: int, end: int) -> tuple[int, str, str
 
 
 def _insertion_alleles(ref_seq: str, pos: int, ins_seq: str) -> tuple[int, str, str]:
-    anchor = pos
-    return anchor + 1, ref_seq[anchor], ref_seq[anchor] + ins_seq
+    if pos >= 0:
+        anchor = pos
+        return anchor + 1, ref_seq[anchor], ref_seq[anchor] + ins_seq
+    # 5'-UTR insertion before reference start: right-anchor on first base, emit POS=1
+    return 1, ref_seq[0], ins_seq + ref_seq[0]
 
 # ---------------------------------------------------------------------------
 # VCF row helpers
@@ -482,13 +485,13 @@ def _sample(qual: int) -> str:
     return f"1:1:0,1:0:0:1:{qual}:{gl}:{qual}"
 
 
-def variant_row(chrom: str, pos: int, ref: str, alt: str, qual: int, ann: str = "") -> str:
+def variant_row(chrom: str, pos: int, ref: str, alt: str, qual: int, ann: str = "", filter: str = "PASS") -> str:
     type_str, cigar, length = classify(ref, alt)
     info = _info(type_str, cigar, length, qual)
     if ann:
         info = f"{info};{ann}"
     return (
-        f"{chrom}\t{pos}\t.\t{ref}\t{alt}\t{qual}\tPASS"
+        f"{chrom}\t{pos}\t.\t{ref}\t{alt}\t{qual}\t{filter}"
         f"\t{info}"
         f"\tGT:DP:AD:RO:QR:AO:QA:GL:GQ\t{_sample(qual)}"
     )
@@ -501,6 +504,7 @@ def build_header(chrom: str, ref_len: int, ref_path: str, sample: str) -> str:
     lines = [
         "##fileformat=VCFv4.2",
         '##FILTER=<ID=PASS,Description="All filters passed">',
+        '##FILTER=<ID=AmbiguousInsert,Description="Insertion contains ambiguous (N) bases in the inserted sequence">',
         f"##fileDate={date.today().strftime('%Y%m%d')}",
         "##source=nextclade_to_freebayes_vcf.py",
         f"##reference={ref_path}",
@@ -879,9 +883,13 @@ def variants_from_json_result(
         rows.append((vcf_pos, variant_row(chrom, vcf_pos, ref_a, alt_a, qual, ann=ann)))
 
     for ins in result.get("insertions", []):
-        vcf_pos, ref_a, alt_a = _insertion_alleles(ref_seq, ins["pos"], ins["ins"])
-        ann = _ann_field_for_ins(ins["pos"], ins["ins"], alt_a, aa_ins, frame_shifts, genes, transcripts)
-        rows.append((vcf_pos, variant_row(chrom, vcf_pos, ref_a, alt_a, qual, ann=ann)))
+        raw_pos = ins["pos"]
+        ins_seq = ins["ins"]
+        vcf_pos, ref_a, alt_a = _insertion_alleles(ref_seq, raw_pos, ins_seq)
+        ann_pos = raw_pos if raw_pos >= 0 else 0
+        ann = _ann_field_for_ins(ann_pos, ins_seq, alt_a, aa_ins, frame_shifts, genes, transcripts)
+        filter_val = "AmbiguousInsert" if "N" in ins_seq.upper() else "PASS"
+        rows.append((vcf_pos, variant_row(chrom, vcf_pos, ref_a, alt_a, qual, ann=ann, filter=filter_val)))
 
     rows.sort(key=lambda x: x[0])
     return rows
