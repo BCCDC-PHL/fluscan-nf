@@ -83,7 +83,11 @@ flowchart TD
 
 **Short-read workflow:** Illumina paired-end FASTQ files (`*.fastq.gz`, `*.fq.gz`, `*.fastq`, `*.fq`), or a samplesheet CSV with columns `ID`, `R1`, `R2`.
 
-**PAFTOOLS/NEXTCLADE workflows:** Consensus FASTA files (one multi-FASTA per sample, one sequence per influenza segment). Expected header format: `>SAMPLE_ID_segmentN_SEGMENT` (e.g. `>WIN-AH-2024-FAV-0415_segment1_PB2`).
+**PAFTOOLS/NEXTCLADE workflows:** Consensus FASTA files (one multi-FASTA per sample, one sequence per influenza segment). Two header formats are accepted:
+- Underscore-delimited (legacy): `>SAMPLE_ID_segmentN_SEGMENT` e.g. `>WIN-AH-2024-FAV-0415_segment1_PB2`
+- Pipe-delimited (GISAID-style): `>EPI_ISL_ACCESSION|subtype|SEGMENT|...|clade_SEGMENT` e.g. `>EPI_ISL_20399898|A_/_H5N1|NA|6|EPI5261179|2.3.4.4b_NA`
+
+Cleaned output headers (`*_cleaned.fasta`) are normalised to `{sample_id}_{SEGMENT}` (e.g. `EPI-ISL-20399898_NA`).
 
 ## Usage
 
@@ -150,7 +154,7 @@ One folder is produced per sample.
 
 | File | Description |
 |------|-------------|
-| `*_cleaned.fasta` | Validated, header-normalised consensus FASTA |
+| `*_cleaned.fasta` | Validated consensus FASTA with headers normalised to `{sample_id}_{SEGMENT}` |
 | `*_qc_report.tsv` | QC report from consensus preparation |
 | `*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
 | `*_blast.tsv` | BLAST search results against the reference database |
