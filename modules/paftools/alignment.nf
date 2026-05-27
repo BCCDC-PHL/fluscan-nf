@@ -23,8 +23,10 @@ process paftools_align {
     printf -- "  - tool_name: minimap2\\n    tool_version: \$(minimap2 --version 2>&1 | head -n1)\\n" >> ${sample_id}_paftools_align_provenance.yml
 
     for consensus_fa in consensus/*.s.fasta; do
-        segment=\$(basename "\$consensus_fa" .s.fasta | sed -E 's/.*_([^_]+)\$/\\1/')
-        reference_fa="ref_input/${sample_id}_\${segment}.s.fasta"
+        consensus_basename=\$(basename "\$consensus_fa" .s.fasta)
+        consensus_core="\${consensus_basename#${sample_id}_}"
+        segment="\${consensus_core%_raw}"
+        reference_fa="ref_input/${sample_id}_ref_\${segment}.s.fasta"
         output_prefix="${sample_id}_\${segment}"
         minimap2 -cx asm20 --cs "\$reference_fa" "\$consensus_fa" > "\${output_prefix}_raw.paf" || { echo "WARN: minimap2 failed for \$segment" >&2; continue; }
         sort -k6,6 -k8,8n "\${output_prefix}_raw.paf" > "\${output_prefix}.paf"
@@ -52,8 +54,10 @@ process paftools_coverage_check {
     script:
     """
     for paf_file in pafs/*.paf; do
-        segment=\$(basename "\$paf_file" .paf | sed -E 's/.*_([^_]+)\$/\\1/')
-        reference_fa="ref_input/${sample_id}_\${segment}.s.fasta"
+        paf_basename=\$(basename "\$paf_file" .paf)
+        paf_core="\${paf_basename#${sample_id}_}"
+        segment="\${paf_core%_raw}"
+        reference_fa="ref_input/${sample_id}_ref_\${segment}.s.fasta"
         paf_coverage_check.py \\
           --paf "\$paf_file" \\
           --sample ${sample_id} \\

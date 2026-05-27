@@ -7,7 +7,7 @@ process paftools_call {
     input:
     tuple val(sample_id),
           path(pafs, stageAs: 'pafs/*'),
-          path(references, stageAs: 'reference/*')
+          path(references, stageAs: 'ref_inputs/*')
 
     output:
     tuple val(sample_id), path('*_raw.vcf'), path('reference/*'), emit: vcf
@@ -20,11 +20,13 @@ process paftools_call {
     printf -- "  - tool_name: paftools.js\\n    tool_version: \$(paftools.js version)\\n" >> ${sample_id}_paftools_call_provenance.yml
 
     for paf_file in pafs/*.paf; do
-        segment=\$(basename "\$paf_file" .paf | sed -E 's/.*_([^_]+)\$/\\1/')
-        reference_fa="reference/${sample_id}_\${segment}.s.fasta"
+        paf_basename=\$(basename "\$paf_file" _raw.paf)
+        segment="\${paf_basename##*_}"
+        reference_fa="ref_inputs/${sample_id}_ref_\${segment}.s.fasta"
         output_prefix="${sample_id}_\${segment}"
         paftools.js call -l 100 -L 100 -f "\$reference_fa" "\$paf_file" > "\${output_prefix}_raw.vcf"
     done
+    cp -r ref_inputs reference
     """
 }
 
@@ -78,8 +80,9 @@ process paftools_snpeff_annotation {
     printf -- "  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n" >> ${sample_id}_paftools_snpeff_provenance.yml
 
     for vcf_file in vcf/*_sorted.vcf; do
-        segment=\$(basename "\$vcf_file" _sorted.vcf | sed -E 's/.*_([^_]+)\$/\\1/')
-        reference_fa="reference/${sample_id}_\${segment}.s.fasta"
+        vcf_basename=\$(basename "\$vcf_file" _sorted.vcf)
+        segment="\${vcf_basename#${sample_id}_}"
+        reference_fa="reference/${sample_id}_ref_\${segment}.s.fasta"
 
         REF_NAME=\$(grep -oP "##contig=<ID=\\K([^,]+)" "\$vcf_file")
         REF_NAME_FIELDS=(\${REF_NAME//|/ })
