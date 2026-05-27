@@ -12,10 +12,20 @@ Steps performed:
   e) Enforce uppercase
   f) Check that each segment length falls within predefined ranges
 
-Expected input header format examples:
-  >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
-  >R3980461859-3370-A-D05_segment1_PB2
-The segment name is the last underscore-delimited field of the sequence ID.
+Accepted input header formats:
+  Underscore-delimited (legacy):
+    >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
+    >R3980461859-3370-A-D05_segment1_PB2
+  Pipe-delimited (GISAID-style):
+    >EPI_ISL_20399898|A_/_H5N1|NA|6|EPI5261179|2.3.4.4b_NA
+
+Cleaned output headers are normalised to the canonical form:
+  {sample_id}_{SEGMENT}
+e.g. EPI-ISL-20399898_NA or WIN-AH-2024-FAV-0415-1-OS_PB2
+
+For pipe-delimited headers, sample ID is taken from the first pipe field with
+underscores replaced by dashes. Segment is extracted from the underscore suffix
+of the field that contains a recognised influenza segment name.
 """
 
 import argparse
@@ -27,6 +37,9 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 EXPECTED_SEGMENTS = ['PB2', 'PB1', 'PA', 'HA', 'NP', 'NA', 'M', 'NS']
+
+# All recognised segment labels, including the legacy MP alias for M
+SEGMENT_NAMES = set(EXPECTED_SEGMENTS) | {'MP'}
 
 # Partially degenerate IUPAC nucleotide codes (excluding N, which is already "any")
 DEGENERATE_BASES = set('RYSWKMBDHV')
@@ -65,18 +78,45 @@ def detect_delimiter(records):
     return '_'
 
 
-def clean_header(record_id):
-    """Clean the sequence ID by removing the trailing segment ordinal."""
-    new_id = re.sub(r"_segment\d", "", record_id)
-    return new_id
-
 def get_segment_label(record_id, delimiter='_'):
-    """Extract the segment label (e.g., PB2, HA, M) from the sequence ID."""
-    label = record_id.split(delimiter)[-1].upper()
-    # Normalise legacy matrix labels to M.
-    if label == 'MP':
-        label = 'M'
-    return label
+    """Extract the segment label (e.g., PB2, HA, M) from the sequence ID.
+
+    For pipe-delimited headers, each field is scanned for an underscore-separated
+    suffix that matches a known influenza segment name, e.g.:
+      '2.3.4.4b_NA' -> 'NA'
+    For underscore-delimited headers, the last field is used directly.
+    Legacy matrix label 'MP' is normalised to 'M'.
+    Returns None if no recognised segment label can be found.
+    """
+    if delimiter == '|':
+        for field in record_id.split('|'):
+            if '_' in field:
+                candidate = field.split('_')[-1].upper()
+                if candidate in SEGMENT_NAMES:
+                    return 'M' if candidate == 'MP' else candidate
+        return None
+    else:
+        label = record_id.split(delimiter)[-1].upper()
+        return 'M' if label == 'MP' else label
+
+
+def make_canonical_header(record_id, delimiter, segment):
+    """Build the canonical cleaned FASTA header: {normalized_sample_id}_{segment}.
+
+    For pipe-delimited headers, the sample ID is the first pipe-delimited field
+    with underscores replaced by dashes, e.g.:
+      EPI_ISL_20399898|A_/_H5N1|NA|... -> EPI-ISL-20399898_NA
+
+    For underscore-delimited headers, the sample ID is derived by stripping the
+    trailing _segmentN_SEGMENT and/or _segmentN suffixes, e.g.:
+      WIN-AH-2024-FAV-0415-1-OS_segment1_PB2 -> WIN-AH-2024-FAV-0415-1-OS_PB2
+    """
+    if delimiter == '|':
+        sample_id = record_id.split('|')[0].replace('_', '-')
+    else:
+        sample_id = re.sub(r'_segment\d+_[A-Za-z0-9]+$', '', record_id)
+        sample_id = re.sub(r'_segment\d+$', '', sample_id)
+    return f"{sample_id}_{segment}"
 
 
 def replace_degenerate(sequence):
@@ -117,13 +157,21 @@ def main():
     seg_to_record = {}
     for rec in records:
         segment = get_segment_label(rec.id, delimiter)
-        new_id = clean_header(rec.id)  # Clean the header for output
-
-        rec.id = new_id  # Update the record 
-        rec.description = new_id
-        rec.name = new_id
-
+        if segment is None:
+            print(f"WARNING [{args.sample_id}]: Could not determine segment for '{rec.id}'; skipping.",
+                  file=sys.stderr)
+            continue
+        canonical_id = make_canonical_header(rec.id, delimiter, segment)
+        rec.id = canonical_id
+        rec.description = canonical_id
+        rec.name = canonical_id
         seg_to_record[segment] = rec
+
+    if not seg_to_record:
+        print(f"ERROR [{args.sample_id}]: No valid influenza segments could be extracted from {args.input}. "
+              f"Check that headers contain a recognised segment label (one of: {', '.join(EXPECTED_SEGMENTS)}).",
+              file=sys.stderr)
+        sys.exit(1)
 
     # --- a) Check for 8 expected segments ---
     found_segments = set(seg_to_record.keys())
@@ -156,12 +204,8 @@ def main():
         # --- d) N proportion after degenerate replacement ---
         n_prop_after = n_proportion(seq_clean)
 
-        # --- b) Enforce M label in the header ---
+        # --- b) Canonical header already set at indexing time (MP normalised to M) ---
         new_id = rec.id
-        label_in_id = rec.id.split(delimiter)[-1].upper()
-        if label_in_id == 'MP':
-            # Replace the trailing legacy matrix label with M in the sequence ID.
-            new_id = delimiter.join(rec.id.split(delimiter)[:-1]) + delimiter + 'M'
 
         # --- f) Check sequence length ---
         seq_len = len(seq_clean)

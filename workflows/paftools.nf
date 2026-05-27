@@ -7,11 +7,12 @@
  *   subtype-aware reference selection via BLAST, minimap2/paftools variant
  *   calling, bcftools VCF sorting, SnpEff annotation, and summary extraction.
  *
- *   Expected input FASTA header format:
- *     >SAMPLE_ID_segmentN_SEGMENT
- *   e.g.
- *     >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
- *     >R3980461859-3370-A-D05_segment1_PB2
+ *   Accepted input FASTA header formats:
+ *     Underscore-delimited (legacy): >SAMPLE_ID_segmentN_SEGMENT
+ *       e.g. >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
+ *     Pipe-delimited (GISAID-style): >EPI_ISL_ACCESSION|subtype|SEGMENT|...|clade_SEGMENT
+ *       e.g. >EPI_ISL_20399898|A_/_H5N1|NA|6|EPI5261179|2.3.4.4b_NA
+ *   Cleaned headers are normalised to {sample_id}_{SEGMENT} by prepare_consensus.
  *
  *   Reference database header format (--nt_database):
  *     >accession|subtype|segment

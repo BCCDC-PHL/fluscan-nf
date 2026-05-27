@@ -7,10 +7,12 @@
  *   per-segment Nextclade alignment against GooseGuangdong1996 reference
  *   datasets, and conversion of Nextclade JSON output to a freebayes-style VCF.
  *
- *   Expected input FASTA header format:
- *     >SAMPLE_ID_segmentN_SEGMENT
- *   e.g.
- *     >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
+ *   Accepted input FASTA header formats:
+ *     Underscore-delimited (legacy): >SAMPLE_ID_segmentN_SEGMENT
+ *       e.g. >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
+ *     Pipe-delimited (GISAID-style): >EPI_ISL_ACCESSION|subtype|SEGMENT|...|clade_SEGMENT
+ *       e.g. >EPI_ISL_20399898|A_/_H5N1|NA|6|EPI5261179|2.3.4.4b_NA
+ *   Cleaned headers are normalised to {sample_id}_{SEGMENT} by prepare_consensus.
  *
  *   Segment datasets are resolved from --nextclade_datasets_dir by lowercasing
  *   the segment label (e.g. HA -> ha, M -> m).

@@ -58,15 +58,14 @@ def load_segment_subtype_map(blast_filter_path):
 
 def load_consensus_by_segment(fasta_path):
     """
-    Parse the consensus FASTA and index sequences by their segment label
-    (last underscore-delimited field of the sequence ID, upper-cased).
-    Legacy matrix labels are normalised to M.
+    Parse the cleaned consensus FASTA and index sequences by their segment label.
+    The cleaned FASTA uses canonical headers of the form 'sample_id_SEGMENT'
+    (produced by prepare_consensus.py), so the segment label is always the last
+    underscore-delimited token of the sequence ID.
     """
     seqs = {}
     for rec in SeqIO.parse(fasta_path, 'fasta'):
         seg_label = rec.id.split('_')[-1].upper()
-        if seg_label == 'MP':
-            seg_label = 'M'
         seqs[seg_label] = rec
     return seqs
 
