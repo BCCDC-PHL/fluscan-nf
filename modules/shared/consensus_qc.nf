@@ -4,14 +4,14 @@ process prepare_consensus {
 
     tag { sample_id }
 
-    publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}_cleaned.fasta", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}.fasta", mode: 'copy'
     publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}_qc_report.tsv", mode: 'copy'
 
     input:
     tuple val(sample_id), path(fasta_input)
 
     output:
-    tuple val(sample_id), path("${sample_id}_cleaned.fasta"), emit: cleaned
+    tuple val(sample_id), path("${sample_id}.fasta"), emit: cleaned
     tuple val(sample_id), path("${sample_id}_qc_report.tsv"), emit: qc
     tuple val(sample_id), path("${sample_id}_prepare_consensus_provenance.yml"), emit: provenance
 
@@ -27,7 +27,7 @@ process prepare_consensus {
     prepare_consensus.py \
         --input raw.fasta \
         --sample_id ${sample_id} \
-        --output ${sample_id}_cleaned.fasta \
+        --output ${sample_id}.fasta \
         --output_qc ${sample_id}_qc_report.tsv
     """
 }
