@@ -877,7 +877,10 @@ def variants_from_json_result(
 
     nuc_to_aa    = result.get("nucToAaMuts", {})
     aa_dels      = result.get("aaDeletions", [])
-    aa_ins       = result.get("aaInsertions", [])
+    aa_ins       = [
+        {**i, "cdsName": i.get("cdsName") or i.get("cds", "")}
+        for i in result.get("aaInsertions", [])
+    ]
     frame_shifts = result.get("frameShifts", [])
 
     for sub in result.get("substitutions", []):
