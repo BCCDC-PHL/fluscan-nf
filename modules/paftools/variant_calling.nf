@@ -20,8 +20,8 @@ process paftools_call {
     printf -- "  - tool_name: paftools.js\\n    tool_version: \$(paftools.js version)\\n" >> ${sample_id}_paftools_call_provenance.yml
 
     for paf_file in pafs/*.paf; do
-        paf_basename=\$(basename "\$paf_file" _raw.paf)
-        segment="\${paf_basename##*_}"
+        paf_basename=\$(basename "\$paf_file" .paf)
+        segment="\${paf_basename#${sample_id}_}"
         reference_fa="ref_inputs/${sample_id}_ref_\${segment}.s.fasta"
         output_prefix="${sample_id}_\${segment}"
         paftools.js call -l 100 -L 100 -f "\$reference_fa" "\$paf_file" > "\${output_prefix}_raw.vcf"
@@ -38,7 +38,7 @@ process paftools_sort_vcf {
     input:
     tuple val(sample_id),
           path(raw_vcfs, stageAs: 'vcf/*'),
-          path(references, stageAs: 'reference/*')
+          path(references, stageAs: 'ref_inputs/*')
 
     output:
     tuple val(sample_id), path('*_sorted.vcf'), path('reference/*'), emit: vcf
@@ -53,6 +53,7 @@ process paftools_sort_vcf {
         output_prefix=\$(basename "\$vcf_file" _raw.vcf)
         bcftools sort "\$vcf_file" -o "\${output_prefix}_sorted.vcf"
     done
+    cp -r ref_inputs reference
     """
 }
 

@@ -46,8 +46,9 @@ process nextclade_to_vcf {
     script:
     workflow = task.ext.workflow ?: "unknown_workflow"
     """
-    REFERENCE_NAME=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/>(\\S+).+/\\1/g')
+    REFERENCE_NAME=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/>(\\S+).*/\\1/g')
     SUBTYPE=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/.+\\(\\S+\\((\\S+)\\)\\S*\\).+/\\1/g')
+    if echo "\$SUBTYPE" | grep -q '^>'; then SUBTYPE="unknown"; fi
     SEGMENT=${dataset_dir}
     SEGMENT=\${SEGMENT^^} # uppercase
 
@@ -73,7 +74,7 @@ process nextclade_run_batch {
             if (filename =~ /.*_nextclade\.(json|tsv)$/) {
                 def file_extension = filename.endsWith('.json') ? 'json' : 'tsv'
                 def filename_base  = filename.replaceAll(/_nextclade\.(json|tsv)$/, '')
-                def sample_id      = filename_base.substring(0, filename_base.lastIndexOf('_'))
+                def sample_id      = (filename =~ /^[^_]+/)[0]
                 def workflow       = task.ext.workflow ?: 'unknown_workflow'
                 return "${sample_id}/${workflow}/${file_extension}/${filename}"
             }
@@ -90,6 +91,7 @@ process nextclade_run_batch {
     tuple val(segment), path("*_nextclade.tsv"), emit: tsv
 
     script:
+    def threads = task.cpus ?: 1
     """
     # Rewrite each segment FASTA header to exactly the sample_id so nextclade
     # seqName matches sample_id in the result JSON (enables per-sample demux).
@@ -104,6 +106,7 @@ process nextclade_run_batch {
         --input-dataset ${dataset_dir} \\
         --output-json   batch_nextclade.json \\
         --output-tsv    batch_nextclade.tsv \\
+        --jobs ${threads} \\
         batch.fasta
 
     # Split batch JSON into one file per sample
@@ -114,6 +117,7 @@ for result in batch_data.get('results', []):
     sample_id = result['seqName']
     sample_data = dict(batch_data)
     sample_data['results'] = [result]
+    sample_data['errors'] = [e for e in batch_data.get('errors', []) if e.get('seqName') == sample_id]
     with open(sample_id + '_${segment}_nextclade.json', 'w') as json_out:
         json.dump(sample_data, json_out)
 "
@@ -152,8 +156,9 @@ process nextclade_to_vcf_batch {
 
     script:
     """
-    REFERENCE_NAME=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/>(\\S+).+/\\1/g')
+    REFERENCE_NAME=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/>(\\S+).*/\\1/g')
     SUBTYPE=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/.+\\(\\S+\\((\\S+)\\)\\S*\\).+/\\1/g')
+    if echo "\$SUBTYPE" | grep -q '^>'; then SUBTYPE="unknown"; fi
     SEGMENT="${segment}"
 
     for json_file in json/*_nextclade.json; do
