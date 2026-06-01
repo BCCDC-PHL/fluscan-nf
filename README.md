@@ -154,7 +154,7 @@ One folder is produced per sample.
 
 | File | Description |
 |------|-------------|
-| `*_cleaned.fasta` | Validated consensus FASTA with headers normalised to `{sample_id}_{SEGMENT}` |
+| `${sample_id}.fasta` | Validated consensus FASTA with headers normalised to `{sample_id}_{SEGMENT}` |
 | `*_qc_report.tsv` | QC report from consensus preparation |
 | `*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
 | `*_blast.tsv` | BLAST search results against the reference database |
