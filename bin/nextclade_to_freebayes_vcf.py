@@ -477,6 +477,13 @@ def _deletion_alleles(ref_seq: str, begin: int, end: int) -> tuple[int, str, str
 
 
 def _insertion_alleles(ref_seq: str, pos: int, ins_seq: str) -> tuple[int, str, str]:
+    if pos < 0:
+        # 5' insertion before the reference start (nextclade pos == -1).
+        # Right-anchor to POS 1: ALT = ins_seq + ref[0], REF = ref[0].
+        # _deletion_alleles already handles its analogous begin==0 edge case;
+        # without this guard, anchor = -1 causes POS = 0 (invalid VCF) and
+        # ref_seq[-1] silently returns the *last* reference base.
+        return 1, ref_seq[0], ins_seq + ref_seq[0]
     anchor = pos
     return anchor + 1, ref_seq[anchor], ref_seq[anchor] + ins_seq
 
