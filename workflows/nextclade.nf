@@ -52,8 +52,12 @@ workflow NEXTCLADE {
 
     main:
 
-        if (params.nextclade_datasets_dir == 'NO_FILE') {
-            error "ERROR: --nextclade_datasets_dir is required for the Nextclade workflow."
+        if (
+            !params.nextclade_datasets_dir ||
+            params.nextclade_datasets_dir == 'NO_FILE' ||
+            !file(params.nextclade_datasets_dir).exists()
+        ) {
+            error "ERROR: --nextclade_datasets_dir must be set to an existing path for the Nextclade workflow."
         }
 
         // --- Step 1: Validate and clean input consensus FASTA ---

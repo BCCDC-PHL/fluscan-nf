@@ -71,8 +71,12 @@ workflow PAFTOOLS {
 
     main:
 
-        if (params.snpeff_config == 'NO_FILE') {
-            error "ERROR: --snpeff_config is required for the PAFTOOLS workflow."
+        if (
+            !params.snpeff_config ||
+            params.snpeff_config == 'NO_FILE' ||
+            !file(params.snpeff_config).exists()
+        ) {
+            error "ERROR: --snpeff_config must be set to an existing path for the PAFTOOLS workflow."
         }
 
         ch_snpeff_config = Channel.fromPath(params.snpeff_config, checkIfExists: true)
