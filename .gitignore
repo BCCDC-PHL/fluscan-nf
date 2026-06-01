@@ -1,4 +1,5 @@
-**/snpEff.config
+assets/database/*/snpEff.config
+assets/database/*/nextclade
 .github/data/assemblies
 .github/data/fastq
 .github/data/fluviewer_db
