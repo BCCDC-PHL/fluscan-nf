@@ -5,10 +5,10 @@ Reads a config.json from the dataset directory for all strain-specific
 values (display name, ID prefix, strain, QC thresholds, segment list).
 
 Usage:
-    python build_chicken2021_dataset.py <dataset_dir>
-    python build_chicken2021_dataset.py .       # run from the dataset dir
+    python scripts/build_dataset.py <dataset_dir>
+    python scripts/build_dataset.py .       # run from the dataset dir
 
-Each segment subdir must already contain a <dir>/<dir>.gb GenBank file.
+Each segment GenBank file must exist at <dataset_dir>/<segment_dir>.gb and will be moved into <dataset_dir>/<segment_dir>/<segment_dir>.gb.
 Outputs per-segment: reference.fasta, genome_annotation.gff3, pathogen.json
 """
 
