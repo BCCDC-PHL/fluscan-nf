@@ -35,7 +35,7 @@ include { short_read_mask_low_coverage }   from '../modules/short_read/alignment
 include { short_read_make_consensus }      from '../modules/short_read/alignment.nf'
 include { short_read_lofreq }              from '../modules/short_read/variant_calling.nf'
 include { short_read_snpeff_annotation }   from '../modules/short_read/variant_calling.nf'
-include { post_process_vcf }               from '../modules/shared/post_process.nf'
+include { short_read_post_process_vcf }   from '../modules/short_read/variant_calling.nf'
 include { short_read_summarize_vcf }       from '../modules/short_read/variant_calling.nf'
 include { short_read_mutation_watch }      from '../modules/short_read/variant_calling.nf'
 include { short_read_make_coverage_plot }  from '../modules/short_read/plotting.nf'
@@ -118,8 +118,8 @@ workflow SHORT_READ {
 
             ch_segment_vcfs = short_read_snpeff_annotation.out.vcfs.transpose().map(extract_segment)
 
-            post_process_vcf(ch_segment_vcfs.join(blastn.out.ref))
-            short_read_summarize_vcf(post_process_vcf.out.vcf)
+            short_read_post_process_vcf(ch_segment_vcfs.join(blastn.out.ref))
+            short_read_summarize_vcf(short_read_post_process_vcf.out.vcf)
             short_read_mutation_watch(short_read_summarize_vcf.out.tsv.combine(watchlist_files))
         }
 
