@@ -1,7 +1,7 @@
 # fluscan-nf
 
 This is a Nextflow pipeline for Influenza A mutation analysis from either short-read FASTQ data or pre-built consensus FASTA files.
-The short-read workflow performs trimming, assembly, mapping, LoFreq variant calling, SnpEff annotation, and consensus generation. The PAFTOOLS workflow (consensus FASTA input) validates the supplied FASTA, selects a subtype-matched reference with BLAST, aligns per-segment with `minimap2`, calls differences with `paftools.js`, sorts with `bcftools`, annotates with SnpEff, and fixes multi-nucleotide variant codons.
+The short-read workflow performs trimming, assembly, mapping, LoFreq variant calling, SnpEff annotation, and consensus generation. In FASTA mode (`--fasta_input`), the pipeline currently launches both a PAFTOOLS branch and a NEXTCLADE branch: PAFTOOLS validates the supplied FASTA, selects a subtype-matched reference with BLAST, aligns per segment with `minimap2`, calls differences with `paftools.js`, sorts with `bcftools`, annotates with SnpEff, and fixes multi-nucleotide variant codons; NEXTCLADE validates the same input, batches sequences by segment for `nextclade run`, converts the results to VCF, and applies the same MNV codon correction step.
 
 ## Analyses
 
@@ -28,54 +28,80 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - VCF sorting with `bcftools sort`
 - Annotation of amino acid variant calls using SnpEff
 - MNV codon correction
-- Genotype calling with [GenoFLU](https://github.com/USDA-VS/GenoFLU/)
+- Alignment coverage QC with run-level aggregation
+- Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
+
+### NEXTCLADE workflow (consensus FASTA input)
+- Consensus FASTA validation and header normalisation
+- Per-segment batching across samples
+- Per-segment `nextclade run` against built-in datasets
+- Per-sample JSON/TSV splitting from the batch results
+- Conversion to freebayes-style VCF
+- MNV codon correction
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
 
 ```mermaid
 flowchart TD
-    %% Input channels and initial processes
-    input[FastQ Input] --> hash[hash_files]
-    input --> fastp
-    fastp --> cutadapt
-    primers[Primers] --> cutadapt
-    cutadapt --> fastqc
-    cutadapt --> sample_reads
-    sample_reads --> assembly
+    input[Consensus FASTA input directory]
+    dispatch[main.nf FASTA dispatch]
 
-    %% MultiQC inputs
-    fastp -- json --> multiqc
-    cutadapt -- log --> multiqc
-    fastqc -- zip --> multiqc
+    input --> dispatch
+    dispatch --> paftools_prepare
+    dispatch --> nextclade_prepare
 
-    %% Reference selection via BLAST
-    assembly -- contigs --> blastn
-    nt_db[NT Database] --> blastn
+    subgraph PAFTOOLS[PAFTOOLS workflow]
+        direction TB
+        paftools_prepare[prepare_consensus]
+        paftools_flumut[flumut]
+        blastn[blastn reference selection]
+        split_ref[split_fasta]
+        minimap[minimap2 asm20]
+        covqc[coverage QC]
+        covagg[aggregate coverage summary]
+        paftools_call[paftools.js call]
+        sortvcf[bcftools sort]
+        snpeff[SnpEff]
+        paf2fb[paftools_to_freebayes_vcf.py]
+        fixmnv_paf[fix_mnv_codons.py]
+        paf_final[Final PAFTOOLS VCFs]
 
-    %% Read mapping and variant calling
-    input --> map_reads
-    blastn -- reference --> map_reads
-    map_reads --> sort_filter_sam
-    sort_filter_sam -- bam --> make_pileup
-    sort_filter_sam -- depth --> make_coverage_plot
-    sort_filter_sam -- bam --> lofreq
-    blastn -- reference --> lofreq
+        paftools_prepare --> blastn
+        paftools_prepare --> paftools_flumut
+        paftools_prepare --> split_ref
+        blastn --> split_ref
+        split_ref --> minimap
+        minimap --> covqc
+        covqc --> covagg
+        minimap --> paftools_call
+        paftools_call --> sortvcf
+        sortvcf --> snpeff
+        snpeff --> paf2fb
+        covqc --> paf2fb
+        paf2fb --> fixmnv_paf
+        fixmnv_paf --> paf_final
+    end
 
-    %% SnpEff annotation and MNV correction
-    lofreq -- vcf --> snpeff_annotation
-    snpeff_config[SNPEff Config] --> snpeff_annotation
-    snpeff_annotation --> post_process_vcf
-    post_process_vcf --> summarize_vcf
-    summarize_vcf --> mutation_watch
-    mutation_watchlist[Mutation Watchlist] --> mutation_watch
+    subgraph NEXTCLADE[NEXTCLADE workflow]
+        direction TB
+        nextclade_prepare[prepare_consensus]
+        nextclade_flumut[flumut]
+        split_consensus[split_fasta]
+        groupseg[group by segment across samples]
+        nc_run[nextclade run batch]
+        split_results[split per-sample JSON and TSV]
+        nc2vcf[nextclade_to_freebayes_vcf.py]
+        fixmnv_nc[fix_mnv_codons.py]
+        nc_final[Final NEXTCLADE VCFs]
 
-    %% Consensus generation
-    sort_filter_sam -- bam --> mask_low_coverage
-    lofreq -- vcf --> make_consensus
-    blastn -- reference --> make_consensus
-    mask_low_coverage -- masked_bed --> make_consensus
-
-    %% FluMut
-    make_consensus -- consensus --> flumut
+        nextclade_prepare --> nextclade_flumut
+        nextclade_prepare --> split_consensus
+        split_consensus --> groupseg
+        groupseg --> nc_run
+        nc_run --> split_results
+        split_results --> nc2vcf
+        nc2vcf --> fixmnv_nc
+        fixmnv_nc --> nc_final
+    end
 ```
 
 
@@ -102,12 +128,12 @@ nextflow run BCCDC-PHL/fluscan-nf \
 ```
 
 Optional short-read parameters:
-- `--samplesheet_input` — CSV samplesheet (`ID,R1,R2`) as an alternative to `--fastq_input`
+- `--samplesheet_input` — CSV samplesheet (`ID,R1,R2`) consumed by the short-read workflow; note that `main.nf` currently still switches into short-read mode based on `--fastq_input`
 - `--watchlist_dir` — directory containing `*watchlist.csv` files for mutation-of-interest scanning
 - `--snpeff_config` — path to a custom SnpEff config (defaults to the built-in database)
 - `--aligner` — `bwa` (default) or `minimap2`
 
-**PAFTOOLS workflow example (consensus FASTA input):**
+**FASTA-mode example (runs both PAFTOOLS and NEXTCLADE):**
 ```
 nextflow run BCCDC-PHL/fluscan-nf \
   -r v0.1.0 \
@@ -118,7 +144,7 @@ nextflow run BCCDC-PHL/fluscan-nf \
   --outdir /path/to/output_dir
 ```
 
-> **Note:** `--snpeff_config` is **required** for the PAFTOOLS workflow. It is optional for the short-read workflow, which falls back to the built-in SnpEff database.
+> **Note:** FASTA mode requires `params.snpeff_config` to resolve to an existing SnpEff config because the PAFTOOLS branch requires it. By default this comes from the built-in database configured in `nextflow.config`; use `--snpeff_config` to override it. In the short-read workflow, `--snpeff_config` is optional and also defaults to the built-in config.
 
 **Package management:**
 - Conda is used for dependency management. The `-profile conda` flag and `--cache` parameter are required on BCCDC systems.
@@ -127,28 +153,30 @@ nextflow run BCCDC-PHL/fluscan-nf \
 ## Output
 
 Outputs are written to the directory specified with the `--outdir` parameter.
-One folder is produced per sample.
+Sample-level outputs are written to one folder per sample, and some workflows also emit run-level aggregate outputs.
 
 ### Short-read workflow outputs (per sample)
 
 | File | Description |
 |------|-------------|
+| `*.fastp.html` | Per-sample fastp HTML report |
+| `*.fastp.json` | Per-sample fastp JSON report |
+| `*_contigs.fasta` | De-novo assembled contigs from SPAdes |
 | `*_consensus.fasta` | Multi-FASTA containing the consensus sequences for each segment |
 | `*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
-| `*_blast.tsv` | BLAST search results of assembled contigs against the reference database |
-| `*_blast_filter.tsv` | Filtered BLAST search results |
+| `*_blastn.tsv` | BLAST search results of assembled contigs against the reference database |
+| `*_blastn_filter.tsv` | Filtered BLAST search results |
+| `*.sort.filter.bam` | Sorted, filtered alignment BAM used for downstream calling and coverage calculations |
 | `*_coverage.png` | Line plots describing mapping coverage across all 8 flu segments |
 | `*_pileup.tsv` | Pileup TSV with raw counts of all 4 nucleotides and gaps |
 | `*_depth.tsv` | Per-position alignment depth (samtools depth) |
-| `vcf/*.vcf.gz` | Variants in VCF format called by LoFreq relative to the reference sequence |
-| `vcf/*__anno.vcf` | Per-segment VCF annotated with amino acid consequences by SnpEff |
-| `vcf/*_anno_clean.vcf` | Per-segment VCF with MNV codon corrections applied |
-| `vcf/*_mutations.tsv` | Reformatted, filtered VCF to simplify mutation identification |
-| `vcf/*_mut_watch.tsv` | Mutations that are also present on the provided watchlist |
+| `*_low_coverage.bed` | Low-coverage regions masked during consensus generation |
+| `short_read/*_final.vcf` | Per-segment final VCF after SnpEff annotation and MNV codon correction |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers |
+| `*_provenance.yml` | Aggregated per-sample provenance file for the short-read workflow |
 
 ### PAFTOOLS workflow outputs (per sample, consensus FASTA input)
 
@@ -157,11 +185,22 @@ One folder is produced per sample.
 | `${sample_id}.fasta` | Validated consensus FASTA with headers normalised to `{sample_id}_{SEGMENT}` |
 | `*_qc_report.tsv` | QC report from consensus preparation |
 | `*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
-| `*_blast.tsv` | BLAST search results against the reference database |
-| `*_blast_filter.tsv` | Filtered BLAST search results |
-| `vcf/*__anno.vcf` | Per-segment VCF annotated with amino acid consequences by SnpEff |
-| `vcf/*_anno_clean.vcf` | Per-segment VCF with MNV codon corrections applied |
-| `genoflu/*_stats.tsv` | Tabular genotype call information from GenoFLU |
+| `*_blastn.tsv` | BLAST search results against the reference database |
+| `*_blastn_filter.tsv` | Filtered BLAST search results |
+| `alignment_qc/*_coverage.tsv` | Per-segment coverage checks derived from the minimap2/PAF alignments |
+| `paftools/*_final.vcf` | Per-segment final VCF after `paftools.js`, SnpEff, freebayes-style conversion, and MNV codon correction |
+| `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
+| `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
+| `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
+| `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers |
+
+### NEXTCLADE workflow outputs (per sample, consensus FASTA input)
+
+| File | Description |
+|------|-------------|
+| `nextclade/json/*_nextclade.json` | Per-segment Nextclade JSON split out from the cross-sample batch result |
+| `nextclade/tsv/*_nextclade.tsv` | Per-segment Nextclade TSV split out from the cross-sample batch result |
+| `nextclade/*_final.vcf` | Per-segment final VCF after Nextclade-to-VCF conversion and MNV codon correction |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
@@ -171,12 +210,17 @@ One folder is produced per sample.
 
 | File | Description |
 |------|-------------|
-| `multiqc_report.html` | MultiQC report summarising fastp, cutadapt, and FastQC results for all samples (short-read workflow only) |
+| `${run_name}_fluscan-nf_multiqc_report.html` | MultiQC report summarising fastp, cutadapt, and FastQC results for all samples (short-read workflow only) |
+| `aggregate/run_coverage_summary.tsv` | Run-level tabular summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
+| `aggregate/run_coverage_summary.md` | Run-level Markdown summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
+| `${run_name}_fluscan-nf_nextflow_report.html` | Nextflow execution report |
+| `${run_name}_fluscan-nf_nextflow_timeline.html` | Nextflow execution timeline |
+| `${run_name}_fluscan-nf_nextflow_trace.txt` | Nextflow task trace |
 
 
 ## Provenance files
 
-For each pipeline invocation, each sample will produce a `provenance.yml` file with the following contents.  Note the below is a contrived example.  
+The short-read workflow currently publishes one aggregated `${sample_id}_<timestamp>_provenance.yml` file per sample. FASTA mode defines provenance outputs for several processes internally, but sample-level provenance collection is not currently enabled for the `PAFTOOLS` and `NEXTCLADE` workflows. Note the example below is contrived.  
 
 ```yml
 - pipeline_name: BCCDC-PHL/fluscan-nf
