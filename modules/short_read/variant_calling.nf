@@ -89,41 +89,6 @@ process short_read_snpeff_annotation {
 }
 
 
-process short_read_post_process_vcf {
-    tag { "${sample_id}:${segment}" }
-
-    conda "${projectDir}/environments/fluscan.yml"
-
-    publishDir "${params.outdir}/${sample_id}/short_read", pattern: "${sample_id}*_final.vcf", mode: 'copy'
-
-    input:
-    tuple val(sample_id), val(segment), path(vcf), path(reference)
-
-    output:
-    tuple val(sample_id), path("${sample_id}*_final.vcf"), emit: vcf
-    tuple val(sample_id), path("${sample_id}_${segment}_post_process_vcf_provenance.yml"), emit: provenance
-
-    script:
-    def min_af = params.mnv_min_af ?: 0.5
-    """
-    printf -- "- process_name: short_read_post_process_vcf\\n" > ${sample_id}_${segment}_post_process_vcf_provenance.yml
-    printf -- "  tools: \\n" >> ${sample_id}_${segment}_post_process_vcf_provenance.yml
-    printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_${segment}_post_process_vcf_provenance.yml
-    printf -- "  - tool_name: fix_mnv_codons.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_${segment}_post_process_vcf_provenance.yml
-
-    sed -E 's/^>([^|]+)\\|.+/>\\1/g' ${reference} > reference_cleaned.fasta
-
-    vcf_basename=\$(basename ${vcf} .vcf)
-
-    fix_mnv_codons.py \
-        --input ${vcf} \
-        --reference reference_cleaned.fasta \
-        --output-vcf \${vcf_basename}_final.vcf \
-        --min-af ${min_af}
-    """
-}
-
-
 process short_read_summarize_vcf {
     tag { sample_id }
 
