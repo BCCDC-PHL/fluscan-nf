@@ -36,19 +36,13 @@ include { short_read_make_consensus }      from '../modules/short_read/alignment
 include { short_read_lofreq }              from '../modules/short_read/variant_calling.nf'
 include { short_read_snpeff_annotation }   from '../modules/short_read/variant_calling.nf'
 include { post_process_vcf }               from '../modules/shared/post_process.nf'
+include { split_fasta as split_fasta_reference } from '../modules/shared/consensus_qc.nf'
 include { short_read_summarize_vcf }       from '../modules/short_read/variant_calling.nf'
 include { short_read_mutation_watch }      from '../modules/short_read/variant_calling.nf'
 include { short_read_make_coverage_plot }  from '../modules/short_read/plotting.nf'
 
 
 workflow SHORT_READ {
-
-    def extract_segment = { sample_id, vcf ->
-        def segment = vcf =~ /.+__([^_]+)__anno.vcf/
-        println "DEBUG: extract_segment - sample_id: ${sample_id}, vcf: ${vcf}, segment: ${segment}"
-        segment = segment[0] ? segment[0][1] : "unknown_segment"
-        return [sample_id, segment, vcf]
-    }
 
     ch_workflow_metadata = Channel.value([
         workflow.sessionId,
@@ -116,10 +110,17 @@ workflow SHORT_READ {
             watchlist_files = Channel.fromPath(params.watchlist_dir + "/*watchlist.csv")
             short_read_snpeff_annotation(short_read_lofreq.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
 
-            ch_segment_vcfs = short_read_snpeff_annotation.out.vcfs.transpose().map(extract_segment)
+            // Split each sample's multi-segment BLAST reference into per-segment FASTAs
+            // named {sample_id}_ref_{segment}.s.fasta — the lookup post_process_vcf expects
+            ch_reference_segments = split_fasta_reference(blastn.out.ref)
 
-            post_process_vcf(ch_segment_vcfs.join(blastn.out.ref))
-            short_read_summarize_vcf(post_process_vcf.out.vcf)
+
+            // Fully aggregated per sample: [sample_id, [segment VCFs], [per-segment refs]]
+            ch_segment_vcfs = short_read_snpeff_annotation.out.vcfs.join(ch_reference_segments)
+
+            post_process_vcf(ch_segment_vcfs)
+            short_read_summarize_vcf(post_process_vcf.out.vcf.transpose())
+
             short_read_mutation_watch(short_read_summarize_vcf.out.tsv.combine(watchlist_files))
         }
 
