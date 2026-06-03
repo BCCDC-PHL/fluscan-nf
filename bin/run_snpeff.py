@@ -75,7 +75,7 @@ def main():
         # Use a temporary file for the single-segment VCF
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_vcf = os.path.join(tmpdir, 'segment.vcf')
-            output_vcf = f'{args.outname}__{accession}__{subtype}__{segment}__anno.vcf'
+            output_vcf = f'{args.outname}__{accession}__{subtype}__{segment}.vcf'
 
             write_vcf(renamed_df, seg_header_lines, tmp_vcf)
             run_snpeff(tmp_vcf, f'influenza_{subtype.lower()}', output_vcf, args.config)

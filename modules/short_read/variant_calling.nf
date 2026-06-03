@@ -65,14 +65,14 @@ process short_read_snpeff_annotation {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*__anno.vcf", mode: 'copy'
+    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}__*.vcf", mode: 'copy'
 
     input:
     tuple val(sample_id), path(vcf), path(vcf_index), path(snpeff_config_path)
 
     output:
     tuple val(sample_id), path("${sample_id}_all_anno.vcf"), emit: all_vcf
-    tuple val(sample_id), path("${sample_id}*__anno.vcf"), emit: vcfs
+    tuple val(sample_id), path("${sample_id}__*.vcf"), emit: vcfs
     tuple val(sample_id), path("${sample_id}_snpeff_provenance.yml"), emit: provenance
 
     script:
