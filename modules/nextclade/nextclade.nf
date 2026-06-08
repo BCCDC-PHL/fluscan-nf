@@ -71,6 +71,10 @@ process nextclade_run_batch {
 
     publishDir "${params.outdir}", mode: 'copy',
         saveAs: { filename ->
+            if (filename =~ /.*_nextclade_status\.tsv$/) {
+                def workflow = task.ext.workflow ?: 'unknown_workflow'
+                return "${workflow}/status/${filename}"
+            }
             if (filename =~ /.*_nextclade\.(json|tsv)$/) {
                 def file_extension = filename.endsWith('.json') ? 'json' : 'tsv'
                 def filename_base  = filename.replaceAll(/_nextclade\.(json|tsv)$/, '')
@@ -88,7 +92,8 @@ process nextclade_run_batch {
 
     output:
     tuple val(segment), val(sample_ids), path("*_nextclade.json"), path(dataset_dir), emit: json_with_ref
-    tuple val(segment), path("*_nextclade.tsv"), emit: tsv
+    tuple val(segment), path("*_nextclade.tsv"),                                       emit: tsv
+    tuple val(segment), path("${segment}_nextclade_status.tsv"),                       emit: status
 
     script:
     def threads = task.cpus ?: 1
@@ -109,31 +114,11 @@ process nextclade_run_batch {
         --jobs ${threads} \\
         batch.fasta
 
-    # Split batch JSON into one file per sample
-    python3 -c "
-import json
-batch_data = json.load(open('batch_nextclade.json'))
-for result in batch_data.get('results', []):
-    sample_id = result['seqName']
-    sample_data = dict(batch_data)
-    sample_data['results'] = [result]
-    sample_data['errors'] = [e for e in batch_data.get('errors', []) if e.get('seqName') == sample_id]
-    with open(sample_id + '_${segment}_nextclade.json', 'w') as json_out:
-        json.dump(sample_data, json_out)
-"
-
-    # Split batch TSV into one file per sample (header + one data row each)
-    python3 -c "
-import csv
-with open('batch_nextclade.tsv') as tsv_in:
-    reader = csv.DictReader(tsv_in, delimiter='\\t')
-    for row in reader:
-        sample_id = row['seqName']
-        with open(sample_id + '_${segment}_nextclade.tsv', 'w', newline='') as tsv_out:
-            writer = csv.DictWriter(tsv_out, fieldnames=reader.fieldnames, delimiter='\\t')
-            writer.writeheader()
-            writer.writerow(row)
-"
+    nextclade_post_process.py \\
+        --json    batch_nextclade.json \\
+        --tsv     batch_nextclade.tsv \\
+        --segment ${segment} \\
+        --status-summary ${segment}_nextclade_status.tsv
     """
 }
 
