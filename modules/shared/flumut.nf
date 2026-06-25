@@ -1,4 +1,4 @@
-// flumut.nf - FluMut influenza molecular marker detection
+// shared/flumut.nf - FluMut influenza molecular marker detection (shared by all workflows)
 
 process flumut {
 

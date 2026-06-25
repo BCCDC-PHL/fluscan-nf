@@ -1,4 +1,6 @@
-process cutadapt {
+// short_read/qc.nf - Read QC and trimming processes for the SHORT_READ workflow
+
+process short_read_cutadapt {
 
     tag { sample_id }
 
@@ -12,7 +14,7 @@ process cutadapt {
 
     script:
     """
-    printf -- "- process_name: cutadapt\\n"    >> ${sample_id}_cutadapt_provenance.yml
+    printf -- "- process_name: short_read_cutadapt\\n"    >> ${sample_id}_cutadapt_provenance.yml
     printf -- "  tools:\\n"                    >> ${sample_id}_cutadapt_provenance.yml
     printf -- "    - tool_name: cutadapt\\n"   >> ${sample_id}_cutadapt_provenance.yml
     printf -- "      tool_version: \$(cutadapt --version 2>&1 | cut -d ' ' -f 2)\\n" >> ${sample_id}_cutadapt_provenance.yml
@@ -31,7 +33,7 @@ process cutadapt {
     """
 }
 
-process fastp {
+process short_read_fastp {
 
     tag { sample_id }
 
@@ -48,7 +50,7 @@ process fastp {
 
     script:
     """
-    printf -- "- process_name: fastp\\n"  >> ${sample_id}_fastp_provenance.yml
+    printf -- "- process_name: short_read_fastp\\n"  >> ${sample_id}_fastp_provenance.yml
     printf -- "  tools:\\n"               >> ${sample_id}_fastp_provenance.yml
     printf -- "    - tool_name: fastp\\n" >> ${sample_id}_fastp_provenance.yml
     printf -- "      tool_version: \$(fastp --version 2>&1 | cut -d ' ' -f 2)\\n" >> ${sample_id}_fastp_provenance.yml
@@ -63,33 +65,12 @@ process fastp {
       -h ${sample_id}.fastp.html \
       --detect_adapter_for_pe \
       --cut_tail \
-      --report_title "${sample_id} fastp report" 
+      --report_title "${sample_id} fastp report"
     """
 }
 
 
-process fastp_json_to_csv {
-
-  tag { sample_id }
-
-  executor 'local'
-
-  publishDir "${params.outdir}/${sample_id}", pattern: "${sample_id}_fastp.csv", mode: 'copy'
-
-  input:
-  tuple val(sample_id), path(fastp_json)
-
-  output:
-  tuple val(sample_id), path("${sample_id}_fastp.csv")
-
-  script:
-  """
-  fastp_json_to_csv.py -s ${sample_id} ${fastp_json} > ${sample_id}_fastp.csv
-  """
-}
-
-
-process fastqc {
+process short_read_fastqc {
 
     tag { sample_id }
 
@@ -104,7 +85,7 @@ process fastqc {
 
     script:
     """
-    printf -- "- process_name: fastqc\\n"  >> ${sample_id}_fastqc_provenance.yml
+    printf -- "- process_name: short_read_fastqc\\n"  >> ${sample_id}_fastqc_provenance.yml
     printf -- "  tools:\\n"                >> ${sample_id}_fastqc_provenance.yml
     printf -- "    - tool_name: fastqc\\n" >> ${sample_id}_fastqc_provenance.yml
     printf -- "      tool_version: \$(fastqc --version 2>&1 | sed -n '1 p')\\n" >> ${sample_id}_fastqc_provenance.yml
@@ -115,13 +96,13 @@ process fastqc {
       --threads ${task.cpus} \
       --dir ./tmp \
       ${sample_id}_R1.trim_p.fastq.gz \
-      ${sample_id}_R2.trim_p.fastq.gz 
-    
+      ${sample_id}_R2.trim_p.fastq.gz
+
     """
 }
 
 
-process multiqc {
+process short_read_multiqc {
 
     publishDir "${params.outdir}", pattern: "*_multiqc_report.html", mode:'copy'
 
@@ -133,6 +114,6 @@ process multiqc {
 
     script:
     """
-    multiqc . -n ${params.run_name}_fluviewer-nf_multiqc_report.html
+    multiqc . -n ${params.run_name}_fluscan-nf_multiqc_report.html
     """
 }

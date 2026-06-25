@@ -1,3 +1,6 @@
+// short_read/snp_calling.nf - BLASTX-based amino acid SNP calling for the SHORT_READ workflow
+// NOTE: Currently disabled (call site commented out in workflows/short-read.nf)
+
 process snp_calling {
 
     errorStrategy 'ignore'
