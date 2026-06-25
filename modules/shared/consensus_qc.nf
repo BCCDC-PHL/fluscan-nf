@@ -23,8 +23,8 @@ process prepare_consensus {
     tuple val(sample_id), path(fasta_input)
 
     output:
-    tuple env('isolate'), path("out/*.fasta"),          emit: cleaned
-    tuple env('isolate'), path("out/*_qc_report.tsv"),  emit: qc
+    tuple env(isolate), path("out/*.fasta"),          emit: cleaned
+    tuple env(isolate), path("out/*_qc_report.tsv"),  emit: qc
     tuple val(sample_id), path("${sample_id}_prepare_consensus_provenance.yml"), emit: provenance
 
     script:
@@ -34,9 +34,9 @@ process prepare_consensus {
     printf -- "    - tool_name: prepare_consensus.py\\n" >> ${sample_id}_prepare_consensus_provenance.yml
     printf -- "      tool_version: 1.0.0\\n"            >> ${sample_id}_prepare_consensus_provenance.yml
 
-    prepare_consensus.py \\
-        --input ${fasta_input} \\
-        --sample_id ${sample_id} \\
+    prepare_consensus.py \
+        --input ${fasta_input} \
+        --sample_id ${sample_id} \
         --outdir out
 
     isolate=\$(cat out/isolate_id.txt)
