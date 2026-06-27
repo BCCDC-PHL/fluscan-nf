@@ -478,7 +478,9 @@ def _deletion_alleles(ref_seq: str, begin: int, end: int) -> tuple[int, str, str
 
 def _insertion_alleles(ref_seq: str, pos: int, ins_seq: str) -> tuple[int, str, str]:
     if pos < 0:
-        # 5' insertion before the reference start (nextclade pos == -1).
+        # Defensive fallback: terminal-overhang insertions (nextclade pos == -1) are
+        # normally filtered out upstream in variants_from_json_result, so this branch is
+        # not reached in the standard pipeline. Kept to guarantee valid VCF if ever called.
         # Right-anchor to POS 1: ALT = ins_seq + ref[0], REF = ref[0].
         # _deletion_alleles already handles its analogous begin==0 edge case;
         # without this guard, anchor = -1 causes POS = 0 (invalid VCF) and
@@ -909,6 +911,14 @@ def variants_from_json_result(
     for ins in result.get("insertions", []):
         raw_pos = ins["pos"]
         ins_seq = ins["ins"]
+        # Skip terminal-overhang insertions: 5' inserts before the first reference base
+        # (raw_pos < 0) and 3' inserts after the last reference base (raw_pos >= ref_len-1).
+        # These encode query overhang / N-padding outside the reference span; nucmer/paftools
+        # align only within the reference span and never emit them, so keeping them produces
+        # terminal false positives. Genuine internal insertions (raw_pos in 0 .. ref_len-2)
+        # are unaffected.
+        if raw_pos < 0 or raw_pos >= len(ref_seq) - 1:
+            continue
         vcf_pos, ref_a, alt_a = _insertion_alleles(ref_seq, raw_pos, ins_seq)
         ann_pos = raw_pos if raw_pos >= 0 else 0
         ann = _ann_field_for_ins(ann_pos, ins_seq, alt_a, aa_ins, frame_shifts, genes, transcripts)

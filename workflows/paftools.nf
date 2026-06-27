@@ -1,0 +1,147 @@
+#!/usr/bin/env nextflow
+
+/*
+ *   PAFTOOLS workflow (consensus FASTA input)
+ *   -----------------------------------------
+ *   Processes pre-assembled consensus FASTA files through quality control,
+ *   subtype-aware reference selection via BLAST, minimap2/paftools variant
+ *   calling, bcftools VCF sorting, SnpEff annotation, and summary extraction.
+ *
+ *   Accepted input FASTA header formats:
+ *     Underscore-delimited (legacy): >SAMPLE_ID_segmentN_SEGMENT
+ *       e.g. >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
+ *     Pipe-delimited (GISAID-style): >EPI_ISL_ACCESSION|subtype|SEGMENT|...|clade_SEGMENT
+ *       e.g. >EPI_ISL_20399898|A_/_H5N1|NA|6|EPI5261179|2.3.4.4b_NA
+ *   Cleaned headers are normalised to {sample_id}_{SEGMENT} by prepare_consensus.
+ *
+ *   Reference database header format (--nt_database):
+ *     >accession|subtype|segment
+ *   e.g.
+ *     >NC_026438.1|H1N1|PB2
+ *
+ */
+
+nextflow.enable.dsl = 2
+
+include { pipeline_provenance }                          from '../modules/shared/provenance.nf'
+include { collect_provenance }                           from '../modules/shared/provenance.nf'
+include { prepare_consensus }                            from '../modules/shared/consensus_qc.nf'
+include { split_fasta as split_fasta_reference }         from '../modules/shared/consensus_qc.nf'
+include { split_fasta as split_fasta_consensus }         from '../modules/shared/consensus_qc.nf'
+include { paftools_align }                               from '../modules/paftools/alignment.nf'
+include { paftools_coverage_check }                      from '../modules/paftools/alignment.nf'
+include { paftools_aggregate_coverage_report }           from '../modules/paftools/alignment.nf'
+include { makeblastdb }                                  from '../modules/shared/blast.nf'
+include { blastn }                                       from '../modules/shared/blast.nf'
+include { genoflu }                                      from '../modules/shared/genoflu.nf'
+include { flumut }                                       from '../modules/shared/flumut.nf'
+include { paftools_call }                                from '../modules/paftools/variant_calling.nf'
+include { paftools_sort_vcf }                            from '../modules/paftools/variant_calling.nf'
+include { paftools_snpeff_annotation }                   from '../modules/paftools/variant_calling.nf'
+include { paftools_to_freebayes_vcf }                    from '../modules/paftools/variant_calling.nf'
+include { summarize_vcf }                                from '../modules/paftools/variant_calling.nf'
+include { post_process_vcf }                             from '../modules/shared/post_process.nf'
+
+
+
+workflow PAFTOOLS {
+
+    ch_workflow_metadata = Channel.value([
+        workflow.sessionId,
+        workflow.runName,
+        workflow.manifest.name,
+        workflow.manifest.version,
+        workflow.start,
+    ])
+
+    ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
+
+    // Discover consensus FASTA files in the input directory.
+    // Each file is expected to contain 8 segments for a single sample.
+    ch_fasta_input = Channel.fromPath(
+        params.fasta_input + "/*.{fasta,fa,fna}",
+        checkIfExists: true
+    ).map { fasta ->
+        def sample_id = fasta.baseName.replaceAll(/[_\.]consensus$/, '').replaceAll(/_/,'-')
+        sample_id = sample_id.replaceFirst(/^\d{2}-\d+(?:-IP\d+)?-/, "")
+        return [sample_id, fasta]
+    }
+
+    ch_nt_database = Channel.fromPath(params.nt_database)
+
+    main:
+
+        if (
+            !params.snpeff_config ||
+            params.snpeff_config == 'NO_FILE' ||
+            !file(params.snpeff_config).exists()
+        ) {
+            error "ERROR: --snpeff_config must be set to an existing path for the PAFTOOLS workflow."
+        }
+
+        ch_snpeff_config = Channel.fromPath(params.snpeff_config, checkIfExists: true)
+
+        // Provenance channel
+        ch_provenance = ch_fasta_input.map{ it -> it[0] }
+
+        // --- Step 1: Validate and clean input consensus FASTA ---
+        prepare_consensus(ch_fasta_input)
+
+        // --- Step 2: Build BLAST database (once, shared across all samples) ---
+        makeblastdb(ch_nt_database).first().set{ch_blastdb}
+
+        // --- Step 3: BLAST cleaned consensus against reference database ---
+        blastn(prepare_consensus.out.cleaned, ch_blastdb)
+
+        //genoflu(prepare_consensus.out.cleaned)
+
+        flumut(prepare_consensus.out.cleaned)
+
+        ch_consensus_segments = split_fasta_consensus(prepare_consensus.out.cleaned)
+        ch_reference_segments = split_fasta_reference(blastn.out.ref)
+
+        ch_segment_sequences = ch_consensus_segments.join(ch_reference_segments)
+
+        paftools_align(ch_segment_sequences)
+
+        // --- Step 4b: Check reference coverage of each alignment ---
+        paftools_coverage_check(paftools_align.out.paf)
+        paftools_aggregate_coverage_report(
+            paftools_coverage_check.out.coverage
+                .flatMap { sample_id, tsvs -> tsvs }
+                .collect()
+        )
+
+        // --- Step 5: Align consensus to reference and call variants with paftools ---
+        paftools_call(paftools_align.out.paf)
+
+        // --- Step 6: Sort VCF for downstream annotation ---
+        paftools_sort_vcf(paftools_call.out.vcf)
+
+        // --- Step 7: Annotate amino-acid impacts with SnpEff ---
+        paftools_snpeff_annotation(paftools_sort_vcf.out.vcf.combine(ch_snpeff_config))
+
+        paftools_to_freebayes_vcf(
+            paftools_snpeff_annotation.out.vcf.join(paftools_coverage_check.out.coverage)
+        )
+
+        // --- Step 8: Post-process annotated VCF (MNV codon correction) ---
+        post_process_vcf(
+            paftools_to_freebayes_vcf.out.vcf.join(ch_reference_segments)
+        )
+
+
+        // // --- Step 8: Reformat annotated VCF to summary TSV ---
+        //summarize_vcf(paftools_snpeff_annotation.out.vcf)
+
+        // // --- Provenance collection ---
+        // ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it ->      [it[0], [it[1]]] }
+        // ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        // ch_provenance = ch_provenance.join(blastn.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        // ch_provenance = ch_provenance.join(paftools_call.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        // ch_provenance = ch_provenance.join(paftools_sort_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        // ch_provenance = ch_provenance.join(paftools_snpeff_annotation.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        // ch_provenance = ch_provenance.join(summarize_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        // collect_provenance(ch_provenance)
+
+}
