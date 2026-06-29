@@ -28,6 +28,7 @@ include { collect_provenance }                           from '../modules/shared
 include { prepare_consensus }                            from '../modules/shared/consensus_qc.nf'
 include { split_fasta as split_fasta_reference }         from '../modules/shared/consensus_qc.nf'
 include { split_fasta as split_fasta_consensus }         from '../modules/shared/consensus_qc.nf'
+include { consensus_identity_qc }                        from '../modules/shared/consensus_qc.nf'
 include { paftools_align }                               from '../modules/paftools/alignment.nf'
 include { paftools_coverage_check }                      from '../modules/paftools/alignment.nf'
 include { paftools_aggregate_coverage_report }           from '../modules/paftools/alignment.nf'
@@ -45,6 +46,12 @@ include { post_process_vcf }                             from '../modules/shared
 
 
 workflow PAFTOOLS {
+
+    def extract_segment = { sample_id, fasta ->
+        def segment = fasta =~ /.*_([A-z0-9-]+)\.s.*/
+        segment = segment[0][1] ? segment[0][1] : "unknown_segment"
+        return [sample_id, segment, fasta]
+    }
 
     ch_workflow_metadata = Channel.value([
         workflow.sessionId,
@@ -99,6 +106,18 @@ workflow PAFTOOLS {
 
         ch_consensus_segments = split_fasta_consensus(prepare_consensus.out.cleaned)
         ch_reference_segments = split_fasta_reference(blastn.out.ref)
+
+        // --- Step 3b: Report-only per-segment consensus/reference identity QC.
+        //   Join each consensus segment to its BLAST-selected reference segment
+        //   on (sample_id, segment) -> [sample_id, segment, consensus, reference].
+        ch_identity_qc = ch_consensus_segments
+            .transpose()
+            .map(extract_segment)                              // [sample_id, segment, consensus_fa]
+            .join(
+                ch_reference_segments.transpose().map(extract_segment),  // [sample_id, segment, reference_fa]
+                by: [0, 1]
+            )
+        consensus_identity_qc(ch_identity_qc)
 
         ch_segment_sequences = ch_consensus_segments.join(ch_reference_segments)
 

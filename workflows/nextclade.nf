@@ -26,6 +26,7 @@ nextflow.enable.dsl = 2
 
 include { prepare_consensus }                    from '../modules/shared/consensus_qc.nf'
 include { split_fasta as split_fasta_consensus } from '../modules/shared/consensus_qc.nf'
+include { consensus_identity_qc }                from '../modules/shared/consensus_qc.nf'
 include { flumut }                               from '../modules/shared/flumut.nf'
 include { nextclade_run_batch }                  from '../modules/nextclade/nextclade.nf'
 include { nextclade_to_vcf_batch }               from '../modules/nextclade/nextclade.nf'
@@ -63,14 +64,26 @@ workflow NEXTCLADE {
         // --- Step 1: Validate and clean input consensus FASTA ---
         prepare_consensus(ch_fasta_input)
 
+        // Split each cleaned consensus into per-segment FASTAs once; reused by
+        // the identity QC and the cross-sample nextclade batching below.
+        ch_consensus_segments = split_fasta_consensus(prepare_consensus.out.cleaned)
+            .transpose()
+            .map(extract_segment)                          // [sample_id, segment, fa]
+
+        // --- Step 1b: Report-only consensus/reference identity QC ---
+        //   Pair each consensus segment with its Nextclade dataset reference.
+        ch_identity_qc = ch_consensus_segments
+            .map { sample_id, segment, consensus ->
+                def ref_fasta = file("${params.nextclade_datasets_dir}/${segment.toLowerCase()}/reference.fasta")
+                return [sample_id, segment, consensus, ref_fasta]
+            }
+        consensus_identity_qc(ch_identity_qc)
+
         // --- Step 2: HPAI mutation screening (per sample, parallel branch) ---
         flumut(prepare_consensus.out.cleaned)
 
-        // --- Step 3: Split cleaned FASTA into per-segment files, then group by
-        //             segment across all samples for cross-sample batching ---
-        ch_segment_batches = split_fasta_consensus(prepare_consensus.out.cleaned)
-            .transpose()
-            .map(extract_segment)                          // [sample_id, segment, fa]
+        // --- Step 3: Group per-segment FASTAs across all samples for batching ---
+        ch_segment_batches = ch_consensus_segments
             .map { sample_id, segment, fa -> [segment, sample_id, fa] }
             .groupTuple()                                  // [segment, [sample_ids], [fastas]]
             .map { segment, sample_ids, fastas ->

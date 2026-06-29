@@ -61,3 +61,40 @@ process split_fasta {
     split_fasta.py split ${fasta}
     """
 }
+
+
+// Report-only consensus/reference identity QC for a single segment. The
+// workflow label (paftools / nextclade) is supplied via task.ext.workflow,
+// set by the `withName: '<WORKFLOW>:.*'` selectors in nextflow.config.
+process consensus_identity_qc {
+    tag { "${sample_id}|${segment}" }
+
+    errorStrategy 'ignore'
+
+    conda "${projectDir}/environments/fluscan.yml"
+
+    publishDir "${params.outdir}", mode: 'copy',
+        saveAs: { filename ->
+            "${sample_id}/${task.ext.workflow ?: 'unknown_workflow'}/identity_qc/${filename}"
+        }
+
+    input:
+    tuple val(sample_id), val(segment), path(consensus_fasta), path(reference_fasta)
+
+    output:
+    tuple val(sample_id), val(segment), path("*_consensus_identity_qc.tsv"), emit: tsv
+
+    script:
+    def qc_workflow = task.ext.workflow ?: 'unknown_workflow'
+    """
+    consensus_identity_qc.py \
+        --consensus ${consensus_fasta} \
+        --reference ${reference_fasta} \
+        --sample-id ${sample_id} \
+        --segment ${segment} \
+        --workflow ${qc_workflow} \
+        --pass-pct ${params.consensus_identity_pass_pct} \
+        --warn-pct ${params.consensus_identity_warn_pct} \
+        --out-tsv ${sample_id}_${segment}_${qc_workflow}_consensus_identity_qc.tsv
+    """
+}
