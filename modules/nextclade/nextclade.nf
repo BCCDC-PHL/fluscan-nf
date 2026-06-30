@@ -109,8 +109,11 @@ process nextclade_run_batch {
 
     nextclade run \\
         --input-dataset ${dataset_dir} \\
-        --output-json   batch_nextclade.json \\
-        --output-tsv    batch_nextclade.tsv \\
+        --output-json  batch_nextclade.json \\
+        --output-tsv  batch_nextclade.tsv \\
+        --output-fasta  batch_nt_alignment.fasta \\
+        --output-translations  batch_aa_alignment.fasta \\
+        --alignment-preset ${params.nextclade_alignment_preset} \\
         --jobs ${threads} \\
         batch.fasta
 
