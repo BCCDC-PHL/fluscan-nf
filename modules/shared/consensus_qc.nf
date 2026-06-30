@@ -85,16 +85,16 @@ process consensus_identity_qc {
     tuple val(sample_id), val(segment), path("*_consensus_identity_qc.tsv"), emit: tsv
 
     script:
-    def qc_workflow = task.ext.workflow ?: 'unknown_workflow'
+    def workflow = task.ext.workflow ?: 'unknown_workflow'
     """
     consensus_identity_qc.py \
         --consensus ${consensus_fasta} \
         --reference ${reference_fasta} \
         --sample-id ${sample_id} \
         --segment ${segment} \
-        --workflow ${qc_workflow} \
+        --workflow ${workflow} \
         --pass-pct ${params.consensus_identity_pass_pct} \
         --warn-pct ${params.consensus_identity_warn_pct} \
-        --out-tsv ${sample_id}_${segment}_${qc_workflow}_consensus_identity_qc.tsv
+        --out-tsv ${sample_id}_${segment}_${workflow}_consensus_identity_qc.tsv
     """
 }
