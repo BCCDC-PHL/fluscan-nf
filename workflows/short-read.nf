@@ -18,8 +18,6 @@ include { short_read_multiqc }             from '../modules/short_read/qc.nf'
 include { short_read_fastqc }              from '../modules/short_read/qc.nf'
 include { short_read_sample_reads }        from '../modules/short_read/assembly.nf'
 include { short_read_assembly }            from '../modules/short_read/assembly.nf'
-include { clade_calling }                  from '../modules/short_read/clade_calling.nf'
-include { snp_calling }                    from '../modules/short_read/snp_calling.nf'
 include { pull_genoflu }                   from '../modules/shared/genoflu.nf'
 include { checkout_genoflu }               from '../modules/shared/genoflu.nf'
 include { genoflu }                        from '../modules/shared/genoflu.nf'
@@ -62,7 +60,6 @@ workflow SHORT_READ {
         ch_fastq_input = Channel.fromFilePairs( params.fastq_search_path, flat: true ).map{ it -> [it[0].split('_')[0], it[1], it[2]] }.unique{ it -> it[0] }
     }
 
-    ch_aa_database = Channel.of([file(params.aa_database).parent, file(params.aa_database).name]).first()
     ch_nt_database = Channel.fromPath(params.nt_database)
 
     main:
@@ -129,11 +126,7 @@ workflow SHORT_READ {
 
         flumut(short_read_make_consensus.out.consensus)
 
-        //Call clades for H1 and H3 samples
-        //clade_calling(short_read_make_consensus.out.consensus)
-
         //genoflu(short_read_make_consensus.out.consensus)
-        //snp_calling(short_read_make_consensus.out.consensus, ch_aa_database)
 
         // Provenance collection processes
         // The basic idea is to build up a channel with the following structure:
