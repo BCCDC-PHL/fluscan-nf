@@ -82,7 +82,7 @@ process nextclade_run_batch {
                 def workflow       = task.ext.workflow ?: 'unknown_workflow'
                 return "${sample_id}/${workflow}/${file_extension}/${filename}"
             }
-            return null
+            return "nextclade_batch/${filename}"
         }
 
     input:
@@ -91,9 +91,10 @@ process nextclade_run_batch {
           path(dataset_dir)
 
     output:
-    tuple val(segment), val(sample_ids), path("*_nextclade.json"), path(dataset_dir), emit: json_with_ref
-    tuple val(segment), path("*_nextclade.tsv"),                                       emit: tsv
-    tuple val(segment), path("${segment}_nextclade_status.tsv"),                       emit: status
+    tuple val(segment), val(sample_ids), path("nc_output/*_nextclade.json"), path(dataset_dir), emit: json_with_ref
+    tuple val(segment), path("nc_output/*_nextclade.tsv"),                                      emit: tsv
+    tuple val(segment), path("nc_output"),                                                      emit: all
+    tuple val(segment), path("${segment}_nextclade_status.tsv"),                                emit: status
 
     script:
     def threads = task.cpus ?: 1
@@ -109,17 +110,15 @@ process nextclade_run_batch {
 
     nextclade run \\
         --input-dataset ${dataset_dir} \\
-        --output-json  batch_nextclade.json \\
-        --output-tsv  batch_nextclade.tsv \\
-        --output-fasta  batch_nt_alignment.fasta \\
-        --output-translations  batch_aa_alignment.fasta \\
+        --output-all nc_output \\
+        --output-basename batch \\
         --alignment-preset ${params.nextclade_alignment_preset} \\
         --jobs ${threads} \\
         batch.fasta
 
     nextclade_post_process.py \\
-        --json    batch_nextclade.json \\
-        --tsv     batch_nextclade.tsv \\
+        --json    nc_output/batch*.json \\
+        --tsv     nc_output/batch*.tsv \\
         --segment ${segment} \\
         --status-summary ${segment}_nextclade_status.tsv
     """
