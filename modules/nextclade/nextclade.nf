@@ -82,7 +82,11 @@ process nextclade_run_batch {
                 def workflow       = task.ext.workflow ?: 'unknown_workflow'
                 return "${sample_id}/${workflow}/${file_extension}/${filename}"
             }
-            return "nextclade_batch/${filename}"
+            if (filename =~ /nc_output.*/) {
+                def newname = filename.replaceAll(/nc_output/, "${segment}_output")
+                return "nextclade/${newname}"
+            }
+            return null
         }
 
     input:
@@ -91,8 +95,8 @@ process nextclade_run_batch {
           path(dataset_dir)
 
     output:
-    tuple val(segment), val(sample_ids), path("nc_output/*_nextclade.json"), path(dataset_dir), emit: json_with_ref
-    tuple val(segment), path("nc_output/*_nextclade.tsv"),                                      emit: tsv
+    tuple val(segment), val(sample_ids), path("*_nextclade.json"), path(dataset_dir), emit: json_with_ref
+    tuple val(segment), path("*_nextclade.tsv"),                                      emit: tsv
     tuple val(segment), path("nc_output"),                                                      emit: all
     tuple val(segment), path("${segment}_nextclade_status.tsv"),                                emit: status
 
@@ -112,13 +116,14 @@ process nextclade_run_batch {
         --input-dataset ${dataset_dir} \\
         --output-all nc_output \\
         --output-basename batch \\
+        --include-reference \\
         --alignment-preset ${params.nextclade_alignment_preset} \\
         --jobs ${threads} \\
         batch.fasta
 
     nextclade_post_process.py \\
-        --json    nc_output/batch*.json \\
-        --tsv     nc_output/batch*.tsv \\
+        --json    nc_output/batch.json \\
+        --tsv     nc_output/batch.tsv \\
         --segment ${segment} \\
         --status-summary ${segment}_nextclade_status.tsv
     """
@@ -148,7 +153,7 @@ process nextclade_to_vcf_batch {
     if echo "\$SUBTYPE" | grep -q '^>'; then SUBTYPE="unknown"; fi
     SEGMENT="${segment}"
 
-    for json_file in json/*_nextclade.json; do
+    for json_file in json/*.json; do
         json_basename=\$(basename "\$json_file" _nextclade.json)
         sample_id=\${json_basename%_${segment}}
         nextclade_to_freebayes_vcf.py \\
