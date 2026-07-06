@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-paf_coverage_check.py
+paftools_qc_check.py
 
 Compute reference-coverage statistics for a minimap2 PAF alignment.
 Emits a single-row TSV per (sample, segment) and writes a WARNING to stderr
 when coverage falls below threshold.
 
 Usage:
-    paf_coverage_check.py --paf <sorted.paf> --sample <id> --segment <name>
-                          --reference <ref.fasta>
-                          --pass-thresh 0.95 --warn-thresh 0.50
-                          --out-tsv <output.tsv>
+    paftools_qc_check.py --paf <sorted.paf> --sample <id> --segment <name>
+                         --reference <ref.fasta>
+                         --warn-thresh 0.90 --fail-thresh 0.50
+                         --out-tsv <output.tsv>
 """
 
 import argparse
@@ -68,8 +68,8 @@ def main():
     parser.add_argument('--sample',      required=True,  help='Sample identifier')
     parser.add_argument('--segment',     required=True,  help='Segment name')
     parser.add_argument('--reference',   default='',     help='Reference FASTA (used as fallback for ref length when PAF is empty)')
-    parser.add_argument('--pass-thresh', type=float, default=0.95, help='Coverage fraction threshold for PASS status')
-    parser.add_argument('--warn-thresh', type=float, default=0.50, help='Coverage fraction threshold for WARN_PARTIAL status')
+    parser.add_argument('--warn-thresh', type=float, default=0.90, help='Coverage fraction at/above which status is PASS; below it is WARN')
+    parser.add_argument('--fail-thresh', type=float, default=0.50, help='Coverage fraction below which status is FAIL')
     parser.add_argument('--out-tsv',     required=True,  help='Output TSV path')
     args = parser.parse_args()
 
@@ -131,13 +131,13 @@ def main():
     mean_identity = (1.0 - weighted_dv_sum / total_aln_len) * 100 if total_aln_len > 0 else 0.0
 
     if n_alignments == 0:
-        status = 'FAIL_NO_ALIGN'
-    elif cov_frac >= args.pass_thresh:
-        status = 'PASS'
+        status = 'FAIL'
     elif cov_frac >= args.warn_thresh:
-        status = 'WARN_PARTIAL'
+        status = 'PASS'
+    elif cov_frac >= args.fail_thresh:
+        status = 'WARN'
     else:
-        status = 'FAIL_NO_ALIGN'
+        status = 'FAIL'
 
     header = [
         'sample_id', 'segment', 'reference', 'ref_length', 'aligned_ref_bases',
