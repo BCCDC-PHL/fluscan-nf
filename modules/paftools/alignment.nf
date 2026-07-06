@@ -37,11 +37,11 @@ process paftools_align {
 }
 
 
-process paftools_coverage_check {
+process paftools_qc_check {
 
     tag { sample_id }
 
-    publishDir "${params.outdir}/${sample_id}/alignment_qc", mode: 'copy', pattern: "*.tsv"
+    publishDir "${params.outdir}/${sample_id}/qc", mode: 'copy', pattern: "*.tsv"
 
     input:
     tuple val(sample_id),
@@ -58,35 +58,14 @@ process paftools_coverage_check {
         paf_core="\${paf_basename#${sample_id}_}"
         segment="\${paf_core%_raw}"
         reference_fa="ref_input/${sample_id}_ref_\${segment}.s.fasta"
-        paf_coverage_check.py \\
+        paftools_qc_check.py \\
           --paf "\$paf_file" \\
           --sample ${sample_id} \\
           --segment "\$segment" \\
           --reference "\$reference_fa" \\
-          --pass-thresh ${params.min_segment_coverage} \\
-          --warn-thresh ${params.min_segment_coverage_strict} \\
+          --warn-thresh ${params.segment_coverage_warn} \\
+          --fail-thresh ${params.segment_coverage_fail} \\
           --out-tsv ${sample_id}_\${segment}_coverage.tsv
     done
-    """
-}
-
-
-process paftools_aggregate_coverage_report {
-
-    publishDir "${params.outdir}/aggregate", mode: 'copy'
-
-    input:
-    path(tsv_files)
-
-    output:
-    path("run_coverage_summary.tsv"), emit: tsv
-    path("run_coverage_summary.md"),  emit: md
-
-    script:
-    """
-    aggregate_coverage_report.py \\
-      --out-tsv run_coverage_summary.tsv \\
-      --out-md  run_coverage_summary.md \\
-      ${tsv_files}
     """
 }
