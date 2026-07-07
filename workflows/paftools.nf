@@ -137,10 +137,14 @@ workflow PAFTOOLS {
         // --- Step 4b: Check reference coverage of each alignment ---
         paftools_qc_check(paftools_align.out.paf)
 
-        ch_qc_summary = paftools_qc_check.out.coverage.map{it -> it[1]}
+        ch_qc_summary = paftools_qc_check.out.coverage
+            .map{ it -> it[1] }
+            .flatten()                              // one Path per emission -> avoids the [name, content...] branch
             .collectFile(
                 name: 'paftools_qc_summary.tsv',
                 storeDir: "${params.outdir}/aggregate",
+                keepHeader: true,                   // keep header from first file only
+                skip: 1,                            // drop the header line from the rest
                 sort: false
             )
 
