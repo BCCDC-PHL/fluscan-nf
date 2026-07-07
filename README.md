@@ -187,7 +187,7 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
 | `*_blastn.tsv` | BLAST search results against the reference database |
 | `*_blastn_filter.tsv` | Filtered BLAST search results |
-| `alignment_qc/*_coverage.tsv` | Per-segment coverage checks derived from the minimap2/PAF alignments |
+| `qc/*_coverage.tsv` | Per-segment coverage checks derived from the minimap2/PAF alignments |
 | `paftools/*_final.vcf` | Per-segment final VCF after `paftools.js`, SnpEff, freebayes-style conversion, and MNV codon correction |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
@@ -212,7 +212,6 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 |------|-------------|
 | `${run_name}_fluscan-nf_multiqc_report.html` | MultiQC report summarising fastp, cutadapt, and FastQC results for all samples (short-read workflow only) |
 | `aggregate/run_coverage_summary.tsv` | Run-level tabular summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
-| `aggregate/run_coverage_summary.md` | Run-level Markdown summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
 | `${run_name}_fluscan-nf_nextflow_report.html` | Nextflow execution report |
 | `${run_name}_fluscan-nf_nextflow_timeline.html` | Nextflow execution timeline |
 | `${run_name}_fluscan-nf_nextflow_trace.txt` | Nextflow task trace |
