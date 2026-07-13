@@ -56,8 +56,13 @@ from Bio import SeqIO
 from Bio.Align import PairwiseAligner, substitution_matrices
 from Bio.Seq import Seq
 
-SCRIPT_VERSION = "2.0.0"
-SCHEMA_VERSION = "2.0"
+# Reuse the converter's GFF parser so the serialized target-CDS placement is exactly what
+# the downstream insert step would otherwise compute itself (guarantees identical ANN).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from nextclade_to_freebayes_vcf import load_gff3  # noqa: E402
+
+SCRIPT_VERSION = "2.1.0"
+SCHEMA_VERSION = "2.1"
 
 SEGMENTS = ("PB2", "PB1", "PA", "HA", "NP", "NA", "M", "NS")
 SEGMENT_ALIASES = {segment.lower(): segment for segment in SEGMENTS}
@@ -197,12 +202,16 @@ def build_map(args: argparse.Namespace) -> None:
             target_models=target_models.get(segment, {}),
         )
 
+    target_placements = read_target_placements(target_ref_dir)
+
     map_doc = make_map_doc(
         source_name=source_name,
         target_name=target_name,
         builds=builds,
+        target_placements=target_placements,
     )
     write_json(out_dir / "coordinate_map.json", map_doc)
+    shard_names = write_segment_shards(out_dir, map_doc)
     write_nt_tsv(out_dir / "coordinate_map.nt.tsv", source_name, builds)
     write_aa_tsv(out_dir / "coordinate_map.aa.tsv", source_name, builds)
     write_qc_tsv(out_dir / "coordinate_map.qc.tsv", source_name, builds)
@@ -212,6 +221,7 @@ def build_map(args: argparse.Namespace) -> None:
 
     for produced in (
         "coordinate_map.json",
+        *shard_names,
         "coordinate_map.nt.tsv",
         "coordinate_map.aa.tsv",
         "coordinate_map.qc.tsv",
@@ -538,13 +548,83 @@ def compute_status(identity_pct: float, coverage_pct: float) -> str:
     return "ok"
 
 
+def index_transcripts(transcripts: list) -> dict[str, dict]:
+    """Map gene identifiers -> transcript, preferring main (non-mature) CDS transcripts.
+
+    Mirrors insert_flumut_mutations.index_transcripts so that lookups by coordinate-map
+    gene key resolve to the same transcript on both sides.
+    """
+    by_key: dict[str, dict] = {}
+    for tx in transcripts:
+        for key in (tx.get("gene_name"), tx.get("feature_id"), tx.get("protein_id")):
+            if not key:
+                continue
+            existing = by_key.get(key)
+            if existing is None or (existing.get("is_mature") and not tx.get("is_mature")):
+                by_key[key] = tx
+    return by_key
+
+
+def read_target_placements(target_ref_dir: Path) -> dict[str, dict[str, dict]]:
+    """Per-segment {gene_key -> transcript} from the target GFFs, via the converter's
+    load_gff3, so serialized placement matches the insert step's own computation."""
+    placements: dict[str, dict[str, dict]] = {}
+    for segment in SEGMENTS:
+        gff = target_ref_dir / segment.lower() / "genome_annotation.gff3"
+        if not gff.exists():
+            gff = target_ref_dir / f"{segment.lower()}.gff3"
+        if gff.exists():
+            _, transcripts = load_gff3(str(gff))
+            placements[segment] = index_transcripts(transcripts)
+    return placements
+
+
+def target_cds_block(target_chrom: str, tx: dict) -> dict[str, Any]:
+    """Serialize a target transcript's placement + identifiers for the coordinate map.
+
+    Carries exactly the fields the insert step needs to derive a genomic POS and build the
+    ANN entry without re-parsing the GFF: 0-based half-open CDS segments (as load_gff3
+    yields), strand, lengths, and the GFF-derived gene_id/feature_id/protein_id.
+    """
+    return {
+        "chrom": target_chrom,
+        "strand": tx["strand"],
+        "segments": [list(seg) for seg in tx["segments"]],
+        "cds_length": tx["cds_length"],
+        "aa_length": tx["aa_length"],
+        "gene_id": tx["gene_id"],
+        "feature_id": tx["feature_id"],
+        "protein_id": tx["protein_id"],
+    }
+
+
 def make_map_doc(
     source_name: str,
     target_name: str,
     builds: dict[str, SegmentBuild],
+    target_placements: dict[str, dict[str, dict]],
 ) -> dict[str, Any]:
     segments: dict[str, Any] = {}
     for segment, build in builds.items():
+        placements = target_placements.get(segment, {})
+        genes: dict[str, Any] = {}
+        for gene in sorted(build.aa_maps):
+            gene_doc: dict[str, Any] = {
+                "source_length": len(build.aa_source[gene]),
+                "target_length": len(build.aa_target[gene]),
+                "aa_identity_pct": safe_pct(build.aa_identity[gene], build.aa_aligned[gene]),
+                "aa_aligned_positions": build.aa_aligned[gene],
+                "aa_gap_columns": build.aa_gaps[gene],
+                "aa_source_to_target": {
+                    str(pos): value
+                    for pos, value in sorted(build.aa_maps[gene].items())
+                },
+            }
+            tx = placements.get(gene)
+            if tx is not None:
+                gene_doc["target_cds"] = target_cds_block(build.target_chrom, tx)
+            genes[gene] = gene_doc
+
         segments[segment] = {
             "source_chrom": build.source_chrom,
             "target_chrom": build.target_chrom,
@@ -559,20 +639,7 @@ def make_map_doc(
             "missing_target_genes": list(build.missing_target_genes),
             "extra_source_genes": list(build.extra_source_genes),
             "stale_annotation": build.stale_annotation,
-            "genes": {
-                gene: {
-                    "source_length": len(build.aa_source[gene]),
-                    "target_length": len(build.aa_target[gene]),
-                    "aa_identity_pct": safe_pct(build.aa_identity[gene], build.aa_aligned[gene]),
-                    "aa_aligned_positions": build.aa_aligned[gene],
-                    "aa_gap_columns": build.aa_gaps[gene],
-                    "aa_source_to_target": {
-                        str(pos): value
-                        for pos, value in sorted(build.aa_maps[gene].items())
-                    },
-                }
-                for gene in sorted(build.aa_maps)
-            },
+            "genes": genes,
         }
 
     return {
@@ -592,6 +659,26 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
     with path.open("w") as handle:
         json.dump(value, handle, indent=2, sort_keys=True)
         handle.write("\n")
+
+
+def write_segment_shards(out_dir: Path, map_doc: dict[str, Any]) -> list[str]:
+    """Write one slim per-segment shard (coordinate_map.<SEG>.json) alongside the combined
+    map. Shards keep the same segments[SEG] nesting so consumers work unchanged, but drop
+    the large, downstream-unused nt_source_to_target map. Returns the shard filenames."""
+    names: list[str] = []
+    for segment, seg_doc in map_doc["segments"].items():
+        slim_seg = {k: v for k, v in seg_doc.items() if k != "nt_source_to_target"}
+        shard = {
+            "schema_version": map_doc["schema_version"],
+            "script_version": map_doc["script_version"],
+            "source_reference": map_doc["source_reference"],
+            "target_reference": map_doc["target_reference"],
+            "segments": {segment: slim_seg},
+        }
+        name = f"coordinate_map.{segment}.json"
+        write_json(out_dir / name, shard)
+        names.append(name)
+    return names
 
 
 def write_nt_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) -> None:
