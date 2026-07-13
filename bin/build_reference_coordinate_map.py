@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """Build a nucleotide/amino-acid coordinate map from a source reference onto a
-master reference coordinate system.
+target reference coordinate system.
+
+The map lifts flumut's fixed reference (the "source", the simpler/less
+reference-entangled representation) onto the selected Nextclade dataset (the
+"target", the canonical coordinate system). A downstream step consumes the map
+to remap flumut mutations into Nextclade coordinates before merging them into
+the pipeline's VCF.
 
 This script's only job is to produce a reusable, auditable coordinate map
 between two FluScan-style reference datasets. It is idempotent -- given the
 same two reference directories it always produces the same map, including the
-trivial case where the source and master references are identical (a strict
-1:1 map).
+trivial case where the source and target references are identical (a strict
+1:1 map, e.g. when the Nextclade dataset is derived from flumut's reference).
 
-Reference directory layout (both source and master must follow this):
+Reference directory layout (both source and target must follow this):
 
     reference_dir/
       ha/reference.fasta
@@ -26,11 +32,11 @@ The eight influenza A segments are fixed:
 
 Usage:
     build_reference_coordinate_map.py \\
-        --source-ref-dir  /path/to/chicken2021/nextclade \\
-        --master-ref-dir  /path/to/flumut/nextclade \\
+        --source-ref-dir  /path/to/flumut/nextclade \\
+        --target-ref-dir  /path/to/chicken2021/nextclade \\
         --out-dir         reference_remap \\
-        --source-name     chicken2021 \\
-        --master-name     flumut
+        --source-name     flumut \\
+        --target-name     chicken2021
 """
 
 from __future__ import annotations
@@ -50,8 +56,8 @@ from Bio import SeqIO
 from Bio.Align import PairwiseAligner, substitution_matrices
 from Bio.Seq import Seq
 
-SCRIPT_VERSION = "1.0.0"
-SCHEMA_VERSION = "1.0"
+SCRIPT_VERSION = "2.0.0"
+SCHEMA_VERSION = "2.0"
 
 SEGMENTS = ("PB2", "PB1", "PA", "HA", "NP", "NA", "M", "NS")
 SEGMENT_ALIASES = {segment.lower(): segment for segment in SEGMENTS}
@@ -95,10 +101,10 @@ class CdsModel:
 class SegmentBuild:
     segment: str
     source_chrom: str
-    master_chrom: str
+    target_chrom: str
     source_seq: str
-    master_seq: str
-    nt_master_aligned: str
+    target_seq: str
+    nt_target_aligned: str
     nt_source_aligned: str
     nt_map: dict[int, int | None]
     nt_status: dict[int, str]
@@ -111,12 +117,12 @@ class SegmentBuild:
     aa_aligned: dict[str, int] = field(default_factory=dict)
     aa_gaps: dict[str, int] = field(default_factory=dict)
     aa_source: dict[str, str] = field(default_factory=dict)
-    aa_master: dict[str, str] = field(default_factory=dict)
-    aa_master_aligned: dict[str, str] = field(default_factory=dict)
+    aa_target: dict[str, str] = field(default_factory=dict)
+    aa_target_aligned: dict[str, str] = field(default_factory=dict)
     aa_source_aligned: dict[str, str] = field(default_factory=dict)
     all_source_gene_lengths: dict[str, int] = field(default_factory=dict)
-    all_master_gene_lengths: dict[str, int] = field(default_factory=dict)
-    missing_master_genes: tuple[str, ...] = ()
+    all_target_gene_lengths: dict[str, int] = field(default_factory=dict)
+    missing_target_genes: tuple[str, ...] = ()
     extra_source_genes: tuple[str, ...] = ()
     stale_annotation: bool = False
 
@@ -125,12 +131,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--source-ref-dir", required=True, type=Path)
     parser.add_argument(
-        "--master-ref-dir",
+        "--source-ref-dir",
         required=True,
         type=Path,
-        help="Master reference directory (per-segment reference.fasta + genome_annotation.gff3).",
+        help="Source reference directory to lift FROM (flumut's Nextclade dataset: "
+        "per-segment reference.fasta + genome_annotation.gff3).",
+    )
+    parser.add_argument(
+        "--target-ref-dir",
+        required=True,
+        type=Path,
+        help="Target reference directory to lift ONTO (the selected Nextclade dataset: "
+        "per-segment reference.fasta + genome_annotation.gff3).",
     )
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument(
@@ -139,9 +152,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Preferred source reference name. Overridden by config.json id_prefix if present.",
     )
     parser.add_argument(
-        "--master-name",
+        "--target-name",
         default=None,
-        help="Preferred master reference name. Overridden by config.json id_prefix if present.",
+        help="Preferred target reference name. Overridden by config.json id_prefix if present.",
     )
     return parser.parse_args(argv)
 
@@ -154,22 +167,22 @@ def main(argv: list[str] | None = None) -> int:
 
 def build_map(args: argparse.Namespace) -> None:
     source_ref_dir = args.source_ref_dir.resolve()
-    master_ref_dir = args.master_ref_dir.resolve()
+    target_ref_dir = args.target_ref_dir.resolve()
     out_dir = args.out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     source_name = resolve_reference_name(source_ref_dir, args.source_name)
-    master_name = resolve_reference_name(master_ref_dir, args.master_name)
+    target_name = resolve_reference_name(target_ref_dir, args.target_name)
 
     source_segments = read_reference_segments(source_ref_dir)
     source_models = read_reference_models(source_ref_dir)
-    master_segments = read_reference_segments(master_ref_dir)
-    master_models = read_reference_models(master_ref_dir)
+    target_segments = read_reference_segments(target_ref_dir)
+    target_models = read_reference_models(target_ref_dir)
 
     missing = [
         segment
         for segment in SEGMENTS
-        if segment not in source_segments or segment not in master_segments
+        if segment not in source_segments or segment not in target_segments
     ]
     if missing:
         raise SystemExit(f"Missing required segment(s): {', '.join(missing)}")
@@ -179,14 +192,14 @@ def build_map(args: argparse.Namespace) -> None:
         builds[segment] = build_segment_map(
             segment=segment,
             source_record=source_segments[segment],
-            master_record=master_segments[segment],
+            target_record=target_segments[segment],
             source_models=source_models.get(segment, {}),
-            master_models=master_models.get(segment, {}),
+            target_models=target_models.get(segment, {}),
         )
 
     map_doc = make_map_doc(
         source_name=source_name,
-        master_name=master_name,
+        target_name=target_name,
         builds=builds,
     )
     write_json(out_dir / "coordinate_map.json", map_doc)
@@ -212,7 +225,7 @@ def resolve_reference_name(ref_dir: Path, explicit_name: str | None) -> str:
     """Resolve a stable, human-meaningful name for a reference dataset.
 
     Priority: config.json id_prefix/display_name (curated, embedded in the
-    dataset) > explicit --source-name/--master-name argument > parent
+    dataset) > explicit --source-name/--target-name argument > parent
     directory name (last resort, e.g. .../gsgd/nextclade -> "gsgd").
     """
     config_path = ref_dir / "config.json"
@@ -249,11 +262,11 @@ def read_reference_segments(reference_dir: Path) -> dict[str, Any]:
             if segment and fasta.exists():
                 records[segment] = read_single_fasta(fasta)
     if not records and (reference_dir / "blastn_db.fa").exists():
-        records = read_master_segments(reference_dir / "blastn_db.fa")
+        records = read_combined_fasta_segments(reference_dir / "blastn_db.fa")
     return records
 
 
-def read_master_segments(combined_fasta: Path) -> dict[str, Any]:
+def read_combined_fasta_segments(combined_fasta: Path) -> dict[str, Any]:
     records: dict[str, Any] = {}
     for record in SeqIO.parse(str(combined_fasta), "fasta"):
         segment = segment_from_record(record)
@@ -348,51 +361,52 @@ def read_cds_models(path: Path, segment: str) -> dict[str, CdsModel]:
 
 
 def detect_stale_ha_annotation(
-    segment: str, source_gene_keys: set[str], master_gene_keys: set[str]
+    segment: str, source_gene_keys: set[str], target_gene_keys: set[str]
 ) -> bool:
-    """Flag legacy single-CDS "HA" source annotations.
+    """Flag legacy single-CDS "HA" annotations on the target (Nextclade) dataset.
 
     The current accepted standard splits HA into HA1/HA2 CDS features (as
-    flumut's master reference does). A source dataset that still annotates a
-    single "HA" gene (and has not also been updated to expose HA1/HA2) is
-    considered out of date: its HA amino-acid map cannot be built against a
-    master reference that requires the HA1/HA2 split.
+    flumut's source reference does). The target (the selected Nextclade dataset)
+    is the flexible, user-chosen reference; if it still annotates a single "HA"
+    gene (and has not also been updated to expose HA1/HA2) it is considered out
+    of date: no HA amino-acid map can be built, because the flumut source uses
+    the HA1/HA2 split and the shared-gene intersection is empty.
     """
-    if segment != "HA" or "HA" not in source_gene_keys:
+    if segment != "HA" or "HA" not in target_gene_keys:
         return False
-    if {"HA1", "HA2"} <= source_gene_keys:
-        return False  # source already exposes both -- not stale
-    if not ({"HA1", "HA2"} <= master_gene_keys):
-        return False  # master itself doesn't require the split
+    if {"HA1", "HA2"} <= target_gene_keys:
+        return False  # target already exposes both -- not stale
+    if not ({"HA1", "HA2"} <= source_gene_keys):
+        return False  # source itself doesn't require the split
     return True
 
 
 def build_segment_map(
     segment: str,
     source_record: Any,
-    master_record: Any,
+    target_record: Any,
     source_models: dict[str, CdsModel],
-    master_models: dict[str, CdsModel],
+    target_models: dict[str, CdsModel],
 ) -> SegmentBuild:
     source_seq = str(source_record.seq).upper()
-    master_seq = str(master_record.seq).upper()
+    target_seq = str(target_record.seq).upper()
     (
         nt_map,
         nt_status,
         nt_identity,
         nt_aligned,
         nt_gaps,
-        nt_master_aligned,
+        nt_target_aligned,
         nt_source_aligned,
-    ) = align_position_map(target_seq=master_seq, query_seq=source_seq, kind="nt")
+    ) = align_position_map(target_seq=target_seq, query_seq=source_seq, kind="nt")
 
     build = SegmentBuild(
         segment=segment,
         source_chrom=source_record.id,
-        master_chrom=master_record.id,
+        target_chrom=target_record.id,
         source_seq=source_seq,
-        master_seq=master_seq,
-        nt_master_aligned=nt_master_aligned,
+        target_seq=target_seq,
+        nt_target_aligned=nt_target_aligned,
         nt_source_aligned=nt_source_aligned,
         nt_map=nt_map,
         nt_status=nt_status,
@@ -402,38 +416,38 @@ def build_segment_map(
     )
 
     source_gene_keys = set(source_models)
-    master_gene_keys = set(master_models)
-    build.missing_master_genes = tuple(sorted(master_gene_keys - source_gene_keys))
-    build.extra_source_genes = tuple(sorted(source_gene_keys - master_gene_keys))
+    target_gene_keys = set(target_models)
+    build.missing_target_genes = tuple(sorted(target_gene_keys - source_gene_keys))
+    build.extra_source_genes = tuple(sorted(source_gene_keys - target_gene_keys))
     build.stale_annotation = detect_stale_ha_annotation(
-        segment, source_gene_keys, master_gene_keys
+        segment, source_gene_keys, target_gene_keys
     )
 
     for gene, model in source_models.items():
         build.all_source_gene_lengths[gene] = len(translate_model(source_seq, model))
-    for gene, model in master_models.items():
-        build.all_master_gene_lengths[gene] = len(translate_model(master_seq, model))
+    for gene, model in target_models.items():
+        build.all_target_gene_lengths[gene] = len(translate_model(target_seq, model))
 
-    for gene in sorted(source_gene_keys & master_gene_keys):
+    for gene in sorted(source_gene_keys & target_gene_keys):
         source_protein = translate_model(source_seq, source_models[gene])
-        master_protein = translate_model(master_seq, master_models[gene])
+        target_protein = translate_model(target_seq, target_models[gene])
         (
             gene_map,
             gene_status,
             ident,
             aligned,
             gaps,
-            gene_master_aligned,
+            gene_target_aligned,
             gene_source_aligned,
-        ) = align_position_map(target_seq=master_protein, query_seq=source_protein, kind="aa")
+        ) = align_position_map(target_seq=target_protein, query_seq=source_protein, kind="aa")
         build.aa_maps[gene] = gene_map
         build.aa_status[gene] = gene_status
         build.aa_identity[gene] = ident
         build.aa_aligned[gene] = aligned
         build.aa_gaps[gene] = gaps
         build.aa_source[gene] = source_protein
-        build.aa_master[gene] = master_protein
-        build.aa_master_aligned[gene] = gene_master_aligned
+        build.aa_target[gene] = target_protein
+        build.aa_target_aligned[gene] = gene_target_aligned
         build.aa_source_aligned[gene] = gene_source_aligned
 
     return build
@@ -526,33 +540,33 @@ def compute_status(identity_pct: float, coverage_pct: float) -> str:
 
 def make_map_doc(
     source_name: str,
-    master_name: str,
+    target_name: str,
     builds: dict[str, SegmentBuild],
 ) -> dict[str, Any]:
     segments: dict[str, Any] = {}
     for segment, build in builds.items():
         segments[segment] = {
             "source_chrom": build.source_chrom,
-            "master_chrom": build.master_chrom,
+            "target_chrom": build.target_chrom,
             "source_length": len(build.source_seq),
-            "master_length": len(build.master_seq),
+            "target_length": len(build.target_seq),
             "nt_identity_pct": safe_pct(build.nt_identity, build.nt_aligned),
             "nt_aligned_positions": build.nt_aligned,
             "nt_gap_columns": build.nt_gaps,
-            "nt_source_to_master": {
+            "nt_source_to_target": {
                 str(pos): value for pos, value in sorted(build.nt_map.items())
             },
-            "missing_master_genes": list(build.missing_master_genes),
+            "missing_target_genes": list(build.missing_target_genes),
             "extra_source_genes": list(build.extra_source_genes),
             "stale_annotation": build.stale_annotation,
             "genes": {
                 gene: {
                     "source_length": len(build.aa_source[gene]),
-                    "master_length": len(build.aa_master[gene]),
+                    "target_length": len(build.aa_target[gene]),
                     "aa_identity_pct": safe_pct(build.aa_identity[gene], build.aa_aligned[gene]),
                     "aa_aligned_positions": build.aa_aligned[gene],
                     "aa_gap_columns": build.aa_gaps[gene],
-                    "aa_source_to_master": {
+                    "aa_source_to_target": {
                         str(pos): value
                         for pos, value in sorted(build.aa_maps[gene].items())
                     },
@@ -565,7 +579,7 @@ def make_map_doc(
         "schema_version": SCHEMA_VERSION,
         "script_version": SCRIPT_VERSION,
         "source_reference": source_name,
-        "master_reference": master_name,
+        "target_reference": target_name,
         "alignment_parameters": {
             "nt": NT_ALIGNMENT_PARAMS,
             "aa": AA_ALIGNMENT_PARAMS,
@@ -587,9 +601,9 @@ def write_nt_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
         "source_chrom",
         "source_pos",
         "source_base",
-        "master_chrom",
-        "master_pos",
-        "master_base",
+        "target_chrom",
+        "target_pos",
+        "target_base",
         "status",
     )
     with path.open("w", newline="") as handle:
@@ -597,7 +611,7 @@ def write_nt_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
         writer.writeheader()
         for segment in SEGMENTS:
             build = builds[segment]
-            for source_pos, master_pos in sorted(build.nt_map.items()):
+            for source_pos, target_pos in sorted(build.nt_map.items()):
                 writer.writerow(
                     {
                         "source_reference": source_name,
@@ -605,9 +619,9 @@ def write_nt_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
                         "source_chrom": build.source_chrom,
                         "source_pos": source_pos,
                         "source_base": build.source_seq[source_pos - 1],
-                        "master_chrom": build.master_chrom,
-                        "master_pos": master_pos or "",
-                        "master_base": build.master_seq[master_pos - 1] if master_pos else "",
+                        "target_chrom": build.target_chrom,
+                        "target_pos": target_pos or "",
+                        "target_base": build.target_seq[target_pos - 1] if target_pos else "",
                         "status": build.nt_status[source_pos],
                     }
                 )
@@ -620,8 +634,8 @@ def write_aa_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
         "gene",
         "source_aa_pos",
         "source_residue",
-        "master_aa_pos",
-        "master_residue",
+        "target_aa_pos",
+        "target_residue",
         "status",
     )
     with path.open("w", newline="") as handle:
@@ -630,7 +644,7 @@ def write_aa_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
         for segment in SEGMENTS:
             build = builds[segment]
             for gene in sorted(build.aa_maps):
-                for source_pos, master_pos in sorted(build.aa_maps[gene].items()):
+                for source_pos, target_pos in sorted(build.aa_maps[gene].items()):
                     writer.writerow(
                         {
                             "source_reference": source_name,
@@ -638,9 +652,9 @@ def write_aa_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
                             "gene": gene,
                             "source_aa_pos": source_pos,
                             "source_residue": build.aa_source[gene][source_pos - 1],
-                            "master_aa_pos": master_pos or "",
-                            "master_residue": (
-                                build.aa_master[gene][master_pos - 1] if master_pos else ""
+                            "target_aa_pos": target_pos or "",
+                            "target_residue": (
+                                build.aa_target[gene][target_pos - 1] if target_pos else ""
                             ),
                             "status": build.aa_status[gene][source_pos],
                         }
@@ -654,7 +668,7 @@ def write_qc_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
         "layer",
         "gene",
         "source_length",
-        "master_length",
+        "target_length",
         "aligned_positions",
         "gap_columns",
         "identity_pct",
@@ -674,7 +688,7 @@ def write_qc_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
                     "layer": "nt",
                     "gene": "",
                     "source_length": len(build.source_seq),
-                    "master_length": len(build.master_seq),
+                    "target_length": len(build.target_seq),
                     "aligned_positions": build.nt_aligned,
                     "gap_columns": build.nt_gaps,
                     "identity_pct": f"{nt_identity_pct:.4f}",
@@ -691,14 +705,14 @@ def write_qc_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
                         "layer": "aa",
                         "gene": gene,
                         "source_length": len(build.aa_source[gene]),
-                        "master_length": len(build.aa_master[gene]),
+                        "target_length": len(build.aa_target[gene]),
                         "aligned_positions": build.aa_aligned[gene],
                         "gap_columns": build.aa_gaps[gene],
                         "identity_pct": f"{aa_identity_pct:.4f}",
                         "status": compute_status(aa_identity_pct, aa_coverage_pct),
                     }
                 )
-            for gene in build.missing_master_genes:
+            for gene in build.missing_target_genes:
                 status = "stale_annotation" if build.stale_annotation else "missing_in_source"
                 writer.writerow(
                     {
@@ -707,7 +721,7 @@ def write_qc_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
                         "layer": "aa",
                         "gene": gene,
                         "source_length": "",
-                        "master_length": build.all_master_gene_lengths.get(gene, ""),
+                        "target_length": build.all_target_gene_lengths.get(gene, ""),
                         "aligned_positions": 0,
                         "gap_columns": "",
                         "identity_pct": "",
@@ -722,7 +736,7 @@ def write_qc_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
                         "layer": "aa",
                         "gene": gene,
                         "source_length": build.all_source_gene_lengths.get(gene, ""),
-                        "master_length": "",
+                        "target_length": "",
                         "aligned_positions": 0,
                         "gap_columns": "",
                         "identity_pct": "",
@@ -731,9 +745,9 @@ def write_qc_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
                 )
 
 
-def write_alignment_block(handle: Any, header: str, master_aligned: str, source_aligned: str) -> None:
+def write_alignment_block(handle: Any, header: str, target_aligned: str, source_aligned: str) -> None:
     handle.write(f">{header}\n")
-    handle.write(f"{master_aligned}\n")
+    handle.write(f"{target_aligned}\n")
     handle.write(f"{source_aligned}\n")
 
 
@@ -742,10 +756,10 @@ def write_nt_alignment_fasta(path: Path, builds: dict[str, SegmentBuild]) -> Non
         for segment in SEGMENTS:
             build = builds[segment]
             header = (
-                f"segment={segment};alphabet=nt;master={build.master_chrom};"
+                f"segment={segment};alphabet=nt;target={build.target_chrom};"
                 f"source={build.source_chrom}"
             )
-            write_alignment_block(handle, header, build.nt_master_aligned, build.nt_source_aligned)
+            write_alignment_block(handle, header, build.nt_target_aligned, build.nt_source_aligned)
 
 
 def write_aa_alignment_fasta(path: Path, builds: dict[str, SegmentBuild]) -> None:
@@ -754,13 +768,13 @@ def write_aa_alignment_fasta(path: Path, builds: dict[str, SegmentBuild]) -> Non
             build = builds[segment]
             for gene in sorted(build.aa_maps):
                 header = (
-                    f"segment={segment};gene={gene};alphabet=aa;master={build.master_chrom};"
+                    f"segment={segment};gene={gene};alphabet=aa;target={build.target_chrom};"
                     f"source={build.source_chrom}"
                 )
                 write_alignment_block(
                     handle,
                     header,
-                    build.aa_master_aligned[gene],
+                    build.aa_target_aligned[gene],
                     build.aa_source_aligned[gene],
                 )
 
@@ -777,15 +791,15 @@ def warn_low_quality_maps(builds: dict[str, SegmentBuild]) -> None:
             )
         if build.stale_annotation:
             print(
-                f"WARNING: {segment} source annotation appears out of date "
-                f"(single 'HA' CDS found; master reference requires the HA1/HA2 split). "
-                f"Treat this source dataset's HA amino-acid map as unusable.",
+                f"WARNING: {segment} target (Nextclade) annotation appears out of date "
+                f"(single 'HA' CDS found; the flumut source reference requires the "
+                f"HA1/HA2 split). No HA amino-acid map can be built for this target dataset.",
                 file=sys.stderr,
             )
-        elif build.missing_master_genes:
+        elif build.missing_target_genes:
             print(
-                f"WARNING: {segment} master gene(s) not found in source annotation: "
-                f"{', '.join(build.missing_master_genes)}",
+                f"WARNING: {segment} target gene(s) not found in source annotation: "
+                f"{', '.join(build.missing_target_genes)}",
                 file=sys.stderr,
             )
         for gene in sorted(build.aa_maps):

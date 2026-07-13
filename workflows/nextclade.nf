@@ -63,11 +63,11 @@ workflow NEXTCLADE {
         }
 
         if (
-            !params.master_reference_dir ||
-            params.master_reference_dir == 'NO_FILE' ||
-            !file(params.master_reference_dir).exists()
+            !params.flumut_reference_dir ||
+            params.flumut_reference_dir == 'NO_FILE' ||
+            !file(params.flumut_reference_dir).exists()
         ) {
-            error "ERROR: --master_reference_dir must be set to an existing path (flumut's Nextclade dataset directory) for the Nextclade workflow."
+            error "ERROR: --flumut_reference_dir must be set to an existing path (flumut's Nextclade dataset directory, the source coordinate reference) for the Nextclade workflow."
         }
 
         // --- Step 1: Validate and clean input consensus FASTA ---
@@ -109,23 +109,26 @@ workflow NEXTCLADE {
         // --- Step 6: Post-process VCFs (fix MNV codons); one task per segment ---
         post_process_vcf_batch(nextclade_to_vcf_batch.out.vcf)
 
-        // --- Step 7: Build the source-reference-to-master-reference coordinate map ---
+        // --- Step 7: Build the flumut-to-Nextclade coordinate map ---
         //   Runs once per pipeline invocation (independent of samples). Translates
-        //   nucleotide/amino-acid indices from the selected Nextclade dataset onto
-        //   flumut's master reference coordinate system. Idempotent, including the
-        //   trivial identity case where the selected dataset already is the master.
+        //   nucleotide/amino-acid indices from flumut's fixed reference (source)
+        //   onto the selected Nextclade dataset (target) coordinate system, so a
+        //   downstream step can remap flumut mutations into Nextclade coordinates.
+        //   Idempotent, including the trivial identity case where the selected
+        //   Nextclade dataset is derived from flumut's reference.
+        //   Note: source = flumut (lift FROM), target = nextclade (lift ONTO).
         ch_source_reference = Channel.value(
+            [
+                file(params.flumut_reference_dir).parent.name,
+                file(params.flumut_reference_dir),
+            ]
+        )
+        ch_target_reference = Channel.value(
             [
                 file(params.nextclade_datasets_dir).parent.name,
                 file(params.nextclade_datasets_dir),
             ]
         )
-        ch_master_reference = Channel.value(
-            [
-                file(params.master_reference_dir).parent.name,
-                file(params.master_reference_dir),
-            ]
-        )
-        coordinate_conversion(ch_source_reference.combine(ch_master_reference))
+        coordinate_conversion(ch_source_reference.combine(ch_target_reference))
 
 }

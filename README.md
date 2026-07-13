@@ -39,7 +39,7 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - Conversion to freebayes-style VCF
 - MNV codon correction
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
-- Reference coordinate conversion: builds a run-level, idempotent nucleotide/amino-acid coordinate map translating the selected Nextclade reference dataset onto flumut's master reference coordinate system (`bin/build_reference_coordinate_map.py`), independent of per-sample results
+- Reference coordinate conversion: builds a run-level, idempotent nucleotide/amino-acid coordinate map lifting flumut's fixed reference onto the selected Nextclade reference dataset coordinate system (`bin/build_reference_coordinate_map.py`), so a downstream step can remap flumut mutations into Nextclade coordinates; independent of per-sample results
 
 ```mermaid
 flowchart TD
@@ -104,7 +104,7 @@ flowchart TD
         split_results --> nc2vcf
         nc2vcf --> fixmnv_nc
         fixmnv_nc --> nc_final
-        dispatch -.->|nextclade_datasets_dir + master_reference_dir, sample-independent| coord_map
+        dispatch -.->|flumut_reference_dir + nextclade_datasets_dir, sample-independent| coord_map
         coord_map --> coord_final
     end
 ```
@@ -151,7 +151,7 @@ nextflow run BCCDC-PHL/fluscan-nf \
 
 > **Note:** FASTA mode requires `params.snpeff_config` to resolve to an existing SnpEff config because the PAFTOOLS branch requires it. By default this comes from the built-in database configured in `nextflow.config`; use `--snpeff_config` to override it. In the short-read workflow, `--snpeff_config` is optional and also defaults to the built-in config.
 >
-> The NEXTCLADE branch additionally requires `--nextclade_datasets_dir` (the selected Nextclade reference dataset, containing one subdirectory per segment) and `--master_reference_dir` (flumut's Nextclade dataset directory, used as the master coordinate system for the `coordinate_conversion` step). Both must point to existing directories or the pipeline will error out before running.
+> The NEXTCLADE branch additionally requires `--nextclade_datasets_dir` (the selected Nextclade reference dataset, containing one subdirectory per segment — the canonical *target* coordinate system) and `--flumut_reference_dir` (flumut's Nextclade dataset directory — the fixed *source* reference lifted onto the target by the `coordinate_conversion` step). Both must point to existing directories or the pipeline will error out before running.
 
 **Package management:**
 - Conda is used for dependency management. The `-profile conda` flag and `--cache` parameter are required on BCCDC systems.
@@ -219,12 +219,12 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 |------|-------------|
 | `${run_name}_fluscan-nf_multiqc_report.html` | MultiQC report summarising fastp, cutadapt, and FastQC results for all samples (short-read workflow only) |
 | `aggregate/run_coverage_summary.tsv` | Run-level tabular summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
-| `aggregate/reference_remap/coordinate_map.json` | Primary machine-readable nucleotide/amino-acid coordinate map from the selected Nextclade reference dataset onto flumut's master reference (NEXTCLADE workflow only) |
-| `aggregate/reference_remap/coordinate_map.nt.tsv` | Flat per-position nucleotide coordinate map (source position/base -> master position/base, per segment) |
-| `aggregate/reference_remap/coordinate_map.aa.tsv` | Flat per-residue amino-acid coordinate map (source position/residue -> master position/residue, per segment/gene) |
+| `aggregate/reference_remap/coordinate_map.json` | Primary machine-readable nucleotide/amino-acid coordinate map lifting flumut's reference (source) onto the selected Nextclade reference dataset (target) (NEXTCLADE workflow only) |
+| `aggregate/reference_remap/coordinate_map.nt.tsv` | Flat per-position nucleotide coordinate map (source/flumut position/base -> target/nextclade position/base, per segment) |
+| `aggregate/reference_remap/coordinate_map.aa.tsv` | Flat per-residue amino-acid coordinate map (source/flumut position/residue -> target/nextclade position/residue, per segment/gene) |
 | `aggregate/reference_remap/coordinate_map.qc.tsv` | Per-segment/per-gene alignment QC: identity, coverage, and status (`ok`/`warning`/`missing_in_source`/`extra_in_source`/`stale_annotation`) |
-| `aggregate/reference_remap/<source>_alignment.fasta` | Master/source nucleotide alignment blocks, one per segment |
-| `aggregate/reference_remap/<source>_aa_alignment.fasta` | Master/source amino-acid alignment blocks, one per gene |
+| `aggregate/reference_remap/<source>_alignment.fasta` | Target/source (nextclade/flumut) nucleotide alignment blocks, one per segment |
+| `aggregate/reference_remap/<source>_aa_alignment.fasta` | Target/source (nextclade/flumut) amino-acid alignment blocks, one per gene |
 | `${run_name}_fluscan-nf_nextflow_report.html` | Nextflow execution report |
 | `${run_name}_fluscan-nf_nextflow_timeline.html` | Nextflow execution timeline |
 | `${run_name}_fluscan-nf_nextflow_trace.txt` | Nextflow task trace |
