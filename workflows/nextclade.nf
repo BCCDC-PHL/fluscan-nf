@@ -32,6 +32,7 @@ include { nextclade_run_batch }                  from '../modules/nextclade/next
 include { nextclade_to_vcf_batch }               from '../modules/nextclade/nextclade.nf'
 include { post_process_vcf_batch }               from '../modules/shared/post_process.nf'
 include { coordinate_conversion }                from '../modules/nextclade/coordinate_conversion.nf'
+include { insert_flumut_mutations }              from '../modules/nextclade/insert_flumut_mutations.nf'
 
 workflow NEXTCLADE {
 
@@ -130,5 +131,25 @@ workflow NEXTCLADE {
             ]
         )
         coordinate_conversion(ch_source_reference.combine(ch_target_reference))
+
+        // --- Step 8: Insert flumut AA markers into each per-sample/per-segment VCF ---
+        //   New, additive step: leaves the *_final.vcf produced above untouched and writes a
+        //   separate *_flumut_merged.vcf. Labels every AA change DETECTED_BY=fluscan|flumut|both
+        //   and appends flumut-only markers, remapped into Nextclade coordinates via the
+        //   coordinate_conversion map. Run per (sample, segment) so staging stays simple.
+        ch_vcf_flat = post_process_vcf_batch.out.vcf       // [segment, [vcfs], dataset_dir]
+            .transpose()                                   // [segment, vcf, dataset_dir]
+            .map { segment, vcf, dataset_dir ->
+                def sample_id = vcf.name.split('__')[0]
+                [sample_id, segment, vcf, dataset_dir]
+            }
+
+        ch_insert_in = ch_vcf_flat
+            .combine(flumut.out.mutations, by: 0)          // + flumut TSV (by sample)
+            .combine(prepare_consensus.out.cleaned, by: 0) // + consensus FASTA (by sample)
+            .combine(coordinate_conversion.out.json)       // + global coord map (single value)
+            // -> [sample_id, segment, vcf, dataset_dir, mutations, consensus, coord_json]
+
+        insert_flumut_mutations(ch_insert_in)
 
 }
