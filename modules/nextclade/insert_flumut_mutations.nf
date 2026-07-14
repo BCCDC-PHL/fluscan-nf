@@ -1,9 +1,11 @@
 // nextclade/insert_flumut_mutations.nf - Merge flumut AA markers into the Nextclade VCF.
 //
-// Consumes the (already-built but previously orphaned) flumut->Nextclade coordinate map,
-// flumut's per-sample mutations TSV, and a per-sample/per-segment Nextclade freebayes-style
-// VCF. Labels every AA change with DETECTED_BY=fluscan|flumut|both and appends new rows for
-// flumut-only markers. Writes a NEW *_flumut_merged.vcf; the input *_final.vcf is untouched.
+// Consumes the (already-built but previously orphaned) flumut->Nextclade coordinate map
+// (per-segment shard), flumut's per-sample mutations TSV, and a per-sample/per-segment
+// Nextclade freebayes-style VCF. Labels every AA change with DETECTED_BY=fluscan|flumut|both
+// and appends new rows for flumut-only markers. Writes a NEW *_flumut_merged.vcf; the input
+// *_final.vcf is untouched. Target CDS placement comes from the map's target_cds block, so
+// no GFF/dataset dir is needed here.
 //
 // This step does not modify any existing process or script (nextclade_to_freebayes_vcf.py,
 // post_process_vcf*, flumut, coordinate_conversion).
@@ -27,8 +29,8 @@ process insert_flumut_mutations {
         }
 
     input:
-    tuple val(sample_id), val(segment), path(vcf), path(dataset_dir),
-          path(flumut_mutations), path(consensus), path(coord_json)
+    tuple val(sample_id), val(segment), path(vcf), path(coord_json),
+          path(flumut_mutations), path(consensus)
 
     output:
     tuple val(sample_id), val(segment), path("*_flumut_merged.vcf"),        emit: vcf
@@ -48,7 +50,6 @@ process insert_flumut_mutations {
         --coord-map ${coord_json} \\
         --flumut-mutations ${flumut_mutations} \\
         --consensus ${consensus} \\
-        --dataset-dir ${dataset_dir} \\
         --segment ${segment} \\
         --sample ${sample_id} \\
         -o ${stem}_flumut_merged.vcf

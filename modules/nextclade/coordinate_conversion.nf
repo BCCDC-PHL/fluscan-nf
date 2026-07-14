@@ -25,6 +25,7 @@ process coordinate_conversion {
     output:
     path("reference_remap"),                                          emit: map_dir
     path("reference_remap/coordinate_map.json"),                      emit: json
+    path("reference_remap/coordinate_map.*.json"),                    emit: json_shards
     path("reference_remap/coordinate_conversion_provenance.yml"),     emit: provenance
 
     script:
@@ -35,7 +36,7 @@ process coordinate_conversion {
     printf -- "  tools:\\n"                                                                          >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "    - tool_name: python\\n      tool_version: \$(python3 --version 2>&1 | cut -d' ' -f2)\\n" >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "    - tool_name: biopython\\n      tool_version: \$(python3 -c 'import Bio; print(Bio.__version__)')\\n" >> reference_remap/coordinate_conversion_provenance.yml
-    printf -- "    - tool_name: build_reference_coordinate_map.py\\n      tool_version: 2.0.0\\n"     >> reference_remap/coordinate_conversion_provenance.yml
+    printf -- "    - tool_name: build_reference_coordinate_map.py\\n      tool_version: 2.1.0\\n"     >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "  parameters:\\n"                                                                     >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "    - parameter: source_reference\\n      value: ${source_name}\\n"                   >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "    - parameter: target_reference\\n      value: ${target_name}\\n"                   >> reference_remap/coordinate_conversion_provenance.yml
@@ -52,6 +53,9 @@ process coordinate_conversion {
     """
     mkdir -p reference_remap
     touch reference_remap/coordinate_map.json
+    for seg in PB2 PB1 PA HA NP NA M NS; do
+        touch reference_remap/coordinate_map.\${seg}.json
+    done
     touch reference_remap/coordinate_map.nt.tsv
     touch reference_remap/coordinate_map.aa.tsv
     touch reference_remap/coordinate_map.qc.tsv

@@ -137,18 +137,27 @@ workflow NEXTCLADE {
         //   separate *_flumut_merged.vcf. Labels every AA change DETECTED_BY=fluscan|flumut|both
         //   and appends flumut-only markers, remapped into Nextclade coordinates via the
         //   coordinate_conversion map. Run per (sample, segment) so staging stays simple.
+        //   Each task consumes only its segment's slim coordinate-map shard (target CDS
+        //   placement is carried in the shard, so no GFF/dataset dir is needed here).
         ch_vcf_flat = post_process_vcf_batch.out.vcf       // [segment, [vcfs], dataset_dir]
             .transpose()                                   // [segment, vcf, dataset_dir]
             .map { segment, vcf, dataset_dir ->
                 def sample_id = vcf.name.split('__')[0]
-                [sample_id, segment, vcf, dataset_dir]
+                [sample_id, segment, vcf]                  // dataset_dir no longer needed
             }
 
+        // Key each per-segment shard by its segment label parsed from the filename.
+        ch_shards = coordinate_conversion.out.json_shards
+            .flatten()
+            .map { f -> [ (f.name =~ /coordinate_map\.([^.]+)\.json/)[0][1], f ] }  // [SEG, shard]
+
         ch_insert_in = ch_vcf_flat
+            .map { sample_id, segment, vcf -> [segment, sample_id, vcf] }
+            .combine(ch_shards, by: 0)                     // + coord shard (by segment)
+            .map { segment, sample_id, vcf, shard -> [sample_id, segment, vcf, shard] }
             .combine(flumut.out.mutations, by: 0)          // + flumut TSV (by sample)
             .combine(prepare_consensus.out.cleaned, by: 0) // + consensus FASTA (by sample)
-            .combine(coordinate_conversion.out.json)       // + global coord map (single value)
-            // -> [sample_id, segment, vcf, dataset_dir, mutations, consensus, coord_json]
+            // -> [sample_id, segment, vcf, coord_shard, mutations, consensus]
 
         insert_flumut_mutations(ch_insert_in)
 
