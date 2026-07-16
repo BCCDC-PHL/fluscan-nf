@@ -139,11 +139,11 @@ workflow NEXTCLADE {
         //   coordinate_conversion map. Run per (sample, segment) so staging stays simple.
         //   Each task consumes only its segment's slim coordinate-map shard (target CDS
         //   placement is carried in the shard, so no GFF/dataset dir is needed here).
-        ch_vcf_flat = post_process_vcf_batch.out.vcf       // [segment, [vcfs], dataset_dir]
-            .transpose()                                   // [segment, vcf, dataset_dir]
-            .map { segment, vcf, dataset_dir ->
+        ch_vcf_flat = post_process_vcf_batch.out.vcf       // [segment, [vcfs]]
+            .transpose()                                   // [segment, vcf]
+            .map { segment, vcf ->
                 def sample_id = vcf.name.split('__')[0]
-                [sample_id, segment, vcf]                  // dataset_dir no longer needed
+                [sample_id, segment, vcf]
             }
 
         // Key each per-segment shard by its segment label parsed from the filename.
