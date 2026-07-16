@@ -118,7 +118,7 @@ process paftools_to_freebayes_vcf {
     for anno_vcf in vcf/*.vcf; do
         vcf_basename=\$(basename "\$anno_vcf" .vcf)
         segment=\$(echo "\$vcf_basename" | awk -F'__' '{print \$NF}')
-        cov_tsv="cov/${sample_id}_\${segment}_coverage.tsv"
+        cov_tsv="cov/${sample_id}_\${segment}_coverage_qc.tsv"
 
         paftools_to_freebayes_vcf.py --input "\$anno_vcf" --output tmp_\${segment}.vcf
 

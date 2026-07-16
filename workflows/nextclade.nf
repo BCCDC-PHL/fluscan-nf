@@ -26,7 +26,7 @@ nextflow.enable.dsl = 2
 
 include { prepare_consensus }                    from '../modules/shared/consensus_qc.nf'
 include { split_fasta as split_fasta_consensus } from '../modules/shared/consensus_qc.nf'
-include { consensus_identity_qc }                from '../modules/shared/consensus_qc.nf'
+include { consensus_identity_qc }                from '../modules/nextclade/consensus_qc.nf'
 include { flumut }                               from '../modules/shared/flumut.nf'
 include { nextclade_run_batch }                  from '../modules/nextclade/nextclade.nf'
 include { nextclade_to_vcf_batch }               from '../modules/nextclade/nextclade.nf'

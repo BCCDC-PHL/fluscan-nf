@@ -49,7 +49,7 @@ process paftools_qc_check {
           path(references, stageAs: 'ref_input/*')
 
     output:
-    tuple val(sample_id), path("*_coverage.tsv"), emit: coverage
+    tuple val(sample_id), path("*_coverage_qc.tsv"), emit: coverage
 
     script:
     """
@@ -65,7 +65,7 @@ process paftools_qc_check {
           --reference "\$reference_fa" \\
           --warn-thresh ${params.segment_coverage_warn} \\
           --fail-thresh ${params.segment_coverage_fail} \\
-          --out-tsv ${sample_id}_\${segment}_coverage.tsv
+          --out-tsv ${sample_id}_\${segment}_coverage_qc.tsv
     done
     """
 }
