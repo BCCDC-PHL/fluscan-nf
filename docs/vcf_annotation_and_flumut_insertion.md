@@ -11,6 +11,11 @@ an annotated, freebayes-style VCF:
 Both share the VCF I/O helpers in [`bin/tools.py`](../bin/tools.py), and the second script
 reuses the annotation helpers of the first, so the two produce identically-shaped rows.
 
+> Both `coordinate_conversion` and `insert_flumut_mutations` are optional NEXTCLADE-workflow
+> steps, gated behind `--merge_flumut_mutations` (default `false`). When disabled, the
+> workflow stops at `*_final.vcf` and `--flumut_reference_dir` is not required. When enabled,
+> `--flumut_reference_dir` becomes mandatory and both steps run as described below.
+
 ```
 consensus.fasta ─► nextclade_run_batch ─► nextclade_to_freebayes_vcf.py ─► *_nc.vcf
                                                                              │

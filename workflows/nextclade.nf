@@ -64,11 +64,14 @@ workflow NEXTCLADE {
         }
 
         if (
-            !params.flumut_reference_dir ||
-            params.flumut_reference_dir == 'NO_FILE' ||
-            !file(params.flumut_reference_dir).exists()
+            params.merge_flumut_mutations &&
+            (
+                !params.flumut_reference_dir ||
+                params.flumut_reference_dir == 'NO_FILE' ||
+                !file(params.flumut_reference_dir).exists()
+            )
         ) {
-            error "ERROR: --flumut_reference_dir must be set to an existing path (flumut's Nextclade dataset directory, the source coordinate reference) for the Nextclade workflow."
+            error "ERROR: --flumut_reference_dir must be set to an existing path (flumut's Nextclade dataset directory, the source coordinate reference) when --merge_flumut_mutations is enabled."
         }
 
         // --- Step 1: Validate and clean input consensus FASTA ---
@@ -110,55 +113,62 @@ workflow NEXTCLADE {
         // --- Step 6: Post-process VCFs (fix MNV codons); one task per segment ---
         post_process_vcf_batch(nextclade_to_vcf_batch.out.vcf)
 
-        // --- Step 7: Build the flumut-to-Nextclade coordinate map ---
-        //   Runs once per pipeline invocation (independent of samples). Translates
-        //   nucleotide/amino-acid indices from flumut's fixed reference (source)
-        //   onto the selected Nextclade dataset (target) coordinate system, so a
-        //   downstream step can remap flumut mutations into Nextclade coordinates.
-        //   Idempotent, including the trivial identity case where the selected
-        //   Nextclade dataset is derived from flumut's reference.
-        //   Note: source = flumut (lift FROM), target = nextclade (lift ONTO).
-        ch_source_reference = Channel.value(
-            [
-                file(params.flumut_reference_dir).parent.name,
-                file(params.flumut_reference_dir),
-            ]
-        )
-        ch_target_reference = Channel.value(
-            [
-                file(params.nextclade_datasets_dir).parent.name,
-                file(params.nextclade_datasets_dir),
-            ]
-        )
-        coordinate_conversion(ch_source_reference.combine(ch_target_reference))
+        // --- Steps 7-8: Coordinate conversion + flumut mutation merging (optional) ---
+        //   Gated behind --merge_flumut_mutations (default false). When enabled,
+        //   --flumut_reference_dir is validated above and these two steps run;
+        //   otherwise the workflow stops at the *_final.vcf produced above.
+        if (params.merge_flumut_mutations) {
 
-        // --- Step 8: Insert flumut AA markers into each per-sample/per-segment VCF ---
-        //   New, additive step: leaves the *_final.vcf produced above untouched and writes a
-        //   separate *_flumut_merged.vcf. Labels every AA change DETECTED_BY=fluscan|flumut|both
-        //   and appends flumut-only markers, remapped into Nextclade coordinates via the
-        //   coordinate_conversion map. Run per (sample, segment) so staging stays simple.
-        //   Each task consumes only its segment's slim coordinate-map shard (target CDS
-        //   placement is carried in the shard, so no GFF/dataset dir is needed here).
-        ch_vcf_flat = post_process_vcf_batch.out.vcf       // [segment, [vcfs]]
-            .transpose()                                   // [segment, vcf]
-            .map { segment, vcf ->
-                def sample_id = vcf.name.split('__')[0]
-                [sample_id, segment, vcf]
-            }
+            // --- Step 7: Build the flumut-to-Nextclade coordinate map ---
+            //   Runs once per pipeline invocation (independent of samples). Translates
+            //   nucleotide/amino-acid indices from flumut's fixed reference (source)
+            //   onto the selected Nextclade dataset (target) coordinate system, so a
+            //   downstream step can remap flumut mutations into Nextclade coordinates.
+            //   Idempotent, including the trivial identity case where the selected
+            //   Nextclade dataset is derived from flumut's reference.
+            //   Note: source = flumut (lift FROM), target = nextclade (lift ONTO).
+            ch_source_reference = Channel.value(
+                [
+                    file(params.flumut_reference_dir).parent.name,
+                    file(params.flumut_reference_dir),
+                ]
+            )
+            ch_target_reference = Channel.value(
+                [
+                    file(params.nextclade_datasets_dir).parent.name,
+                    file(params.nextclade_datasets_dir),
+                ]
+            )
+            coordinate_conversion(ch_source_reference.combine(ch_target_reference))
 
-        // Key each per-segment shard by its segment label parsed from the filename.
-        ch_shards = coordinate_conversion.out.json_shards
-            .flatten()
-            .map { f -> [ (f.name =~ /coordinate_map\.([^.]+)\.json/)[0][1], f ] }  // [SEG, shard]
+            // --- Step 8: Insert flumut AA markers into each per-sample/per-segment VCF ---
+            //   New, additive step: leaves the *_final.vcf produced above untouched and writes a
+            //   separate *_flumut_merged.vcf. Labels every AA change DETECTED_BY=fluscan|flumut|both
+            //   and appends flumut-only markers, remapped into Nextclade coordinates via the
+            //   coordinate_conversion map. Run per (sample, segment) so staging stays simple.
+            //   Each task consumes only its segment's slim coordinate-map shard (target CDS
+            //   placement is carried in the shard, so no GFF/dataset dir is needed here).
+            ch_vcf_flat = post_process_vcf_batch.out.vcf       // [segment, [vcfs]]
+                .transpose()                                   // [segment, vcf]
+                .map { segment, vcf ->
+                    def sample_id = vcf.name.split('__')[0]
+                    [sample_id, segment, vcf]
+                }
 
-        ch_insert_in = ch_vcf_flat
-            .map { sample_id, segment, vcf -> [segment, sample_id, vcf] }
-            .combine(ch_shards, by: 0)                     // + coord shard (by segment)
-            .map { segment, sample_id, vcf, shard -> [sample_id, segment, vcf, shard] }
-            .combine(flumut.out.mutations, by: 0)          // + flumut TSV (by sample)
-            .combine(prepare_consensus.out.cleaned, by: 0) // + consensus FASTA (by sample)
-            // -> [sample_id, segment, vcf, coord_shard, mutations, consensus]
+            // Key each per-segment shard by its segment label parsed from the filename.
+            ch_shards = coordinate_conversion.out.json_shards
+                .flatten()
+                .map { f -> [ (f.name =~ /coordinate_map\.([^.]+)\.json/)[0][1], f ] }  // [SEG, shard]
 
-        insert_flumut_mutations(ch_insert_in)
+            ch_insert_in = ch_vcf_flat
+                .map { sample_id, segment, vcf -> [segment, sample_id, vcf] }
+                .combine(ch_shards, by: 0)                     // + coord shard (by segment)
+                .map { segment, sample_id, vcf, shard -> [sample_id, segment, vcf, shard] }
+                .combine(flumut.out.mutations, by: 0)          // + flumut TSV (by sample)
+                .combine(prepare_consensus.out.cleaned, by: 0) // + consensus FASTA (by sample)
+                // -> [sample_id, segment, vcf, coord_shard, mutations, consensus]
+
+            insert_flumut_mutations(ch_insert_in)
+        }
 
 }

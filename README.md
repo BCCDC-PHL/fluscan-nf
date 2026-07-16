@@ -39,7 +39,7 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - Conversion to freebayes-style VCF
 - MNV codon correction
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
-- Reference coordinate conversion: builds a run-level, idempotent nucleotide/amino-acid coordinate map lifting flumut's fixed reference onto the selected Nextclade reference dataset coordinate system (`bin/build_reference_coordinate_map.py`), so a downstream step can remap flumut mutations into Nextclade coordinates; independent of per-sample results
+- *Optional* (`--merge_flumut_mutations`, default off): reference coordinate conversion — builds a run-level, idempotent nucleotide/amino-acid coordinate map lifting flumut's fixed reference onto the selected Nextclade reference dataset coordinate system (`bin/build_reference_coordinate_map.py`) — followed by merging flumut mutations into the VCF, so flumut markers are remapped into Nextclade coordinates and inserted alongside the fluscan calls
 
 ```mermaid
 flowchart TD
@@ -104,7 +104,7 @@ flowchart TD
         split_results --> nc2vcf
         nc2vcf --> fixmnv_nc
         fixmnv_nc --> nc_final
-        dispatch -.->|flumut_reference_dir + nextclade_datasets_dir, sample-independent| coord_map
+        dispatch -.->|"flumut_reference_dir + nextclade_datasets_dir, sample-independent (if merge_flumut_mutations)"| coord_map
         coord_map --> coord_final
     end
 ```
@@ -151,7 +151,9 @@ nextflow run BCCDC-PHL/fluscan-nf \
 
 > **Note:** FASTA mode requires `params.snpeff_config` to resolve to an existing SnpEff config because the PAFTOOLS branch requires it. By default this comes from the built-in database configured in `nextflow.config`; use `--snpeff_config` to override it. In the short-read workflow, `--snpeff_config` is optional and also defaults to the built-in config.
 >
-> The NEXTCLADE branch additionally requires `--nextclade_datasets_dir` (the selected Nextclade reference dataset, containing one subdirectory per segment — the canonical *target* coordinate system) and `--flumut_reference_dir` (flumut's Nextclade dataset directory — the fixed *source* reference lifted onto the target by the `coordinate_conversion` step). Both must point to existing directories or the pipeline will error out before running.
+> The NEXTCLADE branch additionally requires `--nextclade_datasets_dir` (the selected Nextclade reference dataset, containing one subdirectory per segment — the canonical *target* coordinate system), which must point to an existing directory or the pipeline will error out before running.
+>
+> `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and merging flumut mutations into the VCF (`*_flumut_merged.vcf`). When set to `true`, `--flumut_reference_dir` (flumut's Nextclade dataset directory — the fixed *source* reference lifted onto the target by the `coordinate_conversion` step) becomes mandatory and must point to an existing directory, or the pipeline will error out before running.
 
 **Package management:**
 - Conda is used for dependency management. The `-profile conda` flag and `--cache` parameter are required on BCCDC systems.
