@@ -1,4 +1,4 @@
-// nextclade/insert_flumut_mutations.nf - Merge flumut AA markers into the Nextclade VCF.
+// nextclade/merge_flumut_mutations.nf - Merge flumut AA markers into the Nextclade VCF.
 //
 // Consumes the (already-built but previously orphaned) flumut->Nextclade coordinate map
 // (per-segment shard), flumut's per-sample mutations TSV, and a per-sample/per-segment
@@ -10,7 +10,7 @@
 // This step does not modify any existing process or script (nextclade_to_freebayes_vcf.py,
 // post_process_vcf*, flumut, coordinate_conversion).
 
-process insert_flumut_mutations {
+process merge_flumut_mutations {
 
     tag { "${sample_id}_${segment}" }
 
@@ -34,18 +34,18 @@ process insert_flumut_mutations {
 
     output:
     tuple val(sample_id), val(segment), path("*_flumut_merged.vcf"),        emit: vcf
-    tuple val(sample_id), path("${sample_id}_${segment}_insert_flumut_provenance.yml"), emit: provenance
+    tuple val(sample_id), path("${sample_id}_${segment}_merge_flumut_provenance.yml"), emit: provenance
 
     script:
     // Preserve the sample__ref__subtype__segment stem from the input VCF when present.
     def stem = vcf.name.replaceAll(/(_final)?\.vcf$/, '')
     """
-    printf -- "- process_name: insert_flumut_mutations\\n"                                        > ${sample_id}_${segment}_insert_flumut_provenance.yml
-    printf -- "  tools:\\n"                                                                       >> ${sample_id}_${segment}_insert_flumut_provenance.yml
-    printf -- "    - tool_name: python\\n      tool_version: \$(python3 --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_${segment}_insert_flumut_provenance.yml
-    printf -- "    - tool_name: insert_flumut_mutations.py\\n      tool_version: 1.0.0\\n"         >> ${sample_id}_${segment}_insert_flumut_provenance.yml
+    printf -- "- process_name: merge_flumut_mutations\\n"                                         > ${sample_id}_${segment}_merge_flumut_provenance.yml
+    printf -- "  tools:\\n"                                                                       >> ${sample_id}_${segment}_merge_flumut_provenance.yml
+    printf -- "    - tool_name: python\\n      tool_version: \$(python3 --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_${segment}_merge_flumut_provenance.yml
+    printf -- "    - tool_name: merge_flumut_mutations.py\\n      tool_version: 1.0.0\\n"          >> ${sample_id}_${segment}_merge_flumut_provenance.yml
 
-    insert_flumut_mutations.py \\
+    merge_flumut_mutations.py \\
         --vcf ${vcf} \\
         --coord-map ${coord_json} \\
         --flumut-mutations ${flumut_mutations} \\
@@ -59,6 +59,6 @@ process insert_flumut_mutations {
     def stem = vcf.name.replaceAll(/(_final)?\.vcf$/, '')
     """
     touch ${stem}_flumut_merged.vcf
-    touch ${sample_id}_${segment}_insert_flumut_provenance.yml
+    touch ${sample_id}_${segment}_merge_flumut_provenance.yml
     """
 }

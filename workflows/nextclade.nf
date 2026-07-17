@@ -32,7 +32,7 @@ include { nextclade_run_batch }                  from '../modules/nextclade/next
 include { nextclade_to_vcf_batch }               from '../modules/nextclade/nextclade.nf'
 include { post_process_vcf_batch }               from '../modules/shared/post_process.nf'
 include { coordinate_conversion }                from '../modules/nextclade/coordinate_conversion.nf'
-include { insert_flumut_mutations }              from '../modules/nextclade/insert_flumut_mutations.nf'
+include { merge_flumut_mutations }               from '../modules/nextclade/merge_flumut_mutations.nf'
 
 workflow NEXTCLADE {
 
@@ -141,7 +141,7 @@ workflow NEXTCLADE {
             )
             coordinate_conversion(ch_source_reference.combine(ch_target_reference))
 
-            // --- Step 8: Insert flumut AA markers into each per-sample/per-segment VCF ---
+            // --- Step 8: Merge flumut AA markers into each per-sample/per-segment VCF ---
             //   New, additive step: leaves the *_final.vcf produced above untouched and writes a
             //   separate *_flumut_merged.vcf. Labels every AA change DETECTED_BY=fluscan|flumut|both
             //   and appends flumut-only markers, remapped into Nextclade coordinates via the
@@ -160,7 +160,7 @@ workflow NEXTCLADE {
                 .flatten()
                 .map { f -> [ (f.name =~ /coordinate_map\.([^.]+)\.json/)[0][1], f ] }  // [SEG, shard]
 
-            ch_insert_in = ch_vcf_flat
+            ch_merge_in = ch_vcf_flat
                 .map { sample_id, segment, vcf -> [segment, sample_id, vcf] }
                 .combine(ch_shards, by: 0)                     // + coord shard (by segment)
                 .map { segment, sample_id, vcf, shard -> [sample_id, segment, vcf, shard] }
@@ -168,7 +168,7 @@ workflow NEXTCLADE {
                 .combine(prepare_consensus.out.cleaned, by: 0) // + consensus FASTA (by sample)
                 // -> [sample_id, segment, vcf, coord_shard, mutations, consensus]
 
-            insert_flumut_mutations(ch_insert_in)
+            merge_flumut_mutations(ch_merge_in)
         }
 
 }

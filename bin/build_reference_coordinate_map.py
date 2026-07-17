@@ -57,7 +57,7 @@ from Bio.Align import PairwiseAligner, substitution_matrices
 from Bio.Seq import Seq
 
 # Reuse the converter's GFF parser so the serialized target-CDS placement is exactly what
-# the downstream insert step would otherwise compute itself (guarantees identical ANN).
+# the downstream merge step would otherwise compute itself (guarantees identical ANN).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from nextclade_to_freebayes_vcf import load_gff3  # noqa: E402
 
@@ -551,8 +551,8 @@ def compute_status(identity_pct: float, coverage_pct: float) -> str:
 def index_transcripts(transcripts: list) -> dict[str, dict]:
     """Map gene identifiers -> transcript, preferring main (non-mature) CDS transcripts.
 
-    Mirrors insert_flumut_mutations.index_transcripts so that lookups by coordinate-map
-    gene key resolve to the same transcript on both sides.
+    Creates the coordinate-map gene keys consumed by merge_flumut_mutations, preferring
+    main CDS transcripts over mature-peptide regions.
     """
     by_key: dict[str, dict] = {}
     for tx in transcripts:
@@ -567,7 +567,7 @@ def index_transcripts(transcripts: list) -> dict[str, dict]:
 
 def read_target_placements(target_ref_dir: Path) -> dict[str, dict[str, dict]]:
     """Per-segment {gene_key -> transcript} from the target GFFs, via the converter's
-    load_gff3, so serialized placement matches the insert step's own computation."""
+    load_gff3, so serialized placement matches the merge step's own computation."""
     placements: dict[str, dict[str, dict]] = {}
     for segment in SEGMENTS:
         gff = target_ref_dir / segment.lower() / "genome_annotation.gff3"
@@ -582,7 +582,7 @@ def read_target_placements(target_ref_dir: Path) -> dict[str, dict[str, dict]]:
 def target_cds_block(target_chrom: str, tx: dict) -> dict[str, Any]:
     """Serialize a target transcript's placement + identifiers for the coordinate map.
 
-    Carries exactly the fields the insert step needs to derive a genomic POS and build the
+    Carries exactly the fields the merge step needs to derive a genomic POS and build the
     ANN entry without re-parsing the GFF: 0-based half-open CDS segments (as load_gff3
     yields), strand, lengths, and the GFF-derived gene_id/feature_id/protein_id.
     """

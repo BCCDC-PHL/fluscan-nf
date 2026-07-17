@@ -6,12 +6,12 @@ an annotated, freebayes-style VCF:
 | Script | Role |
 | --- | --- |
 | [`bin/nextclade_to_freebayes_vcf.py`](../bin/nextclade_to_freebayes_vcf.py) | Convert a Nextclade JSON into a freebayes-format VCF with snpEff-style `ANN=` annotations. |
-| [`bin/insert_flumut_mutations.py`](../bin/insert_flumut_mutations.py) | Merge flumut amino-acid markers into that VCF and label every AA change by the tool(s) that found it. |
+| [`bin/merge_flumut_mutations.py`](../bin/merge_flumut_mutations.py) | Merge flumut amino-acid markers into that VCF and label every AA change by the tool(s) that found it. |
 
 Both share the VCF I/O helpers in [`bin/tools.py`](../bin/tools.py), and the second script
 reuses the annotation helpers of the first, so the two produce identically-shaped rows.
 
-> Both `coordinate_conversion` and `insert_flumut_mutations` are optional NEXTCLADE-workflow
+> Both `coordinate_conversion` and `merge_flumut_mutations` are optional NEXTCLADE-workflow
 > steps, gated behind `--merge_flumut_mutations` (default `false`). When disabled, the
 > workflow stops at `*_final.vcf` and `--flumut_reference_dir` is not required. When enabled,
 > `--flumut_reference_dir` becomes mandatory and both steps run as described below.
@@ -22,7 +22,7 @@ consensus.fasta ─► nextclade_run_batch ─► nextclade_to_freebayes_vcf.py 
                                               fix_mnv_codons.py (post_process) ─► *_final.vcf
                                                                              │
       coordinate_conversion (flumut→Nextclade map) ─┐                        │
-      flumut (per-sample AA markers) ───────────────┼─► insert_flumut_mutations.py ─► *_flumut_merged.vcf
+      flumut (per-sample AA markers) ───────────────┼─► merge_flumut_mutations.py ─► *_flumut_merged.vcf
                                                      │
                               *_final.vcf ───────────┘
 ```
@@ -147,7 +147,7 @@ processes), which recomputes the real codon before the `*_final.vcf` is produced
 
 ---
 
-## `insert_flumut_mutations.py`
+## `merge_flumut_mutations.py`
 
 ### Purpose
 
@@ -167,7 +167,7 @@ Every row gains one INFO field:
 ### CLI
 
 ```
-insert_flumut_mutations.py --vcf <final.vcf> --coord-map <coordinate_map.json>
+merge_flumut_mutations.py --vcf <final.vcf> --coord-map <coordinate_map.json>
                            --flumut-mutations <melted.tsv> --dataset-dir <dataset>
                            --segment <HA|M|…> --sample <id> -o <merged.vcf>
 ```

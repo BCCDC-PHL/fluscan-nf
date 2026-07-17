@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Insert flumut amino-acid marker mutations into a Nextclade freebayes-style VCF.
+"""Merge flumut amino-acid marker mutations into a Nextclade freebayes-style VCF.
 
 Reads an existing per-sample/per-segment VCF (produced upstream by
 nextclade_to_freebayes_vcf.py -> fix_mnv_codons.py), the flumut->Nextclade coordinate
