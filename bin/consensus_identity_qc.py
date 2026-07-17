@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report consensus-to-reference identity QC for a single influenza segment.
 
-Globally aligns one cleaned consensus segment to its workflow reference segment
+Globally aligns one cleaned consensus segment to its selected reference segment
 and writes a single-row TSV with the segment's identity and PASS/WARN/FAIL
 status. One invocation handles one (sample, segment); cross-segment and
 cross-sample aggregation is left to the caller.
@@ -16,7 +16,6 @@ from Bio import Align, SeqIO
 
 OUTPUT_COLUMNS = (
     "sample_id",
-    "workflow",
     "segment",
     "status",
     "identity_pct",
@@ -28,14 +27,13 @@ OUTPUT_COLUMNS = (
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Globally align one cleaned consensus segment to its workflow "
+        description="Globally align one cleaned consensus segment to its selected "
         "reference and write a single-row identity QC TSV."
     )
     parser.add_argument("--consensus", required=True, type=Path, help="Single-segment consensus FASTA")
     parser.add_argument("--reference", required=True, type=Path, help="Single-segment reference FASTA")
     parser.add_argument("--sample-id", required=True, help="Sample/isolate identifier")
     parser.add_argument("--segment", required=True, help="Influenza segment label (e.g. HA)")
-    parser.add_argument("--workflow", required=True, help="Workflow name (e.g. paftools, nextclade)")
     parser.add_argument("--pass-pct", required=True, type=float, help="PASS identity threshold")
     parser.add_argument("--warn-pct", required=True, type=float, help="WARN identity threshold")
     parser.add_argument("--out-tsv", required=True, type=Path, help="Output single-row TSV")
@@ -98,7 +96,7 @@ def segment_status(identity_pct, pass_pct, warn_pct):
     return "FAIL"
 
 
-def build_qc_row(sample_id, workflow, segment, consensus, reference, pass_pct, warn_pct):
+def build_qc_row(sample_id, segment, consensus, reference, pass_pct, warn_pct):
     consensus_id, consensus_seq = consensus
     reference_id, reference_seq = reference
 
@@ -111,7 +109,6 @@ def build_qc_row(sample_id, workflow, segment, consensus, reference, pass_pct, w
 
     return {
         "sample_id": sample_id,
-        "workflow": workflow,
         "segment": segment,
         "status": status,
         "identity_pct": identity,               # float, or None when not evaluated
@@ -137,7 +134,6 @@ def main():
         print(f"WARNING: no reference sequence for {args.sample_id} {args.segment}", file=sys.stderr)
     row = build_qc_row(
         sample_id=args.sample_id,
-        workflow=args.workflow,
         segment=args.segment,
         consensus=consensus,
         reference=reference,

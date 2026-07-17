@@ -1,8 +1,6 @@
 // nextclade/consensus_qc.nf - Consensus/reference identity QC for the NEXTCLADE workflow
 
-// Report-only consensus/reference identity QC for a single segment. The
-// workflow label is supplied via task.ext.workflow, set by the
-// `withName: 'NEXTCLADE:.*'` selector in nextflow.config.
+// Report-only consensus/reference identity QC for a single segment.
 process consensus_identity_qc {
     tag { "${sample_id}|${segment}" }
 
@@ -19,14 +17,12 @@ process consensus_identity_qc {
     tuple val(sample_id), val(segment), path("*_identity_qc.tsv"), emit: tsv
 
     script:
-    def workflow = task.ext.workflow ?: 'unknown_workflow'
     """
     consensus_identity_qc.py \
         --consensus ${consensus_fasta} \
         --reference ${reference_fasta} \
         --sample-id ${sample_id} \
         --segment ${segment} \
-        --workflow ${workflow} \
         --pass-pct ${params.consensus_identity_pass_pct} \
         --warn-pct ${params.consensus_identity_warn_pct} \
         --out-tsv ${sample_id}_${segment}_identity_qc.tsv
