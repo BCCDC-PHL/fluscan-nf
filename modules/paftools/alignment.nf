@@ -37,7 +37,7 @@ process paftools_align {
 }
 
 
-process paftools_qc_check {
+process consensus_coverage_qc {
 
     tag { sample_id }
 
@@ -58,13 +58,13 @@ process paftools_qc_check {
         paf_core="\${paf_basename#${sample_id}_}"
         segment="\${paf_core%_raw}"
         reference_fa="ref_input/${sample_id}_ref_\${segment}.s.fasta"
-        paftools_qc_check.py \\
+        consensus_coverage_qc.py \\
           --paf "\$paf_file" \\
-          --sample ${sample_id} \\
-          --segment "\$segment" \\
           --reference "\$reference_fa" \\
-          --warn-thresh ${params.segment_coverage_warn} \\
-          --fail-thresh ${params.segment_coverage_fail} \\
+          --sample-id ${sample_id} \\
+          --segment "\$segment" \\
+          --pass-pct ${params.consensus_coverage_pass_pct} \\
+          --warn-pct ${params.consensus_coverage_warn_pct} \\
           --out-tsv ${sample_id}_\${segment}_coverage_qc.tsv
     done
     """

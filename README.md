@@ -196,7 +196,7 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
 | `*_blastn.tsv` | BLAST search results against the reference database |
 | `*_blastn_filter.tsv` | Filtered BLAST search results |
-| `qc/*_coverage.tsv` | Per-segment coverage checks derived from the minimap2/PAF alignments |
+| `qc/*_coverage_qc.tsv` | Per-segment PAFTOOLS consensus coverage QC with coverage percentage and PASS/WARN/FAIL status |
 | `paftools/*_final.vcf` | Per-segment final VCF after `paftools.js`, SnpEff, freebayes-style conversion, and MNV codon correction |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
