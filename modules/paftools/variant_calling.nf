@@ -118,16 +118,29 @@ process paftools_to_freebayes_vcf {
     for anno_vcf in vcf/*.vcf; do
         vcf_basename=\$(basename "\$anno_vcf" .vcf)
         segment=\$(echo "\$vcf_basename" | awk -F'__' '{print \$NF}')
-        cov_tsv="cov/${sample_id}_\${segment}_coverage.tsv"
+        cov_tsv="cov/${sample_id}_\${segment}_coverage_qc.tsv"
 
         paftools_to_freebayes_vcf.py --input "\$anno_vcf" --output tmp_\${segment}.vcf
 
-        COV_STATUS=\$(awk 'NR==2 {print \$11}' "\$cov_tsv")
-        COV_FRAC=\$(awk 'NR==2 {print \$6}' "\$cov_tsv")
-        COV_FIRST=\$(awk 'NR==2 {print \$7}' "\$cov_tsv")
-        COV_LAST=\$(awk 'NR==2 {print \$8}' "\$cov_tsv")
+        qc_value() {
+          awk -F '\t' -v field="\$1" '
+            NR == 1 {
+              for (i = 1; i <= NF; i++) column[\$i] = i
+              next
+            }
+            NR == 2 {
+              print \$(column[field])
+              exit
+            }
+          ' "\$2"
+        }
 
-        awk -v coverage_header="##fluscan_alignment_coverage=STATUS=\${COV_STATUS};fraction=\${COV_FRAC};range=\${COV_FIRST}-\${COV_LAST}" \\
+        COV_STATUS=\$(qc_value status "\$cov_tsv")
+        COV_PCT=\$(qc_value coverage_pct "\$cov_tsv")
+        COV_FIRST=\$(qc_value first_pos "\$cov_tsv")
+        COV_LAST=\$(qc_value last_pos "\$cov_tsv")
+
+        awk -v coverage_header="##fluscan_alignment_coverage=STATUS=\${COV_STATUS};coverage_pct=\${COV_PCT};range=\${COV_FIRST}-\${COV_LAST}" \\
           'FNR==1 && /^##fileformat/{print; print coverage_header; next} {print}' \\
           tmp_\${segment}.vcf > \${vcf_basename}_paf.vcf
     done

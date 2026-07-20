@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-paf_coverage_check.py
+consensus_coverage_qc.py
 
 Compute reference-coverage statistics for a minimap2 PAF alignment.
 Emits a single-row TSV per (sample, segment) and writes a WARNING to stderr
 when coverage falls below threshold.
 
 Usage:
-    paf_coverage_check.py --paf <sorted.paf> --sample <id> --segment <name>
-                          --reference <ref.fasta>
-                          --pass-thresh 0.95 --warn-thresh 0.50
-                          --out-tsv <output.tsv>
+    consensus_coverage_qc.py --paf <sorted.paf> --reference <ref.fasta>
+                             --sample-id <id> --segment <name>
+                             --pass-pct 90 --warn-pct 50 --out-tsv <output.tsv>
 """
 
 import argparse
 import sys
+from pathlib import Path
 
 
 def parse_tags(fields):
@@ -44,8 +44,9 @@ def union_coverage(intervals):
     return total
 
 
-def ref_len_from_fasta(fasta_path):
-    """Return length of the first sequence in a FASTA file."""
+def reference_info_from_fasta(fasta_path):
+    """Return ``(record_id, length)`` for the first sequence in a FASTA file."""
+    reference_id = None
     seq_len = 0
     started = False
     with open(fasta_path) as fh:
@@ -55,22 +56,23 @@ def ref_len_from_fasta(fasta_path):
                 if started:
                     break
                 started = True
+                reference_id = line[1:].split()[0]
             else:
                 seq_len += len(line.strip())
-    return seq_len
+    return reference_id, seq_len
 
 
 def main():
     parser = argparse.ArgumentParser(
         description='Compute reference coverage statistics from a PAF alignment.'
     )
-    parser.add_argument('--paf',         required=True,  help='Sorted PAF alignment file')
-    parser.add_argument('--sample',      required=True,  help='Sample identifier')
-    parser.add_argument('--segment',     required=True,  help='Segment name')
-    parser.add_argument('--reference',   default='',     help='Reference FASTA (used as fallback for ref length when PAF is empty)')
-    parser.add_argument('--pass-thresh', type=float, default=0.95, help='Coverage fraction threshold for PASS status')
-    parser.add_argument('--warn-thresh', type=float, default=0.50, help='Coverage fraction threshold for WARN_PARTIAL status')
-    parser.add_argument('--out-tsv',     required=True,  help='Output TSV path')
+    parser.add_argument('--paf', required=True, type=Path, help='Sorted PAF alignment file')
+    parser.add_argument('--reference', required=True, type=Path, help='Single-segment reference FASTA')
+    parser.add_argument('--sample-id', required=True, help='Sample/isolate identifier')
+    parser.add_argument('--segment', required=True, help='Influenza segment label (e.g. HA)')
+    parser.add_argument('--pass-pct', required=True, type=float, help='PASS coverage threshold (percent)')
+    parser.add_argument('--warn-pct', required=True, type=float, help='WARN coverage threshold (percent)')
+    parser.add_argument('--out-tsv', required=True, type=Path, help='Output single-row TSV')
     args = parser.parse_args()
 
     intervals = []
@@ -119,43 +121,43 @@ def main():
             weighted_dv_sum += dv * blen
             total_aln_len   += blen
 
-    # Fall back to FASTA for ref_len when PAF has no alignments
-    if ref_len == 0 and args.reference:
-        ref_len = ref_len_from_fasta(args.reference)
+    # Fall back to FASTA when PAF has no alignments.
+    if ref_len == 0:
+        ref_name, ref_len = reference_info_from_fasta(args.reference)
 
     aligned_bases = union_coverage(intervals)
     first_pos = min(s for s, _ in intervals) if intervals else 0
     last_pos  = max(e for _, e in intervals) if intervals else 0
 
-    cov_frac      = aligned_bases / ref_len if ref_len > 0 else 0.0
-    mean_identity = (1.0 - weighted_dv_sum / total_aln_len) * 100 if total_aln_len > 0 else 0.0
+    coverage_pct = aligned_bases / ref_len * 100 if ref_len > 0 else 0.0
+    mean_identity_pct = (1.0 - weighted_dv_sum / total_aln_len) * 100 if total_aln_len > 0 else 0.0
 
     if n_alignments == 0:
-        status = 'FAIL_NO_ALIGN'
-    elif cov_frac >= args.pass_thresh:
+        status = 'FAIL'
+    elif coverage_pct >= args.pass_pct:
         status = 'PASS'
-    elif cov_frac >= args.warn_thresh:
-        status = 'WARN_PARTIAL'
+    elif coverage_pct >= args.warn_pct:
+        status = 'WARN'
     else:
-        status = 'FAIL_NO_ALIGN'
+        status = 'FAIL'
 
     header = [
-        'sample_id', 'segment', 'reference', 'ref_length', 'aligned_ref_bases',
-        'coverage_fraction', 'first_pos', 'last_pos', 'n_alignments',
-        'mean_identity', 'status',
+        'sample_id', 'segment', 'status', 'coverage_pct',
+        'reference_id', 'reference_length', 'aligned_ref_bases', 'first_pos',
+        'last_pos', 'n_alignments', 'mean_identity_pct',
     ]
     row = [
-        args.sample,
+        args.sample_id,
         args.segment,
-        ref_name or args.reference,
+        status,
+        f'{coverage_pct:.3f}',
+        ref_name or 'NA',
         ref_len,
         aligned_bases,
-        f'{cov_frac:.4f}',
         first_pos,
         last_pos,
         n_alignments,
-        f'{mean_identity:.2f}',
-        status,
+        f'{mean_identity_pct:.3f}',
     ]
 
     with open(args.out_tsv, 'w') as fh:
@@ -164,8 +166,8 @@ def main():
 
     if status != 'PASS':
         print(
-            f'WARNING [{args.sample}]: Alignment coverage {status} for segment {args.segment}: '
-            f'coverage={cov_frac:.1%} ({aligned_bases}/{ref_len} ref bp), '
+            f'WARNING [{args.sample_id}]: Consensus coverage {status} for segment {args.segment}: '
+            f'coverage={coverage_pct:.1f}% ({aligned_bases}/{ref_len} ref bp), '
             f'first_pos={first_pos}, last_pos={last_pos}, n_alignments={n_alignments}',
             file=sys.stderr,
         )

@@ -29,8 +29,7 @@ include { prepare_consensus }                            from '../modules/shared
 include { split_fasta as split_fasta_reference }         from '../modules/shared/consensus_qc.nf'
 include { split_fasta as split_fasta_consensus }         from '../modules/shared/consensus_qc.nf'
 include { paftools_align }                               from '../modules/paftools/alignment.nf'
-include { paftools_coverage_check }                      from '../modules/paftools/alignment.nf'
-include { paftools_aggregate_coverage_report }           from '../modules/paftools/alignment.nf'
+include { consensus_coverage_qc }                        from '../modules/paftools/alignment.nf'
 include { makeblastdb }                                  from '../modules/shared/blast.nf'
 include { blastn }                                       from '../modules/shared/blast.nf'
 include { genoflu }                                      from '../modules/shared/genoflu.nf'
@@ -45,6 +44,18 @@ include { post_process_vcf }                             from '../modules/shared
 
 
 workflow PAFTOOLS {
+
+    def coverage_summary_header = [
+        'sample_id', 'segment', 'status', 'coverage_pct',
+        'reference_id', 'reference_length', 'aligned_ref_bases', 'first_pos',
+        'last_pos', 'n_alignments', 'mean_identity_pct',
+    ].join('\t')
+
+    def coverage_status_order = [
+        FAIL: 0,
+        WARN: 1,
+        PASS: 2,
+    ]
 
     ch_workflow_metadata = Channel.value([
         workflow.sessionId,
@@ -105,12 +116,18 @@ workflow PAFTOOLS {
         paftools_align(ch_segment_sequences)
 
         // --- Step 4b: Check reference coverage of each alignment ---
-        paftools_coverage_check(paftools_align.out.paf)
-        paftools_aggregate_coverage_report(
-            paftools_coverage_check.out.coverage
-                .flatMap { sample_id, tsvs -> tsvs }
-                .collect()
-        )
+        consensus_coverage_qc(paftools_align.out.paf)
+
+        ch_qc_summary = consensus_coverage_qc.out.coverage
+            .map{ it -> it[1] }
+            .flatten()                              // one Path per emission -> avoids the [name, content...] branch
+            .collectFile(
+                name: 'paftools_qc_summary.tsv',
+                storeDir: "${params.outdir}/aggregate",
+                keepHeader: true,                   // keep header from first file only
+                skip: 1,                            // drop the header line from the rest
+                sort: false
+            )
 
         // --- Step 5: Align consensus to reference and call variants with paftools ---
         paftools_call(paftools_align.out.paf)
@@ -122,7 +139,7 @@ workflow PAFTOOLS {
         paftools_snpeff_annotation(paftools_sort_vcf.out.vcf.combine(ch_snpeff_config))
 
         paftools_to_freebayes_vcf(
-            paftools_snpeff_annotation.out.vcf.join(paftools_coverage_check.out.coverage)
+            paftools_snpeff_annotation.out.vcf.join(consensus_coverage_qc.out.coverage)
         )
 
         // --- Step 8: Post-process annotated VCF (MNV codon correction) ---

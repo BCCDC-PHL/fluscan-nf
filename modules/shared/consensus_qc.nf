@@ -16,6 +16,8 @@ process prepare_consensus {
 
     errorStrategy 'ignore'
 
+    conda "${projectDir}/environments/fluscan.yml"
+
     publishDir "${params.outdir}", pattern: "out/*.fasta",         mode: 'copy', saveAs: publishUnderIsolate
     publishDir "${params.outdir}", pattern: "out/*_qc_report.tsv", mode: 'copy', saveAs: publishUnderIsolate
 
@@ -28,16 +30,19 @@ process prepare_consensus {
     tuple val(sample_id), path("${sample_id}_prepare_consensus_provenance.yml"), emit: provenance
 
     script:
+    mask_degen = params.consensus_mask_degenerate ? '--mask-degenerate' : '--no-mask-degenerate'
     """
     printf -- "- process_name: prepare_consensus\\n"     > ${sample_id}_prepare_consensus_provenance.yml
     printf -- "  tools:\\n"                             >> ${sample_id}_prepare_consensus_provenance.yml
     printf -- "    - tool_name: prepare_consensus.py\\n" >> ${sample_id}_prepare_consensus_provenance.yml
-    printf -- "      tool_version: 1.0.0\\n"            >> ${sample_id}_prepare_consensus_provenance.yml
+    printf -- "      tool_version: 2.0.0\\n"            >> ${sample_id}_prepare_consensus_provenance.yml
 
     prepare_consensus.py \
         --input ${fasta_input} \
         --sample_id ${sample_id} \
-        --outdir out
+        --outdir out \
+        ${mask_degen} \
+        --max-n-frac ${params.consensus_max_n_frac}
 
     isolate=\$(cat out/isolate_id.txt)
     """

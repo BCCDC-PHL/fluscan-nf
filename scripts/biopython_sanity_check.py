@@ -822,7 +822,7 @@ def compare_one(
         paftools_set = paftools_sets.get(cds.gene, set())
 
         bio_outside_paf: set[AAKey] = set()
-        if paftools_header.status == "WARN_PARTIAL":
+        if paftools_header.status == "WARN":
             for key in bio_set:
                 call = next((item for item in bio_calls if item.hgvs_p == key.hgvs_p and item.gene == cds.gene), None)
                 if call is None:
@@ -956,7 +956,7 @@ def write_headline(pp_df: pd.DataFrame, out_path: Path) -> None:
                 "n_pairs": len(pp_df),
             })
 
-        aligned = pp_df[pp_df["paf_status"] != "FAIL_NO_ALIGN"]
+        aligned = pp_df[pp_df["paf_status"] != "FAIL"]
         tp = int(aligned[f"tp_paf_{scope_key}"].sum())
         fp = int(aligned[f"fp_paf_{scope_key}"].sum())
         fn = int(aligned[f"fn_paf_{scope_key}"].sum())
@@ -1214,8 +1214,8 @@ def write_report(pp_df: pd.DataFrame, skipped_pairs: list[str], out_dir: Path, s
         "- Biopython is an independent check, not absolute truth.",
         "- Indel and frameshift HGVS representation may differ between tools.",
         "- N-containing codons in consensus are skipped; see n_codons_skipped in per_pair.csv.",
-        "- PF_strict counts FAIL_NO_ALIGN segments as all-FN; PF_aligned excludes them.",
-        "- WARN_PARTIAL: Biopython calls outside the paftools coverage range are excluded from paftools FN.",
+        "- PF_strict counts FAIL segments as all-FN; PF_aligned excludes them.",
+        "- WARN: Biopython calls outside the paftools coverage range are excluded from paftools FN.",
     ]
 
     (out_dir / "report.md").write_text("\n".join(lines) + "\n")
@@ -1292,8 +1292,8 @@ def main() -> None:
         plot_fp_fn_heatmap(pp_df, config.out_dir, segment_labels)
 
     if not pp_df.empty:
-        n_paf_fail = int((pp_df["paf_status"] == "FAIL_NO_ALIGN").sum())
-        n_paf_partial = int((pp_df["paf_status"] == "WARN_PARTIAL").sum())
+        n_paf_fail = int((pp_df["paf_status"] == "FAIL").sum())
+        n_paf_partial = int((pp_df["paf_status"] == "WARN").sum())
         n_paf_pass = int((pp_df["paf_status"] == "PASS").sum())
         print("\n=== Summary ===")
         print(f"Protein triples : {len(pp_df)}")

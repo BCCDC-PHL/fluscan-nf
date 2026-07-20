@@ -3,6 +3,6 @@ channels:
 - conda-forge
 - bioconda
 dependencies:
-- nextclade=3.8.1
+- nextclade=3.21
 - python>=3.9
 - biopython
