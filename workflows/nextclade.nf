@@ -141,13 +141,14 @@ workflow NEXTCLADE {
             )
             coordinate_conversion(ch_source_reference.combine(ch_target_reference))
 
-            // --- Step 8: Merge flumut AA markers into each per-sample/per-segment VCF ---
-            //   New, additive step: leaves the *_final.vcf produced above untouched and writes a
-            //   separate *_flumut_merged.vcf. Labels every AA change DETECTED_BY=fluscan|flumut|both
-            //   and appends flumut-only markers, remapped into Nextclade coordinates via the
-            //   coordinate_conversion map. Run per (sample, segment) so staging stays simple.
-            //   Each task consumes only its segment's slim coordinate-map shard (target CDS
-            //   placement is carried in the shard, so no GFF/dataset dir is needed here).
+            // --- Step 8: Annotate each per-sample/per-segment VCF with FluMutDB markers ---
+            //   Additive step: leaves the *_final.vcf produced above untouched and writes a
+            //   separate *_flumut_merged.vcf carrying an extra FLUMUT= INFO field on rows whose
+            //   AA change matches a curated FluMutDB marker. No rows are added or removed.
+            //   Markers come from the flumutdb package, translated into Nextclade coordinates
+            //   via the coordinate_conversion map, so the per-sample flumut TSV is not needed.
+            //   Run per (sample, segment) so staging stays simple; each task consumes only its
+            //   segment's slim coordinate-map shard.
             ch_vcf_flat = post_process_vcf_batch.out.vcf       // [segment, [vcfs]]
                 .transpose()                                   // [segment, vcf]
                 .map { segment, vcf ->
@@ -164,9 +165,7 @@ workflow NEXTCLADE {
                 .map { sample_id, segment, vcf -> [segment, sample_id, vcf] }
                 .combine(ch_shards, by: 0)                     // + coord shard (by segment)
                 .map { segment, sample_id, vcf, shard -> [sample_id, segment, vcf, shard] }
-                .combine(flumut.out.mutations, by: 0)          // + flumut TSV (by sample)
-                .combine(prepare_consensus.out.cleaned, by: 0) // + consensus FASTA (by sample)
-                // -> [sample_id, segment, vcf, coord_shard, mutations, consensus]
+                // -> [sample_id, segment, vcf, coord_shard]
 
             merge_flumut_mutations(ch_merge_in)
         }

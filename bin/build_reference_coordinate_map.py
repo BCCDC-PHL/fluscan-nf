@@ -61,11 +61,20 @@ from Bio.Seq import Seq
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from nextclade_to_freebayes_vcf import load_gff3  # noqa: E402
 
-SCRIPT_VERSION = "2.1.0"
+SCRIPT_VERSION = "2.2.0"
 SCHEMA_VERSION = "2.1"
 
 SEGMENTS = ("PB2", "PB1", "PA", "HA", "NP", "NA", "M", "NS")
 SEGMENT_ALIASES = {segment.lower(): segment for segment in SEGMENTS}
+
+# Gene names that differ between flumut's reference (FluMutDB protein names) and Nextclade
+# datasets. Both sides are canonicalised before the source/target gene keys are intersected,
+# so the same protein pairs up regardless of which spelling each annotation uses.
+GENE_KEY_ALIASES = {
+    "NS-1": "NS1",
+    "NS-2": "NEP",
+    "NS2": "NEP",
+}
 
 NT_ALIGNMENT_PARAMS = {
     "mode": "global",
@@ -329,6 +338,17 @@ def parse_gff_attributes(raw: str) -> dict[str, str]:
     return attrs
 
 
+def canonical_gene(name: str) -> str:
+    """Canonical gene key used to pair source and target CDSes.
+
+    The source (flumut) and target (Nextclade) annotations name the same protein
+    differently on NS: flumut uses the FluMutDB protein names NS-1/NS-2 while Nextclade
+    datasets use NS1/NEP. Without canonicalisation the gene-key intersection in
+    build_segment_map is empty for NS and no amino-acid map is built for that segment.
+    """
+    return GENE_KEY_ALIASES.get(name, name)
+
+
 def read_cds_models(path: Path, segment: str) -> dict[str, CdsModel]:
     grouped: dict[str, dict[str, Any]] = {}
     with path.open() as handle:
@@ -342,6 +362,7 @@ def read_cds_models(path: Path, segment: str) -> dict[str, CdsModel]:
             gene = attrs.get("gene") or attrs.get("Name") or attrs.get("ID")
             if not gene:
                 continue
+            gene = canonical_gene(gene)
             grouped.setdefault(
                 gene,
                 {
@@ -559,6 +580,7 @@ def index_transcripts(transcripts: list) -> dict[str, dict]:
         for key in (tx.get("gene_name"), tx.get("feature_id"), tx.get("protein_id")):
             if not key:
                 continue
+            key = canonical_gene(key)
             existing = by_key.get(key)
             if existing is None or (existing.get("is_mature") and not tx.get("is_mature")):
                 by_key[key] = tx

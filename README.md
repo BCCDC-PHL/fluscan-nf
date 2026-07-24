@@ -39,7 +39,7 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - Conversion to freebayes-style VCF
 - MNV codon correction
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
-- *Optional* (`--merge_flumut_mutations`, default off): reference coordinate conversion — builds a run-level, idempotent nucleotide/amino-acid coordinate map lifting flumut's fixed reference onto the selected Nextclade reference dataset coordinate system (`bin/build_reference_coordinate_map.py`) — followed by merging flumut mutations into the VCF, so flumut markers are remapped into Nextclade coordinates and inserted alongside the fluscan calls
+- *Optional* (`--merge_flumut_mutations`, default off): reference coordinate conversion — builds a run-level, idempotent nucleotide/amino-acid coordinate map lifting flumut's fixed reference onto the selected Nextclade reference dataset coordinate system (`bin/build_reference_coordinate_map.py`) — followed by FluMutDB annotation of the VCF, which tags each fluscan amino-acid call that matches a curated FluMutDB marker with a `FLUMUT=` INFO field. No rows are added or removed, so a marker is only reported where fluscan called a difference from the Nextclade reference. Because FluMutDB numbers HA by its HA1/HA2 subunits, HA markers are only annotated when the Nextclade dataset also exposes dedicated `HA1`/`HA2` genes
 
 ```mermaid
 flowchart TD
@@ -95,6 +95,8 @@ flowchart TD
         nc_final[Final NEXTCLADE VCFs]
         coord_map[coordinate_conversion: build_reference_coordinate_map.py]
         coord_final[aggregate/reference_remap]
+        flumut_merge[merge_flumut_mutations: merge_flumut_mutations_v2.py]
+        flumut_merged[FluMutDB-annotated VCFs]
 
         nextclade_prepare --> nextclade_flumut
         nextclade_prepare --> split_consensus
@@ -106,6 +108,9 @@ flowchart TD
         fixmnv_nc --> nc_final
         dispatch -.->|"flumut_reference_dir + nextclade_datasets_dir, sample-independent (if merge_flumut_mutations)"| coord_map
         coord_map --> coord_final
+        coord_map -.->|"per-segment shard (if merge_flumut_mutations)"| flumut_merge
+        nc_final -.-> flumut_merge
+        flumut_merge --> flumut_merged
     end
 ```
 
@@ -153,7 +158,7 @@ nextflow run BCCDC-PHL/fluscan-nf \
 >
 > The NEXTCLADE branch additionally requires `--nextclade_datasets_dir` (the selected Nextclade reference dataset, containing one subdirectory per segment — the canonical *target* coordinate system), which must point to an existing directory or the pipeline will error out before running.
 >
-> `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and merging flumut mutations into the VCF (`*_flumut_merged.vcf`). When set to `true`, `--flumut_reference_dir` (flumut's Nextclade dataset directory — the fixed *source* reference lifted onto the target by the `coordinate_conversion` step) becomes mandatory and must point to an existing directory, or the pipeline will error out before running.
+> `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and FluMutDB annotation of the VCF (`*_flumut_merged.vcf`). When set to `true`, `--flumut_reference_dir` (flumut's Nextclade dataset directory — the fixed *source* reference lifted onto the target by the `coordinate_conversion` step) becomes mandatory and must point to an existing directory, or the pipeline will error out before running. The marker set comes from the `flumutdb` conda package, so the annotation step does not consume the per-sample `flumut` output.
 
 **Package management:**
 - Conda is used for dependency management. The `-profile conda` flag and `--cache` parameter are required on BCCDC systems.
@@ -210,6 +215,7 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `nextclade/json/*_nextclade.json` | Per-segment Nextclade JSON split out from the cross-sample batch result |
 | `nextclade/tsv/*_nextclade.tsv` | Per-segment Nextclade TSV split out from the cross-sample batch result |
 | `nextclade/*_final.vcf` | Per-segment final VCF after Nextclade-to-VCF conversion and MNV codon correction |
+| `nextclade/*_flumut_merged.vcf` | *Optional* (`--merge_flumut_mutations`): the same VCF with a `FLUMUT=` INFO field on rows whose amino-acid change matches a curated FluMutDB marker |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |

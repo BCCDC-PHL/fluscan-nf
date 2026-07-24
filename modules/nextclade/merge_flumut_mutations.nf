@@ -1,11 +1,14 @@
-// nextclade/merge_flumut_mutations.nf - Merge flumut AA markers into the Nextclade VCF.
+// nextclade/merge_flumut_mutations.nf - Annotate the Nextclade VCF with FluMutDB markers.
 //
-// Consumes the (already-built but previously orphaned) flumut->Nextclade coordinate map
-// (per-segment shard), flumut's per-sample mutations TSV, and a per-sample/per-segment
-// Nextclade freebayes-style VCF. Labels every AA change with DETECTED_BY=fluscan|flumut|both
-// and appends new rows for flumut-only markers. Writes a NEW *_flumut_merged.vcf; the input
-// *_final.vcf is untouched. Target CDS placement comes from the map's target_cds block, so
-// no GFF/dataset dir is needed here.
+// Consumes the flumut->Nextclade coordinate map (per-segment shard) and a per-sample/
+// per-segment Nextclade freebayes-style VCF. For every AA change already annotated in a
+// row's ANN= field, merge_flumut_mutations_v2.py queries FluMutDB (shipped by the flumutdb
+// conda package) for a matching curated marker and, on a hit, adds a FLUMUT= INFO field.
+// No rows are added, removed or reordered. Writes a NEW *_flumut_merged.vcf; the input
+// *_final.vcf is untouched.
+//
+// The marker set comes from the database, so no per-sample flumut output is needed here
+// (the flumut process still runs and publishes its own TSVs).
 //
 // This step does not modify any existing process or script (nextclade_to_freebayes_vcf.py,
 // post_process_vcf*, flumut, coordinate_conversion).
@@ -29,8 +32,7 @@ process merge_flumut_mutations {
         }
 
     input:
-    tuple val(sample_id), val(segment), path(vcf), path(coord_json),
-          path(flumut_mutations), path(consensus)
+    tuple val(sample_id), val(segment), path(vcf), path(coord_json)
 
     output:
     tuple val(sample_id), val(segment), path("*_flumut_merged.vcf"),        emit: vcf
@@ -43,13 +45,12 @@ process merge_flumut_mutations {
     printf -- "- process_name: merge_flumut_mutations\\n"                                         > ${sample_id}_${segment}_merge_flumut_provenance.yml
     printf -- "  tools:\\n"                                                                       >> ${sample_id}_${segment}_merge_flumut_provenance.yml
     printf -- "    - tool_name: python\\n      tool_version: \$(python3 --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_${segment}_merge_flumut_provenance.yml
-    printf -- "    - tool_name: merge_flumut_mutations.py\\n      tool_version: 1.0.0\\n"          >> ${sample_id}_${segment}_merge_flumut_provenance.yml
+    printf -- "    - tool_name: merge_flumut_mutations_v2.py\\n      tool_version: 2.0.0\\n"       >> ${sample_id}_${segment}_merge_flumut_provenance.yml
+    printf -- "    - tool_name: flumutdb\\n      tool_version: \$(python3 -c 'from flumut.DbReader import get_db_version; print("%s.%s" % get_db_version()[:2])')\\n" >> ${sample_id}_${segment}_merge_flumut_provenance.yml
 
-    merge_flumut_mutations.py \\
+    merge_flumut_mutations_v2.py \\
         --vcf ${vcf} \\
         --coord-map ${coord_json} \\
-        --flumut-mutations ${flumut_mutations} \\
-        --consensus ${consensus} \\
         --segment ${segment} \\
         --sample ${sample_id} \\
         -o ${stem}_flumut_merged.vcf

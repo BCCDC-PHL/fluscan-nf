@@ -1,15 +1,15 @@
-# VCF annotation & flumut insertion
+# VCF annotation & FluMutDB marker annotation
 
-How two of the Nextclade-branch scripts turn consensus differences and flumut markers into
-an annotated, freebayes-style VCF:
+How the Nextclade-branch scripts turn consensus differences into an annotated,
+freebayes-style VCF and tag the curated FluMutDB markers among them:
 
 | Script | Role |
 | --- | --- |
 | [`bin/nextclade_to_freebayes_vcf.py`](../bin/nextclade_to_freebayes_vcf.py) | Convert a Nextclade JSON into a freebayes-format VCF with snpEff-style `ANN=` annotations. |
-| [`bin/merge_flumut_mutations.py`](../bin/merge_flumut_mutations.py) | Merge flumut amino-acid markers into that VCF and label every AA change by the tool(s) that found it. |
+| [`bin/merge_flumut_mutations_v2.py`](../bin/merge_flumut_mutations_v2.py) | Add a `FLUMUT=` INFO field to rows whose AA change matches a FluMutDB marker. **Current version** — run by the `merge_flumut_mutations` process. |
+| [`bin/merge_flumut_mutations.py`](../bin/merge_flumut_mutations.py) | v1, superseded. Merged flumut's per-sample calls and *inserted* rows for markers fluscan had not called. Retained for reference; no process invokes it. |
 
-Both share the VCF I/O helpers in [`bin/tools.py`](../bin/tools.py), and the second script
-reuses the annotation helpers of the first, so the two produce identically-shaped rows.
+All three share the VCF I/O helpers in [`bin/tools.py`](../bin/tools.py).
 
 > Both `coordinate_conversion` and `merge_flumut_mutations` are optional NEXTCLADE-workflow
 > steps, gated behind `--merge_flumut_mutations` (default `false`). When disabled, the
@@ -22,7 +22,7 @@ consensus.fasta ─► nextclade_run_batch ─► nextclade_to_freebayes_vcf.py 
                                               fix_mnv_codons.py (post_process) ─► *_final.vcf
                                                                              │
       coordinate_conversion (flumut→Nextclade map) ─┐                        │
-      flumut (per-sample AA markers) ───────────────┼─► merge_flumut_mutations.py ─► *_flumut_merged.vcf
+      FluMutDB (flumutdb conda package) ────────────┼─► merge_flumut_mutations_v2.py ─► *_flumut_merged.vcf
                                                      │
                               *_final.vcf ───────────┘
 ```
@@ -147,98 +147,126 @@ processes), which recomputes the real codon before the `*_final.vcf` is produced
 
 ---
 
-## `merge_flumut_mutations.py`
+## `merge_flumut_mutations_v2.py`
 
 ### Purpose
 
-flumut screens the consensus for curated influenza amino-acid markers, but its calls never
-reached the VCF. This script folds them in: it labels every AA change in the VCF with the
-tool(s) that detected it and appends rows for flumut markers Nextclade/fluscan did not call.
-It **writes a new file** (`*_flumut_merged.vcf`) and never touches the input `*_final.vcf`.
+FluMutDB is a curated catalogue of influenza amino-acid markers and their published
+phenotypic effects. This script tags the fluscan calls that *are* such markers: it walks the
+VCF and, for every AA change already annotated in a row's `ANN=`, asks the database whether a
+marker exists for that (protein, AA position, alt AA). It **writes a new file**
+(`*_flumut_merged.vcf`) and never touches the input `*_final.vcf`.
 
-Every row gains one INFO field:
+**No row is added, removed or reordered**, and no existing field is rewritten — matching rows
+simply gain one extra INFO key. `ANN=` stays strictly snpEff 16-field compatible.
 
-| `DETECTED_BY` | Meaning |
-| --- | --- |
-| `fluscan` | called only by the Nextclade branch (includes all non-coding/synonymous rows) |
-| `flumut` | a flumut marker not called by fluscan — a **newly inserted** row |
-| `both` | the *same exact* AA substitution (gene + position + alt AA) called by both tools |
+> **Consequence worth knowing:** a marker is only reported where fluscan called a *difference
+> from the Nextclade reference*. Markers already fixed in that reference produce no VCF row
+> and so cannot be annotated. Against `chicken2021`, 10 of FluMutDB's 71 HA1 markers fall in
+> this category — `flumut` itself still reports them, because it compares the consensus
+> against FluMutDB's own (older) reference. The two tools answer different questions.
+
+### The `FLUMUT=` field
+
+```
+##INFO=<ID=FLUMUT,Number=.,Type=String,Description="FluMutDB marker matches: 'Protein |
+AA_Pos | Alt_AA | Mutation_Name | Effects'. '&' separates multiple values within a field;
+',' separates one entry per matching ANN annotation. AA_Pos is in this VCF's coordinates.">
+```
+
+```
+FLUMUT=PB2|715|N|PB2:S715N|Decreased_virulence_in_mice
+FLUMUT=HA1|222|L|HA1-5:Q222L|Decreased_antiviral_response_in_host&Enhanced_replication_in_ferrets&…
+```
+
+One comma-separated entry per matching `ANN` annotation, so a row hitting two features can
+carry two entries. `AA_Pos` is the position in *this* VCF's coordinates; the FluMutDB
+reference position is carried inside `Mutation_Name`. Effect names are sanitised (whitespace
+→ `_`, `;,=|` stripped, en dash → `-`) because VCF INFO values may not contain whitespace,
+`;` or `,`. `--no-effects` emits the first four sub-fields only. Rows with no match get **no**
+`FLUMUT` key.
 
 ### CLI
 
 ```
-merge_flumut_mutations.py --vcf <final.vcf> --coord-map <coordinate_map.json>
-                           --flumut-mutations <melted.tsv> --dataset-dir <dataset>
-                           --segment <HA|M|…> --sample <id> -o <merged.vcf>
+merge_flumut_mutations_v2.py --vcf <final.vcf> --coord-map <coordinate_map.SEG.json>
+                             --segment <HA|M|…> --sample <id> -o <merged.vcf>
+                             [--flumut-db <path>] [--no-effects]
 ```
 
 ### Inputs and where they come from
 
 | Input | Producer | Used for |
 | --- | --- | --- |
-| `--vcf` (`*_final.vcf`) | `post_process_vcf_batch` | existing fluscan AA changes + rows to relabel |
-| `--coord-map` (`coordinate_map.json`) | `coordinate_conversion` | flumut→Nextclade **AA position** mapping, per gene |
-| `--flumut-mutations` (melted TSV) | `flumut` + `melt_flumut.py` | the marker calls (`sample`,`gene`,`mutation`,`allele`) |
-| `--dataset-dir` | Nextclade dataset | target `genome_annotation.gff3` → CDS start for placing new rows |
+| `--vcf` (`*_final.vcf`) | `post_process_vcf_batch` | the AA changes to look up, and the rows to annotate |
+| `--coord-map` (`coordinate_map.<SEG>.json`) | `coordinate_conversion` | flumut→Nextclade **AA position** mapping, per gene |
+| FluMutDB sqlite | `flumutdb` conda package | the marker catalogue; located via `flumut.DbReader.get_db_file()`, overridable with `--flumut-db` |
 
 Wired in `workflows/nextclade.nf` per `(sample, segment)`: the per-segment VCF batches are
-flattened, joined to flumut mutations and the consensus by sample, and combined with the
-single coordinate map.
+flattened and combined with the matching coordinate-map shard. The per-sample `flumut` TSV is
+**not** an input — the marker set comes from the database, so the `flumut` process and this
+one are independent.
 
 ### How it runs (`main`)
 
-1. **Read the VCF** with `tools.read_vcf` → DataFrame + header lines. `#CHROM` comes from
-   the data (or the `##contig` header for an empty VCF).
-2. **Load this segment's gene maps** from the coordinate map (`load_segment_genes`) and the
-   **target transcripts** from the dataset GFF (`load_target_transcripts` → `load_gff3`).
-3. **Collect fluscan AA changes** already in the VCF — parse each row's `ANN=` for
-   `(gene, aa_pos, alt_aa)` (`row_aa_changes`, skipping synonymous).
-4. **Read flumut markers** for this sample (`read_flumut_mutations`, a pandas read of the
-   melted TSV filtered to `--sample`).
-5. **Map each marker into Nextclade coordinates** (`build_flumut_inserts`):
-   - **Resolve the gene name** to a coordinate-map key (`resolve_gene`, see table below).
-     A marker that doesn't resolve to this segment is skipped (it belongs to another VCF).
-   - **Map the AA position** flumut→Nextclade via `genes[gene].aa_source_to_target`. An
-     unmapped (gapped) position is logged and skipped.
-   - Form the key `(gene, target_pos, alt_aa)`. If it matches a fluscan change → the marker
-     is **both** (the existing row is relabelled; no duplicate is inserted). Otherwise it's
-     a **flumut-only** insert.
-6. **Build flumut-only rows** (`flumut_only_row`): derive a real `POS` from the target CDS
-   (`POS = cds_start + (target_pos−1)·3`, via the reused `_cds_to_genomic`), set filler
-   `REF=N`/`ALT=N`, and carry the AA change in `ANN=` (reusing `_build_ann_entry` and
-   `variant_row` so the row is shaped exactly like a converter row). A marker that can't be
-   placed on the CDS is logged and skipped.
-7. **Assemble output** (`assemble_output`): relabel every existing row `both`/`fluscan`,
-   append the flumut-only rows, cast `POS` to int, and stable-sort by `POS`.
-8. **Write** with `tools.write_vcf`, inserting the `##INFO=<ID=DETECTED_BY…>` definition
+1. **Read the VCF** with `tools.read_vcf` → DataFrame + header lines.
+2. **Load this segment's block** from the coordinate map (`load_segment_map`), warning if it
+   carries `stale_annotation`.
+3. **Pair genes with FluMutDB proteins** (`build_gene_protein_maps`): query the distinct
+   `protein_name`s the database maps onto this segment's reference, resolve each to a
+   coordinate-map gene key (`resolve_gene`, see below), and **invert** that gene's
+   `aa_source_to_target` once into `{target_pos: source_pos}`. Inverting is what lets the
+   main loop start from a VCF row and query the database directly. Alignment-derived maps
+   pair columns 1:1, so the inverse is well defined; a collision would be warned about and
+   resolved to the lowest source position.
+4. **Per row, per `ANN` entry** (`row_flumut_field` → `aa_changes_from_info`): take
+   `Gene_Name` and the `HGVS.p` substitution, skipping synonymous changes and entries with no
+   `HGVS.p`. Translate the position target→source, then run one parameterised query
+   (`MARKER_QUERY`, `lru_cache`d) for `(reference, protein, position, alt)`.
+5. **Write** with `tools.write_vcf`, inserting the `##INFO=<ID=FLUMUT…>` definition
    immediately before the `#CHROM` line.
+
+`ref_seq` is deliberately **not** part of the match: a marker is defined by its alt allele,
+and the sample's reference amino acid may legitimately differ from FluMutDB's.
 
 ### Gene-name resolution (`resolve_gene`)
 
-flumut names carry a trailing `-<digits>` that is sometimes a FluMutDB version and
-sometimes a protein number, and some names differ from the Nextclade annotation. Rather
-than hard-code assumptions, the resolver generates candidates and keeps whichever exists as
-a real gene key in the coordinate map for that segment:
+FluMutDB protein names differ from some Nextclade annotations. Rather than hard-code
+assumptions, the resolver generates candidates and keeps whichever exists as a real gene key
+in the coordinate map for that segment:
 
-| flumut name | candidates tried | resolves to (if present) |
+| FluMutDB `protein_name` | candidates tried | resolves to (if present) |
 | --- | --- | --- |
-| `HA1-5` | `HA1-5`, `HA1`, `HA15` | `HA1` |
+| `HA1` / `HA2` | `HA1` / `HA2` | `HA1` / `HA2` |
 | `NS-1` | `NS-1`, `NS`, `NS1` | `NS1` |
 | `NS-2` | `NS-2`, `NS`, `NS2`, `NEP` | `NEP` |
 | `M1` / `M2` | `M1` / `M2` | `M1` / `M2` |
 | `PB1-F2` | `PB1-F2` | `PB1-F2` |
 
+The segment label maps to FluMutDB's `reference_name` verbatim except **M → `MP`**.
+
 ### Edge cases (all non-fatal)
 
-- **Stale/mismatched target annotation** — if the Nextclade dataset lacks a split flumut
-  needs (e.g. GsGD has a single `HA` gene, not HA1/HA2; or lacks NS1/NEP), the coordinate
-  map has no genes for that segment, so those markers are skipped and the VCF passes through
-  with `fluscan` labels only. Use a dataset that splits them (e.g. chicken2021) to insert.
-- **Unmapped AA position** — a flumut position with no Nextclade counterpart (alignment gap)
-  is logged and skipped.
-- **Empty-variant VCF** — handled; `#CHROM` is read from `##contig` and the `DETECTED_BY`
-  header is still added.
-- flumut reports **substitutions only**, so only missense rows are ever inserted.
+- **HA without the subunit split** — FluMutDB numbers HA by its HA1/HA2 subunits, so the
+  Nextclade dataset must expose dedicated `HA1`/`HA2` genes. A dataset with a single `HA`
+  gene yields VCF rows whose `Gene_Name` is `HA`, which resolves to nothing; the script warns
+  (`VCF gene(s) HA … have no FluMutDB counterpart`) and passes the VCF through unannotated.
+- **Unmapped AA position** — a VCF position with no counterpart in flumut's reference
+  (alignment gap) is debug-logged and skipped.
+- **Missing gene maps** — a segment absent from the map, or one whose `genes` block is empty,
+  warns and passes through.
+- **Empty-variant VCF** — handled; the `FLUMUT` header is still added.
+- FluMutDB holds **substitutions only** (`mutations.type` is `SNP` throughout), so indel and
+  non-coding rows never match.
+
+### v1 (`merge_flumut_mutations.py`, superseded)
+
+v1 read flumut's melted per-sample TSV, labelled every row `DETECTED_BY=fluscan|flumut|both`,
+and **inserted** synthetic rows (filler `REF=N`/`ALT=N`, `POS` derived from the target CDS)
+for markers fluscan had not called. Those rows carried no nucleotide evidence. v2 drops both
+the insertion behaviour and the `DETECTED_BY` field: with the per-sample TSV gone, the script
+cannot say what flumut detected — only that a fluscan call coincides with a curated marker,
+which is what `FLUMUT=` states. The file is retained but no process invokes it.
 
 ---
 
@@ -252,5 +280,5 @@ the inverse of one another and round-trip a VCF **byte-for-byte**. Key propertie
   headers (many `##contig`/`##INFO` lines).
 - Data columns are read as **strings with NA-detection off**, so `.`, `NA`-like tokens, and
   empty fields survive unchanged and there are no `NaN` surprises. `POS` is therefore a
-  string — cast with `.astype(int)` when you need integers (as `assemble_output` does before
-  sorting).
+  string — cast with `.astype(int)` when you need integers. This verbatim round-trip is what
+  lets `merge_flumut_mutations_v2.py` guarantee that only `INFO` changes.
