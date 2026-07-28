@@ -25,9 +25,8 @@ process merge_flumut_mutations {
                 def wf = task.ext.workflow ?: 'nextclade'
                 return "${sample_id}/${wf}/${filename}"
             }
-            if (filename.endsWith('_provenance.yml')) {
-                return null
-            }
+            // Provenance is not published from here: collect_provenance concatenates it
+            // with the rest of the sample's records and publishes that single file.
             return null
         }
 
@@ -45,7 +44,7 @@ process merge_flumut_mutations {
     printf -- "- process_name: merge_flumut_mutations\\n"                                         > ${sample_id}_${segment}_merge_flumut_provenance.yml
     printf -- "  tools:\\n"                                                                       >> ${sample_id}_${segment}_merge_flumut_provenance.yml
     printf -- "    - tool_name: python\\n      tool_version: \$(python3 --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_${segment}_merge_flumut_provenance.yml
-    printf -- "    - tool_name: merge_flumut_mutations_v2.py\\n      tool_version: 2.0.0\\n"       >> ${sample_id}_${segment}_merge_flumut_provenance.yml
+    printf -- "    - tool_name: merge_flumut_mutations_v2.py\\n      tool_version: \$(merge_flumut_mutations_v2.py --version | awk '{print \$NF}')\\n" >> ${sample_id}_${segment}_merge_flumut_provenance.yml
     printf -- "    - tool_name: flumutdb\\n      tool_version: \$(python3 -c 'from flumut.DbReader import get_db_version; print("%s.%s" % get_db_version()[:2])')\\n" >> ${sample_id}_${segment}_merge_flumut_provenance.yml
 
     merge_flumut_mutations_v2.py \\
