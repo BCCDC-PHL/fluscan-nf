@@ -6,7 +6,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from tools import read_vcf
+from lib.tools import read_vcf
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 log = logging.getLogger(__name__)

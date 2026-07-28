@@ -7,7 +7,7 @@ import re
 import pandas as pd
 from subprocess import run
 
-from tools import read_vcf, write_vcf
+from lib.tools import read_vcf, write_vcf
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 log = logging.getLogger(__name__)
