@@ -95,7 +95,7 @@ flowchart TD
         nc_final[Final NEXTCLADE VCFs]
         coord_map[coordinate_conversion: build_reference_coordinate_map.py]
         coord_final[aggregate/reference_remap]
-        flumut_merge[merge_flumut_mutations: merge_flumut_mutations_v2.py]
+        flumut_merge[merge_flumut_mutations: merge_flumut_mutations.py]
         flumut_merged[FluMutDB-annotated VCFs]
 
         nextclade_prepare --> nextclade_flumut

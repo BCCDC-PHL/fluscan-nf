@@ -4,7 +4,7 @@
 The same protein is spelled differently across annotations: flumut's reference uses the
 FluMutDB protein names NS-1/NS-2, Nextclade datasets use NS1/NEP, and NCBI-derived GFF3s
 often use NS2. `build_reference_coordinate_map.py` canonicalises the target GFF's gene
-attribute when it builds a segment's gene keys; `merge_flumut_mutations_v2.py` must apply
+attribute when it builds a segment's gene keys; `merge_flumut_mutations.py` must apply
 the *same* function to the ANN Gene_Name it looks those keys up with.
 
 That symmetry is the point of this module. Both sides ultimately read the same target GFF

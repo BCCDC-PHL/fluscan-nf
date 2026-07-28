@@ -63,7 +63,7 @@ from Bio import SeqIO
 from Bio.Align import PairwiseAligner, substitution_matrices
 from Bio.Seq import Seq
 
-# lib/flu_gene_names holds the gene-key aliases that merge_flumut_mutations_v2.py must apply
+# lib/flu_gene_names holds the gene-key aliases that merge_flumut_mutations.py must apply
 # to ANN Gene_Name for its lookups to hit the keys written here; sharing the table is what
 # keeps the two sides from drifting apart. Importable modules live in bin/lib/, so this
 # script's own directory (bin/) goes on sys.path to make the package resolvable.

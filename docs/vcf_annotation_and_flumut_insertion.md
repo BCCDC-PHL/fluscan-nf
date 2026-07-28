@@ -6,7 +6,7 @@ freebayes-style VCF and tag the curated FluMutDB markers among them:
 | Script | Role |
 | --- | --- |
 | [`bin/nextclade_to_freebayes_vcf.py`](../bin/nextclade_to_freebayes_vcf.py) | Convert a Nextclade JSON into a freebayes-format VCF with snpEff-style `ANN=` annotations. |
-| [`bin/merge_flumut_mutations_v2.py`](../bin/merge_flumut_mutations_v2.py) | Add a `FLUMUT=` INFO field to rows whose AA change matches a FluMutDB marker. **Current version** — run by the `merge_flumut_mutations` process. |
+| [`bin/merge_flumut_mutations.py`](../bin/merge_flumut_mutations.py) | Add a `FLUMUT=` INFO field to rows whose AA change matches a FluMutDB marker. Run by the `merge_flumut_mutations` process. |
 | [`bin/lib/flu_gene_names.py`](../bin/lib/flu_gene_names.py) | The canonical gene-key aliases (`NS-1`→`NS1`, `NS2`/`NS-2`→`NEP`), shared by the coordinate map builder and the merge so the two cannot drift. |
 
 Both VCF-writing scripts share the I/O helpers in [`bin/lib/tools.py`](../bin/lib/tools.py),
@@ -24,7 +24,7 @@ consensus.fasta ─► nextclade_run_batch ─► nextclade_to_freebayes_vcf.py 
                                               fix_mnv_codons.py (post_process) ─► *_final.vcf
                                                                              │
       coordinate_conversion (flumut→Nextclade map) ─┐                        │
-      FluMutDB (flumutdb conda package) ────────────┼─► merge_flumut_mutations_v2.py ─► *_flumut_merged.vcf
+      FluMutDB (flumutdb conda package) ────────────┼─► merge_flumut_mutations.py ─► *_flumut_merged.vcf
                                                      │
                               *_final.vcf ───────────┘
 ```
@@ -149,7 +149,7 @@ processes), which recomputes the real codon before the `*_final.vcf` is produced
 
 ---
 
-## `merge_flumut_mutations_v2.py`
+## `merge_flumut_mutations.py`
 
 ### Purpose
 
@@ -233,9 +233,9 @@ deliberately does not constrain. `Mutation_Name` and both effect fields union ov
 ### CLI
 
 ```
-merge_flumut_mutations_v2.py --vcf <final.vcf> --coord-map <coordinate_map.SEG.json>
-                             --segment <HA|M|…> --sample <id> -o <merged.vcf>
-                             [--flumut-db <path>] [--no-effects]
+merge_flumut_mutations.py --vcf <final.vcf> --coord-map <coordinate_map.SEG.json>
+                          --segment <HA|M|…> --sample <id> -o <merged.vcf>
+                          [--flumut-db <path>] [--no-effects]
 ```
 
 ### Inputs and where they come from
@@ -370,19 +370,25 @@ flag rows that were in fact annotated correctly.
   carries the same corrected `HGVS.p`, so the same `FLUMUT=` entry is emitted on each of them.
   Any downstream count of "markers found" must de-duplicate.
 
-### v1 (`merge_flumut_mutations.py`, removed)
+### The retired insertion-based implementation
 
-v1 read flumut's melted per-sample TSV, labelled every row `DETECTED_BY=fluscan|flumut|both`,
-and **inserted** synthetic rows (filler `REF=N`/`ALT=N`, `POS` derived from the target CDS)
-for markers fluscan had not called. Those rows carried no nucleotide evidence. v2 drops both
-the insertion behaviour and the `DETECTED_BY` field: with the per-sample TSV gone, the script
-cannot say what flumut detected — only that a fluscan call coincides with a curated marker,
-which is what `FLUMUT=` states.
+An earlier implementation — carried alongside the current one as
+`merge_flumut_mutations_v2.py` while both existed — read flumut's melted per-sample TSV,
+labelled every row `DETECTED_BY=fluscan|flumut|both`, and **inserted** synthetic rows (filler
+`REF=N`/`ALT=N`, `POS` derived from the target CDS) for markers fluscan had not called. Those
+rows carried no nucleotide evidence.
 
-The script has been deleted. The coordinate map's per-gene `target_cds` block existed solely
-to let it place those synthetic rows without re-parsing the GFF, and went with it — which also
-removes the map builder's `sys.path` import of `nextclade_to_freebayes_vcf.load_gff3`, the only
-thing that coupled the two.
+The current script drops both the insertion behaviour and the `DETECTED_BY` field: with the
+per-sample TSV gone, it cannot say what flumut detected — only that a fluscan call coincides
+with a curated marker, which is what `FLUMUT=` states.
+
+The old implementation has been deleted and the surviving one has taken back the plain
+`merge_flumut_mutations.py` name, so **no merge script carries a `_v2` suffix any more**; the
+old name survives only in git history and in `ISSUES.md`, which reviews the code as it stood
+at commit `2aa5c08`. The coordinate map's per-gene `target_cds` block existed solely to let
+the old script place those synthetic rows without re-parsing the GFF, and went with it — which
+also removes the map builder's `sys.path` import of `nextclade_to_freebayes_vcf.load_gff3`,
+the only thing that coupled the two.
 
 ---
 
@@ -397,4 +403,4 @@ the inverse of one another and round-trip a VCF **byte-for-byte**. Key propertie
 - Data columns are read as **strings with NA-detection off**, so `.`, `NA`-like tokens, and
   empty fields survive unchanged and there are no `NaN` surprises. `POS` is therefore a
   string — cast with `.astype(int)` when you need integers. This verbatim round-trip is what
-  lets `merge_flumut_mutations_v2.py` guarantee that only `INFO` changes.
+  lets `merge_flumut_mutations.py` guarantee that only `INFO` changes.

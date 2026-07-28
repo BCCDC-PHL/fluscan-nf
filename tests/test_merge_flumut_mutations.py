@@ -1,6 +1,6 @@
-"""Unit tests for bin/merge_flumut_mutations_v2.py (FluMutDB VCF annotation).
+"""Unit tests for bin/merge_flumut_mutations.py (FluMutDB VCF annotation).
 
-Covers the behaviours the v2 merge is specified around: matching on
+Covers the behaviours the merge is specified around: matching on
 (protein, AA position, alt AA), translation through the coordinate map's
 aa_source_to_target block, canonicalisation of ANN gene names onto the coordinate map's
 gene keys, the shape of the FLUMUT INFO field including the direct/associated effect
@@ -19,7 +19,7 @@ concrete markers asserted on (FluMutDB 6.6):
     M2:A30V/T/S reference MP,  protein M2,  position 30   (no alt D -- see the M1/M2 test)
     HA1-5:T156A reference HA,  protein HA1, position 156, alt A
 
-Run with:  pytest tests/test_merge_flumut_mutations_v2.py
+Run with:  pytest tests/test_merge_flumut_mutations.py
 
 The database is located the same way the script does, via the installed flumutdb package.
 Set FLUMUT_DB to a flumut_db.sqlite path to run the suite from an environment that has
@@ -36,7 +36,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = REPO_ROOT / "bin" / "merge_flumut_mutations_v2.py"
+SCRIPT_PATH = REPO_ROOT / "bin" / "merge_flumut_mutations.py"
 
 VCF_COLUMNS = "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE"
 BASE_INFO = "NS=1;DP=1;AF=1.0;TYPE=snp;LEN=1"
@@ -44,20 +44,20 @@ FORMAT_COLS = "GT:DP\t1:1"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("merge_flumut_mutations_v2", SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location("merge_flumut_mutations", SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-merge_v2 = _load_module()
+merge_mod = _load_module()
 
 
 def _find_db() -> str | None:
     if os.environ.get("FLUMUT_DB"):
         return os.environ["FLUMUT_DB"]
     try:
-        return merge_v2.locate_db(None)
+        return merge_mod.locate_db(None)
     except SystemExit:
         return None
 
@@ -655,7 +655,7 @@ def test_rows_are_annotated_in_place_and_never_added_or_reordered(tmp_path):
     ("NS-1", {"NS"}, "NS"),
 ])
 def test_resolve_gene(protein, available, expected):
-    assert merge_v2.resolve_gene(protein, available) == expected
+    assert merge_mod.resolve_gene(protein, available) == expected
 
 
 def test_colliding_gene_keys_are_refused_rather_than_silently_overwritten(tmp_path):
@@ -684,7 +684,7 @@ def test_colliding_gene_keys_are_refused_rather_than_silently_overwritten(tmp_pa
     ("PB2", "PB2"),
 ])
 def test_canonical_gene(raw, expected):
-    assert merge_v2.canonical_gene(raw) == expected
+    assert merge_mod.canonical_gene(raw) == expected
 
 
 def test_canonical_gene_comes_from_the_shared_module():
@@ -692,23 +692,23 @@ def test_canonical_gene_comes_from_the_shared_module():
 
     A second copy is how the two sides drift: the map ends up keyed under a name the merge
     never looks up, which is exactly how every NEP marker went missing on NS2 datasets.
-    bin/ is already on sys.path -- merge_flumut_mutations_v2 put it there when it imported
+    bin/ is already on sys.path -- merge_flumut_mutations put it there when it imported
     this same module.
     """
     from lib import flu_gene_names
 
-    assert merge_v2.canonical_gene is flu_gene_names.canonical_gene
+    assert merge_mod.canonical_gene is flu_gene_names.canonical_gene
 
 
 def test_database_is_found_without_an_explicit_path():
     """The default path: locate_db() falls back to the installed flumutdb package."""
     pytest.importorskip("flumut")
-    assert Path(merge_v2.locate_db(None)).name == "flumut_db.sqlite"
+    assert Path(merge_mod.locate_db(None)).name == "flumut_db.sqlite"
 
 
 def test_sanitize_produces_a_legal_info_value():
     dirty = "Decreased virus binding to α2–3 (weak); n=2, maybe|not"
-    clean = merge_v2.sanitize(dirty)
+    clean = merge_mod.sanitize(dirty)
     assert not any(ch in clean for ch in " \t;,=|")
 
 
@@ -719,7 +719,7 @@ def test_aa_changes_from_info_skips_synonymous_and_deduplicates():
         ann("PB2", "p.G100G", annotation="synonymous_variant"),
         ann("PB1", "p.N375S"),
     ])
-    assert merge_v2.aa_changes_from_info(info) == [
+    assert merge_mod.aa_changes_from_info(info) == [
         ("PB2", "LOCUS_PB2", 627, "K"),
         ("PB1", "LOCUS_PB1", 375, "S"),
     ]
@@ -732,7 +732,7 @@ def test_aa_changes_keeps_one_entry_per_feature_of_the_same_gene():
         ann("HA", "p.T211I"),
         ann("HA", "p.T195I", feature_id="YP_529486.1"),
     ])
-    assert merge_v2.aa_changes_from_info(info) == [
+    assert merge_mod.aa_changes_from_info(info) == [
         ("HA", "LOCUS_HA", 211, "I"),
         ("HA", "YP_529486.1", 195, "I"),
     ]
@@ -747,7 +747,7 @@ def test_aa_changes_keeps_one_entry_per_feature_of_the_same_gene():
     ("", None),
 ])
 def test_parse_hgvs_p(hgvs_p, expected):
-    assert merge_v2.parse_hgvs_p(hgvs_p) == expected
+    assert merge_mod.parse_hgvs_p(hgvs_p) == expected
 
 
 @pytest.mark.parametrize("info,key,expected", [
@@ -758,4 +758,4 @@ def test_parse_hgvs_p(hgvs_p, expected):
     ("NS=1;ANN=A|x|y|MNV_UNRESOLVED", "MNV_UNRESOLVED", False),
 ])
 def test_has_info_flag(info, key, expected):
-    assert merge_v2.has_info_flag(info, key) is expected
+    assert merge_mod.has_info_flag(info, key) is expected

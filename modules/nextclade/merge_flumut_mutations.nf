@@ -2,7 +2,7 @@
 //
 // Consumes the flumut->Nextclade coordinate map (per-segment shard) and a per-sample/
 // per-segment Nextclade freebayes-style VCF. For every AA change already annotated in a
-// row's ANN= field, merge_flumut_mutations_v2.py queries FluMutDB (shipped by the flumutdb
+// row's ANN= field, merge_flumut_mutations.py queries FluMutDB (shipped by the flumutdb
 // conda package) for a matching curated marker and, on a hit, adds a FLUMUT= INFO field.
 // No rows are added, removed or reordered. Writes a NEW *_flumut_merged.vcf; the input
 // *_final.vcf is untouched.
@@ -44,10 +44,10 @@ process merge_flumut_mutations {
     printf -- "- process_name: merge_flumut_mutations\\n"                                         > ${sample_id}_${segment}_merge_flumut_provenance.yml
     printf -- "  tools:\\n"                                                                       >> ${sample_id}_${segment}_merge_flumut_provenance.yml
     printf -- "    - tool_name: python\\n      tool_version: \$(python3 --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_${segment}_merge_flumut_provenance.yml
-    printf -- "    - tool_name: merge_flumut_mutations_v2.py\\n      tool_version: \$(merge_flumut_mutations_v2.py --version | awk '{print \$NF}')\\n" >> ${sample_id}_${segment}_merge_flumut_provenance.yml
+    printf -- "    - tool_name: merge_flumut_mutations.py\\n      tool_version: \$(merge_flumut_mutations.py --version | awk '{print \$NF}')\\n" >> ${sample_id}_${segment}_merge_flumut_provenance.yml
     printf -- "    - tool_name: flumutdb\\n      tool_version: \$(python3 -c 'from flumut.DbReader import get_db_version; print("%s.%s" % get_db_version()[:2])')\\n" >> ${sample_id}_${segment}_merge_flumut_provenance.yml
 
-    merge_flumut_mutations_v2.py \\
+    merge_flumut_mutations.py \\
         --vcf ${vcf} \\
         --coord-map ${coord_json} \\
         --segment ${segment} \\
