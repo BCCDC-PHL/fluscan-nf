@@ -18,9 +18,6 @@ include { short_read_multiqc }             from '../modules/short_read/qc.nf'
 include { short_read_fastqc }              from '../modules/short_read/qc.nf'
 include { short_read_sample_reads }        from '../modules/short_read/assembly.nf'
 include { short_read_assembly }            from '../modules/short_read/assembly.nf'
-include { pull_genoflu }                   from '../modules/shared/genoflu.nf'
-include { checkout_genoflu }               from '../modules/shared/genoflu.nf'
-include { genoflu }                        from '../modules/shared/genoflu.nf'
 include { flumut }                         from '../modules/shared/flumut.nf'
 
 include { makeblastdb }                    from '../modules/shared/blast.nf'
@@ -125,8 +122,6 @@ workflow SHORT_READ {
         short_read_make_consensus(short_read_lofreq.out.vcf.join(blastn.out.ref).join(short_read_mask_low_coverage.out.masked_bed))
 
         flumut(short_read_make_consensus.out.consensus)
-
-        //genoflu(short_read_make_consensus.out.consensus)
 
         // Provenance collection processes
         // The basic idea is to build up a channel with the following structure:

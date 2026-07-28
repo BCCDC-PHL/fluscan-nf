@@ -32,7 +32,6 @@ include { paftools_align }                               from '../modules/paftoo
 include { consensus_coverage_qc }                        from '../modules/paftools/alignment.nf'
 include { makeblastdb }                                  from '../modules/shared/blast.nf'
 include { blastn }                                       from '../modules/shared/blast.nf'
-include { genoflu }                                      from '../modules/shared/genoflu.nf'
 include { flumut }                                       from '../modules/shared/flumut.nf'
 include { paftools_call }                                from '../modules/paftools/variant_calling.nf'
 include { paftools_sort_vcf }                            from '../modules/paftools/variant_calling.nf'
@@ -103,8 +102,6 @@ workflow PAFTOOLS {
 
         // --- Step 3: BLAST cleaned consensus against reference database ---
         blastn(prepare_consensus.out.cleaned, ch_blastdb)
-
-        //genoflu(prepare_consensus.out.cleaned)
 
         flumut(prepare_consensus.out.cleaned)
 
