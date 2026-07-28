@@ -33,8 +33,23 @@ include { nextclade_to_vcf_batch }               from '../modules/nextclade/next
 include { post_process_vcf_batch }               from '../modules/shared/post_process.nf'
 include { coordinate_conversion }                from '../modules/nextclade/coordinate_conversion.nf'
 include { merge_flumut_mutations }               from '../modules/nextclade/merge_flumut_mutations.nf'
+include { pipeline_provenance }                  from '../modules/shared/provenance.nf'
+include { collect_provenance }                   from '../modules/shared/provenance.nf'
 
 workflow NEXTCLADE {
+
+    // The canonical segment set, and the only labels coordinate_conversion shards the map by.
+    def SEGMENTS = ['PB2', 'PB1', 'PA', 'HA', 'NP', 'NA', 'M', 'NS']
+
+    ch_workflow_metadata = Channel.value([
+        workflow.sessionId,
+        workflow.runName,
+        workflow.manifest.name,
+        workflow.manifest.version,
+        workflow.start,
+    ])
+
+    ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
 
     def extract_segment = { sample_id, fasta ->
         def segment = fasta =~ /.*_([A-z0-9-]+)\.s.*/
@@ -54,6 +69,10 @@ workflow NEXTCLADE {
     }
 
     main:
+
+        // Provenance channel starts with just the sample IDs; per-process YAMLs are joined
+        // on as they are produced, and concatenated at the end by collect_provenance.
+        ch_provenance = ch_fasta_input.map{ it -> it[0] }
 
         if (
             !params.nextclade_datasets_dir ||
@@ -113,6 +132,12 @@ workflow NEXTCLADE {
         // --- Step 6: Post-process VCFs (fix MNV codons); one task per segment ---
         post_process_vcf_batch(nextclade_to_vcf_batch.out.vcf)
 
+        // Per-sample provenance. post_process_vcf_batch is keyed by segment rather than by
+        // sample, so it has no per-sample record to join here.
+        ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it -> [it[0], [it[1]]] }
+        ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+
         // --- Steps 7-8: Coordinate conversion + flumut mutation merging (optional) ---
         //   Gated behind --merge_flumut_mutations (default false). When enabled,
         //   --flumut_reference_dir is validated above and these two steps run;
@@ -156,18 +181,47 @@ workflow NEXTCLADE {
                     [sample_id, segment, vcf]
                 }
 
+            // The join below is an inner join on the segment label, and ch_shards only ever
+            // carries the eight canonical labels. Split first so a VCF labelled anything else
+            // (the 'unknown_segment' fallback of extract_segment) is reported rather than
+            // vanishing, leaving a *_final.vcf with no merged counterpart and no explanation.
+            ch_vcf_by_segment = ch_vcf_flat.branch { sample_id, segment, vcf ->
+                known:   SEGMENTS.contains(segment)
+                unknown: true
+            }
+
+            ch_vcf_by_segment.unknown.subscribe { sample_id, segment, vcf ->
+                log.warn "merge_flumut_mutations: ${sample_id} has no coordinate map for segment " +
+                         "'${segment}' (not one of ${SEGMENTS.join(', ')}); ${vcf.name} is left " +
+                         "unannotated and produces no *_flumut_merged.vcf"
+            }
+
             // Key each per-segment shard by its segment label parsed from the filename.
             ch_shards = coordinate_conversion.out.json_shards
                 .flatten()
                 .map { f -> [ (f.name =~ /coordinate_map\.([^.]+)\.json/)[0][1], f ] }  // [SEG, shard]
 
-            ch_merge_in = ch_vcf_flat
+            ch_merge_in = ch_vcf_by_segment.known
                 .map { sample_id, segment, vcf -> [segment, sample_id, vcf] }
                 .combine(ch_shards, by: 0)                     // + coord shard (by segment)
                 .map { segment, sample_id, vcf, shard -> [sample_id, segment, vcf, shard] }
                 // -> [sample_id, segment, vcf, coord_shard]
 
             merge_flumut_mutations(ch_merge_in)
+
+            // One merge task per (sample, segment), so group back to one entry per sample
+            // before joining; it[2] is a list of YAMLs here, hence '+' rather than '<<'.
+            ch_provenance = ch_provenance
+                .join(merge_flumut_mutations.out.provenance.groupTuple())
+                .map{ it -> [it[0], it[1] + it[2]] }
+
+            // coordinate_conversion runs once per pipeline invocation, not per sample, so
+            // its single provenance file is combined onto every sample rather than joined.
+            ch_provenance = ch_provenance
+                .combine(coordinate_conversion.out.provenance)
+                .map{ it -> [it[0], it[1] << it[2]] }
         }
+
+        collect_provenance(ch_provenance)
 
 }
