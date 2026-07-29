@@ -146,31 +146,3 @@ process paftools_to_freebayes_vcf {
     done
     """
 }
-
-
-process summarize_vcf {
-    tag { sample_id }
-
-    errorStrategy 'ignore'
-
-    conda "${projectDir}/environments/fluscan.yml"
-
-    // publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*tsv", mode: 'copy'
-
-    input:
-    tuple val(sample_id), path(vcf)
-
-    output:
-    tuple val(sample_id), path("${sample_id}_mutations.tsv"), emit: tsv
-    tuple val(sample_id), path("${sample_id}_summarize_vcf_provenance.yml"), emit: provenance
-
-    script:
-    """
-    printf -- "- process_name: summarize_vcf\\n" > ${sample_id}_summarize_vcf_provenance.yml
-    printf -- "  tools: \\n" >> ${sample_id}_summarize_vcf_provenance.yml
-    printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_summarize_vcf_provenance.yml
-    printf -- "  - tool_name: summarize_vcf.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_summarize_vcf_provenance.yml
-
-    summarize_vcf.py --input ${vcf} --output ${sample_id}_mutations.tsv
-    """
-}

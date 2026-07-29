@@ -32,8 +32,7 @@ include { short_read_lofreq }              from '../modules/short_read/variant_c
 include { short_read_snpeff_annotation }   from '../modules/short_read/variant_calling.nf'
 include { post_process_vcf }               from '../modules/shared/post_process.nf'
 include { split_fasta as split_fasta_reference } from '../modules/shared/consensus_qc.nf'
-include { short_read_summarize_vcf }       from '../modules/short_read/variant_calling.nf'
-include { short_read_mutation_watch }      from '../modules/short_read/variant_calling.nf'
+include { mutation_watch }                 from '../modules/shared/mutation_watch.nf'
 include { short_read_make_coverage_plot }  from '../modules/short_read/plotting.nf'
 
 
@@ -101,7 +100,6 @@ workflow SHORT_READ {
         short_read_lofreq(short_read_sort_filter_sam.out.bam.join(blastn.out.ref))
 
         if (params.snpeff_config != 'NO_FILE') {
-            watchlist_files = Channel.fromPath(params.watchlist_dir + "/*watchlist.csv")
             short_read_snpeff_annotation(short_read_lofreq.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
 
             // Split each sample's multi-segment BLAST reference into per-segment FASTAs
@@ -113,9 +111,26 @@ workflow SHORT_READ {
             ch_segment_vcfs = short_read_snpeff_annotation.out.vcfs.join(ch_reference_segments)
 
             post_process_vcf(ch_segment_vcfs)
-            short_read_summarize_vcf(post_process_vcf.out.vcf.transpose())
 
-            short_read_mutation_watch(short_read_summarize_vcf.out.tsv.combine(watchlist_files))
+            // Watchlist scanning reads the final VCF, so it keys only on a watchlist being
+            // set -- but the final VCF only exists inside this snpeff block, which is what
+            // keeps the call here.
+            if (params.watchlist_dir != 'NO_FILE') {
+                // checkIfExists so a mistyped --watchlist_dir fails loudly. Built inside the
+                // guard: an unguarded fromPath('NO_FILE/*watchlist.csv') yields an empty
+                // channel, and the scan then silently does not run at all.
+                ch_watchlists = Channel.fromPath(
+                    params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
+                )
+                // [sample_id, vcf] -> [sample_id, segment, vcf]; the segment is carried as
+                // '' because short-read post_process_vcf emits one VCF per sample, not per
+                // segment, and an invented label would be reported in the output.
+                ch_watch_in = post_process_vcf.out.vcf
+                    .transpose()
+                    .map { sample_id, vcf -> [sample_id, '', vcf] }
+                    .combine(ch_watchlists)
+                mutation_watch(ch_watch_in)
+            }
         }
 
         short_read_mask_low_coverage(short_read_sort_filter_sam.out.bam)

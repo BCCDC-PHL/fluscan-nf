@@ -33,6 +33,7 @@ include { nextclade_to_vcf_batch }               from '../modules/nextclade/next
 include { post_process_vcf_batch }               from '../modules/shared/post_process.nf'
 include { coordinate_conversion }                from '../modules/nextclade/coordinate_conversion.nf'
 include { merge_flumut_mutations }               from '../modules/nextclade/merge_flumut_mutations.nf'
+include { mutation_watch }                       from '../modules/shared/mutation_watch.nf'
 include { pipeline_provenance }                  from '../modules/shared/provenance.nf'
 include { collect_provenance }                   from '../modules/shared/provenance.nf'
 
@@ -132,6 +133,27 @@ workflow NEXTCLADE {
         // --- Step 6: Post-process VCFs (fix MNV codons); one task per segment ---
         post_process_vcf_batch(nextclade_to_vcf_batch.out.vcf)
 
+        // [segment, [vcfs]] -> [sample_id, segment, vcf]. Shared by the watchlist scan below
+        // and, when enabled, by the flumut merge further down.
+        ch_final_vcf = post_process_vcf_batch.out.vcf
+            .transpose()
+            .map { segment, vcf ->
+                def sample_id = vcf.name.split('__')[0]
+                [sample_id, segment, vcf]
+            }
+
+        // --- Step 6b: Scan the final VCF for a custom watchlist (optional) ---
+        //   Independent of --merge_flumut_mutations: FLUMUT= is a curated annotation written
+        //   into the VCF, this is a custom list scanned out of it into a separate TSV.
+        if (params.watchlist_dir != 'NO_FILE') {
+            // checkIfExists so a mistyped --watchlist_dir fails loudly rather than yielding
+            // an empty channel and a scan that silently never runs.
+            ch_watchlists = Channel.fromPath(
+                params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
+            )
+            mutation_watch(ch_final_vcf.combine(ch_watchlists))
+        }
+
         // Per-sample provenance. post_process_vcf_batch is keyed by segment rather than by
         // sample, so it has no per-sample record to join here.
         ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it -> [it[0], [it[1]]] }
@@ -174,12 +196,7 @@ workflow NEXTCLADE {
             //   via the coordinate_conversion map, so the per-sample flumut TSV is not needed.
             //   Run per (sample, segment) so staging stays simple; each task consumes only its
             //   segment's slim coordinate-map shard.
-            ch_vcf_flat = post_process_vcf_batch.out.vcf       // [segment, [vcfs]]
-                .transpose()                                   // [segment, vcf]
-                .map { segment, vcf ->
-                    def sample_id = vcf.name.split('__')[0]
-                    [sample_id, segment, vcf]
-                }
+            ch_vcf_flat = ch_final_vcf                         // [sample_id, segment, vcf]
 
             // The join below is an inner join on the segment label, and ch_shards only ever
             // carries the eight canonical labels. Split first so a VCF labelled anything else

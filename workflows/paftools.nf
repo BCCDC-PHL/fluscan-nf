@@ -37,8 +37,8 @@ include { paftools_call }                                from '../modules/paftoo
 include { paftools_sort_vcf }                            from '../modules/paftools/variant_calling.nf'
 include { paftools_snpeff_annotation }                   from '../modules/paftools/variant_calling.nf'
 include { paftools_to_freebayes_vcf }                    from '../modules/paftools/variant_calling.nf'
-include { summarize_vcf }                                from '../modules/paftools/variant_calling.nf'
 include { post_process_vcf }                             from '../modules/shared/post_process.nf'
+include { mutation_watch }                               from '../modules/shared/mutation_watch.nf'
 
 
 
@@ -145,8 +145,21 @@ workflow PAFTOOLS {
         )
 
 
-        // // --- Step 8: Reformat annotated VCF to summary TSV ---
-        //summarize_vcf(paftools_snpeff_annotation.out.vcf)
+        // --- Step 9: Scan the final VCF for a custom watchlist (optional) ---
+        if (params.watchlist_dir != 'NO_FILE') {
+            // checkIfExists so a mistyped --watchlist_dir fails loudly rather than yielding
+            // an empty channel and a scan that silently never runs.
+            ch_watchlists = Channel.fromPath(
+                params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
+            )
+            // post_process_vcf emits [sample_id, [final VCFs]] for a whole sample here, so
+            // the segment label is left empty rather than invented; it is reported verbatim.
+            ch_watch_in = post_process_vcf.out.vcf
+                .transpose()
+                .map { sample_id, vcf -> [sample_id, '', vcf] }
+                .combine(ch_watchlists)
+            mutation_watch(ch_watch_in)
+        }
 
         // // --- Provenance collection ---
         // ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it ->      [it[0], [it[1]]] }
@@ -155,7 +168,6 @@ workflow PAFTOOLS {
         // ch_provenance = ch_provenance.join(paftools_call.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         // ch_provenance = ch_provenance.join(paftools_sort_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         // ch_provenance = ch_provenance.join(paftools_snpeff_annotation.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        // ch_provenance = ch_provenance.join(summarize_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         // collect_provenance(ch_provenance)
 
 }
