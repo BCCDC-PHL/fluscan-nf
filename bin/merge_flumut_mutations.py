@@ -64,13 +64,23 @@ from functools import lru_cache
 # bin/lib/. Python already puts a script's own directory on sys.path, but this insert uses
 # realpath so the import still resolves when bin/ is reached through a symlink.
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from lib.aa_markers import (  # noqa: E402
+    AA3_TO_AA1,
+    HGVS_P_NON_SUB_RE,
+    HGVS_P_RE,
+    HGVS_P_RE_3LETTER,
+    aa_changes_from_info,
+    ann_entries,
+    has_info_flag,
+    parse_hgvs_p,
+)
 from lib.flu_gene_names import canonical_gene  # noqa: E402
 from lib.tools import read_vcf, write_vcf  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
-SCRIPT_VERSION = "2.2.0"
+SCRIPT_VERSION = "2.3.0"
 
 FLUMUT_HEADER = (
     '##INFO=<ID=FLUMUT,Number=.,Type=String,'
@@ -97,46 +107,10 @@ GENE_ALIASES = {
     "MP": ["M"],
 }
 
-# Two HGVS.p substitution spellings are accepted. bin/nextclade_to_freebayes_vcf.py emits the
-# 1-letter form (p.E627K); snpEff -- which annotates the short-read and paftools branches this
-# process is meant to be reusable from (modules/nextclade/merge_flumut_mutations.nf's
-# task.ext.workflow) -- defaults to the 3-letter form (p.Glu627Lys). Matching only one of them
-# fails silently: zero annotations, indistinguishable from a VCF with no coding changes.
-HGVS_P_RE = re.compile(r"p\.([A-Za-z*])(\d+)([A-Za-z*])")
-HGVS_P_RE_3LETTER = re.compile(r"p\.([A-Z][a-z]{2})(\d+)([A-Z][a-z]{2})")
-
-# Local rather than Bio.SeqUtils.seq1: this script deliberately avoids a Biopython dependency
-# (see bin/lib/flu_gene_names.py for the same reasoning), and a 23-entry table does not justify one.
-AA3_TO_AA1 = {
-    "Ala": "A", "Arg": "R", "Asn": "N", "Asp": "D", "Cys": "C", "Gln": "Q", "Glu": "E",
-    "Gly": "G", "His": "H", "Ile": "I", "Leu": "L", "Lys": "K", "Met": "M", "Phe": "F",
-    "Pro": "P", "Ser": "S", "Thr": "T", "Trp": "W", "Tyr": "Y", "Val": "V",
-    "Sec": "U", "Pyl": "O", "Ter": "*",
-}
-
-
-# Forms that legitimately are not substitutions: indel/frameshift notations and snpEff's
-# 'p.Glu627=' synonymous shorthand. FluMutDB 6.6 holds only SNP-type mutations, so skipping
-# these loses nothing curated -- but they must not be reported as parse failures either.
-HGVS_P_NON_SUB_RE = re.compile(r"del|ins|dup|fs|ext|=|\?")
-
-
-def parse_hgvs_p(hgvs_p: str) -> tuple[str, int, str] | None:
-    """(ref_aa, position, alt_aa) for an HGVS.p substitution, or None if unparseable.
-
-    Non-substitution forms (del/ins/fs) return None. FluMutDB 6.6 holds only SNP-type
-    mutations, so nothing curated is lost by ignoring them.
-    """
-    hit = HGVS_P_RE.search(hgvs_p)
-    if hit:
-        return hit.group(1), int(hit.group(2)), hit.group(3)
-    hit = HGVS_P_RE_3LETTER.search(hgvs_p)
-    if hit:
-        ref_aa = AA3_TO_AA1.get(hit.group(1))
-        alt_aa = AA3_TO_AA1.get(hit.group(3))
-        if ref_aa and alt_aa:
-            return ref_aa, int(hit.group(2)), alt_aa
-    return None
+# HGVS.p parsing (both spellings), ANN extraction and the INFO-flag test live in
+# bin/lib/aa_markers.py and are imported above: bin/mutation_watcher.py asks the same
+# questions of the same VCFs against a different curated source, and the two must not be
+# free to disagree about which spellings parse.
 
 # One parameterised lookup per (protein, position, alt AA). ref_seq is deliberately absent
 # from the WHERE clause: a marker is defined by its alt allele, and the sample's reference
@@ -205,57 +179,6 @@ def resolve_gene(raw: str, available_genes: set) -> str | None:
 # ---------------------------------------------------------------------------
 # VCF annotation helpers
 # ---------------------------------------------------------------------------
-
-def ann_entries(info: str) -> list[list[str]]:
-    """Extract ANN entries (each a list of fields) from a VCF INFO string."""
-    for token in info.split(";"):
-        if token.startswith("ANN="):
-            return [entry.split("|") for entry in token[4:].split(",") if entry]
-    return []
-
-
-def has_info_flag(info: str, key: str) -> bool:
-    """Whether a VCF INFO string carries `key`, as a flag or a key=value pair.
-
-    Token-wise rather than a substring test, so a key is never matched inside another key's
-    name or value.
-    """
-    return any(token == key or token.startswith(f"{key}=") for token in info.split(";"))
-
-
-def aa_changes_from_info(info: str, unparsed: list | None = None) -> list[tuple[str, str, int, str]]:
-    """Non-synonymous (gene, feature_id, aa_pos, alt_aa) changes annotated on a VCF row.
-
-    One item per ANN entry that carries a parseable HGVS.p substitution, in ANN order and
-    de-duplicated, so a row hitting several features yields one candidate per feature.
-
-    ``feature_id`` (ANN field 7) is carried alongside ``gene`` (field 4) because a gene name
-    alone cannot key a mature peptide: NCBI-style HA annotations put the *parent* gene there
-    for the HA1/HA2 entries, and only the feature id names the subunit.
-
-    Non-empty HGVS.p values that parse as neither substitution spelling are appended to
-    ``unparsed`` so the caller can say so rather than reporting nothing at all.
-    """
-    changes: list[tuple[str, str, int, str]] = []
-    seen: set = set()
-    for fields in ann_entries(info):
-        if len(fields) < 11:
-            continue
-        gene, feature_id, hgvs_p = fields[3], fields[6], fields[10]
-        parsed = parse_hgvs_p(hgvs_p)
-        if parsed is None:
-            if hgvs_p and unparsed is not None and not HGVS_P_NON_SUB_RE.search(hgvs_p):
-                unparsed.append(hgvs_p)
-            continue
-        ref_aa, pos, alt_aa = parsed
-        if ref_aa == alt_aa:  # synonymous
-            continue
-        key = (gene, feature_id, pos, alt_aa)
-        if key not in seen:
-            seen.add(key)
-            changes.append(key)
-    return changes
-
 
 def sanitize(text: str) -> str:
     """Make a free-text database value safe for a VCF INFO value.

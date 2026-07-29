@@ -700,6 +700,22 @@ def test_canonical_gene_comes_from_the_shared_module():
     assert merge_mod.canonical_gene is flu_gene_names.canonical_gene
 
 
+def test_ann_parsing_comes_from_the_shared_module():
+    """The merge must not carry its own copy of the ANN/HGVS.p mechanics either.
+
+    bin/mutation_watcher.py asks the same questions of the same VCFs against a different
+    curated source. Two copies are free to drift over which HGVS.p spellings parse and
+    which non-substitution forms are skipped, and a disagreement there is silent -- the
+    same failure mode as a second alias table.
+    """
+    from lib import aa_markers
+
+    assert merge_mod.parse_hgvs_p is aa_markers.parse_hgvs_p
+    assert merge_mod.ann_entries is aa_markers.ann_entries
+    assert merge_mod.has_info_flag is aa_markers.has_info_flag
+    assert merge_mod.aa_changes_from_info is aa_markers.aa_changes_from_info
+
+
 def test_database_is_found_without_an_explicit_path():
     """The default path: locate_db() falls back to the installed flumutdb package."""
     pytest.importorskip("flumut")
