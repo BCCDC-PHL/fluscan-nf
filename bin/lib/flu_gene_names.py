@@ -32,6 +32,26 @@ GENE_KEY_ALIASES = {
 }
 
 
+# The influenza A proteins a gene key may name, after canonicalisation. Used to reject
+# typos in hand-written inputs (bin/validate_watchlist.py); it is deliberately not consulted
+# when reading an annotation, where an unrecognised gene is the dataset's business and not
+# an error.
+#
+# 'HA' belongs here and is not a synonym for HA1: datasets exist with a bare HA CDS, and
+# their coordinates really are HA's. Whether a given watchlist should say HA or HA1 depends
+# on the dataset, and is answered by the watcher's gene-coverage report rather than here.
+KNOWN_GENE_KEYS = frozenset({
+    "PB2",
+    "PB1", "PB1-F2",
+    "PA", "PA-X",
+    "HA", "HA1", "HA2",
+    "NP",
+    "NA",
+    "M1", "M2",
+    "NS1", "NEP",
+})
+
+
 def canonical_gene(name: str) -> str:
     """Canonical gene key used to pair source and target CDSes.
 
