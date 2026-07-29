@@ -16,7 +16,7 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - Nucleotide variant calling using [LoFreq](https://csb5.github.io/lofreq/)
 - Annotation of amino acid variant calls using SnpEff
 - MNV codon correction
-- Detection of mutations of interest via watchlist scanning
+- Detection of mutations of interest via customisable watchlist scanning of the final VCF
 - Consensus sequence generation
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
 
@@ -139,9 +139,11 @@ nextflow run BCCDC-PHL/fluscan-nf \
 
 Optional short-read parameters:
 - `--samplesheet_input` — CSV samplesheet (`ID,R1,R2`) consumed by the short-read workflow; note that `main.nf` currently still switches into short-read mode based on `--fastq_input`
-- `--watchlist_dir` — directory containing `*watchlist.csv` files for mutation-of-interest scanning
 - `--snpeff_config` — path to a custom SnpEff config (defaults to the built-in database)
 - `--aligner` — `bwa` (default) or `minimap2`
+
+Optional in every workflow:
+- `--watchlist_dir` — directory of `*watchlist.csv` files (`gene,mutation[,note]`) scanned out of the final VCF into a published TSV. Defaults to `assets/watchlists/`; set to `NO_FILE` to disable. See [docs/watchlists.md](docs/watchlists.md)
 
 **FASTA-mode example (runs both PAFTOOLS and NEXTCLADE):**
 ```
@@ -186,6 +188,8 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `*_depth.tsv` | Per-position alignment depth (samtools depth) |
 | `*_low_coverage.bed` | Low-coverage regions masked during consensus generation |
 | `short_read/*_final.vcf` | Per-segment final VCF after SnpEff annotation and MNV codon correction |
+| `short_read/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF |
+| `short_read/*_watchlist_coverage.tsv` | Per-watchlist-gene report saying whether the VCF annotated that gene at all |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
@@ -203,6 +207,8 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `*_blastn_filter.tsv` | Filtered BLAST search results |
 | `qc/*_coverage_qc.tsv` | Per-segment PAFTOOLS consensus coverage QC with coverage percentage and PASS/WARN/FAIL status |
 | `paftools/*_final.vcf` | Per-segment final VCF after `paftools.js`, SnpEff, freebayes-style conversion, and MNV codon correction |
+| `paftools/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF |
+| `paftools/*_watchlist_coverage.tsv` | Per-watchlist-gene report saying whether the VCF annotated that gene at all |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
@@ -216,6 +222,8 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `nextclade/tsv/*_nextclade.tsv` | Per-segment Nextclade TSV split out from the cross-sample batch result |
 | `nextclade/*_final.vcf` | Per-segment final VCF after Nextclade-to-VCF conversion and MNV codon correction |
 | `nextclade/*_flumut_merged.vcf` | *Optional* (`--merge_flumut_mutations`): the same VCF with a `FLUMUT=` INFO field (`Protein\|AA_Pos\|Alt_AA\|Mutation_Name\|DirectEffect\|AssociatedEffect`) on rows whose amino-acid change matches a curated FluMutDB marker |
+| `nextclade/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF. Independent of `--merge_flumut_mutations`: `FLUMUT=` is a curated annotation written *into* the VCF, this is a custom list scanned *out* of it |
+| `nextclade/*_watchlist_coverage.tsv` | Per-watchlist-gene report saying whether the VCF annotated that gene at all |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |

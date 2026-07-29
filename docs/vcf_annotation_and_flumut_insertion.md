@@ -8,6 +8,7 @@ freebayes-style VCF and tag the curated FluMutDB markers among them:
 | [`bin/nextclade_to_freebayes_vcf.py`](../bin/nextclade_to_freebayes_vcf.py) | Convert a Nextclade JSON into a freebayes-format VCF with snpEff-style `ANN=` annotations. |
 | [`bin/merge_flumut_mutations.py`](../bin/merge_flumut_mutations.py) | Add a `FLUMUT=` INFO field to rows whose AA change matches a FluMutDB marker. Run by the `merge_flumut_mutations` process. |
 | [`bin/lib/flu_gene_names.py`](../bin/lib/flu_gene_names.py) | The canonical gene-key aliases (`NS-1`→`NS1`, `NS2`/`NS-2`→`NEP`), shared by the coordinate map builder and the merge so the two cannot drift. |
+| [`bin/lib/aa_markers.py`](../bin/lib/aa_markers.py) | `ANN=` extraction, both HGVS.p spellings, and the `MNV_UNRESOLVED` flag test, shared by the merge and the watchlist scanner for the same reason. |
 
 Both VCF-writing scripts share the I/O helpers in [`bin/lib/tools.py`](../bin/lib/tools.py),
 which round-trip a VCF byte-for-byte. `bin/` holds only entry points — Nextflow puts it on
@@ -381,6 +382,26 @@ rows carried no nucleotide evidence.
 The current script drops both the insertion behaviour and the `DETECTED_BY` field: with the
 per-sample TSV gone, it cannot say what flumut detected — only that a fluscan call coincides
 with a curated marker, which is what `FLUMUT=` states.
+
+### Why watchlist hits are *not* written into the VCF
+
+The pipeline also scans each final VCF against a custom watchlist
+([`docs/watchlists.md`](watchlists.md)), and that result goes to a separate published TSV.
+Do not "helpfully" merge it into the VCF later. The distinction is not stylistic:
+
+`FLUMUT=` comes from a versioned database. It is a property of the variant, and the same
+consensus against the same dataset always produces the same annotation — which is what lets
+a downstream consumer treat a VCF as reproducible from its inputs.
+
+A watchlist is a CSV we edit. Merging its hits into the VCF would make the same consensus
+produce *different* VCFs depending on the contents of that file, with nothing in the VCF
+recording which version of the list produced it. That breaks reproducibility for a result
+that is already available, per sample, in its own file.
+
+What the two legitimately share is the mechanics of reading `ANN=` — HGVS.p parsing in both
+spellings, gene canonicalisation, and the `MNV_UNRESOLVED` skip. Those live once, in
+[`bin/lib/aa_markers.py`](../bin/lib/aa_markers.py), for the reason recorded under
+`flu_gene_names.py`: a second copy is free to drift, and the drift is silent.
 
 The old implementation has been deleted and the surviving one has taken back the plain
 `merge_flumut_mutations.py` name, so **no merge script carries a `_v2` suffix any more**; the
