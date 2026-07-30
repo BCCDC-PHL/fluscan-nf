@@ -67,7 +67,7 @@ process paftools_snpeff_annotation {
     tuple val(sample_id),
           path(sorted_vcfs, stageAs: 'vcf/*'),
           path(references, stageAs: 'reference/*'),
-          path(snpeff_config_path)
+          path(snpeff_dir, stageAs: 'snpeff')
 
     output:
     tuple val(sample_id), path("${sample_id}*.vcf"), emit: vcf
@@ -96,7 +96,12 @@ process paftools_snpeff_annotation {
 
         OUTPUT_FILENAME="${sample_id}__\${REF_NAME_FIELDS[0]}__\${REF_NAME_FIELDS[1]}__\${REF_NAME_FIELDS[2]}.vcf"
 
-        snpEff -Xmx4g -noStats -hgvs1LetterAa -config ${snpeff_config_path} "\$SNPEFF_DB_NAME" rename_\${segment}.vcf > "\${OUTPUT_FILENAME}"
+        # -dataDir overrides the config's data.dir, which points wherever the bundle was
+        # built; the staged snpeff/data is what this task must actually read.
+        snpEff -Xmx4g -noStats -hgvs1LetterAa \\
+            -config snpeff/snpEff.config \\
+            -dataDir "\$PWD/snpeff/data" \\
+            "\$SNPEFF_DB_NAME" rename_\${segment}.vcf > "\${OUTPUT_FILENAME}"
     done
     """
 }

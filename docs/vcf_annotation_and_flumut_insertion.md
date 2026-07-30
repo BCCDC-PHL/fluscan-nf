@@ -16,8 +16,9 @@ which round-trip a VCF byte-for-byte. `bin/` holds only entry points — Nextflo
 
 > Both `coordinate_conversion` and `merge_flumut_mutations` are optional NEXTCLADE-workflow
 > steps, gated behind `--merge_flumut_mutations` (default `false`). When disabled, the
-> workflow stops at `*_final.vcf` and `--flumut_reference_dir` is not required. When enabled,
-> `--flumut_reference_dir` becomes mandatory and both steps run as described below.
+> workflow stops at `*_final.vcf` and `--flumut_db` is not required. When enabled,
+> `--flumut_db` becomes mandatory — FluMut's own reference bundle, of which only
+> `<flumut_db>/nextclade/` is read — and both steps run as described below.
 
 ```
 consensus.fasta ─► nextclade_run_batch ─► nextclade_to_freebayes_vcf.py ─► *_nc.vcf
