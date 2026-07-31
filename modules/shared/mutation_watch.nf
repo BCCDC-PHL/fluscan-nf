@@ -1,14 +1,10 @@
 // shared/mutation_watch.nf - Scan a final annotated VCF for a custom watchlist's substitutions.
 //
-// Runs in all three workflows off whatever each one calls its final VCF, because the only
-// thing it needs is a VCF carrying ANN=. It reads that VCF directly; the *_mutations.tsv
-// that used to sit in between is gone, along with the second ANN= parser it required.
+// Runs in all three workflows off whatever each one calls its final VCF; the only thing it
+// needs is a VCF carrying ANN=.
 //
-// Two outputs, both published:
-//   *_watchlist_hits.tsv      one row per (entry, matching variant)
-//   *_watchlist_coverage.tsv  one row per watchlist gene, saying whether the VCF annotated
-//                             it at all -- so a gene that matches nothing is visibly
-//                             unmatched rather than indistinguishable from a clean sample
+// Publishes one file, *_watchlist_hits.tsv, with one row per matching variant. A scan that
+// finds nothing writes a header-only file.
 //
 // Nothing here writes to the VCF. FLUMUT= is curated and always-on and belongs in the VCF;
 // a watchlist is set on our own terms, and merging it in would make the same consensus
@@ -35,8 +31,7 @@ process mutation_watch {
     tuple val(sample_id), val(segment), path(vcf), path(watchlist)
 
     output:
-    tuple val(sample_id), val(segment), path("*_watchlist_hits.tsv"),     emit: hits
-    tuple val(sample_id), val(segment), path("*_watchlist_coverage.tsv"), emit: coverage
+    tuple val(sample_id), val(segment), path("*_watchlist_hits.tsv"), emit: hits
     // Globbed rather than named: the stem is computed in the script block from the
     // watchlist's own filename, and an output declaration must not depend on that.
     tuple val(sample_id), path("*_mutation_watch_provenance.yml"), emit: provenance
@@ -59,8 +54,7 @@ process mutation_watch {
         --watchlist ${watchlist} \\
         --sample ${sample_id} \\
         --segment '${segment}' \\
-        -o ${stem}_watchlist_hits.tsv \\
-        --coverage-output ${stem}_watchlist_coverage.tsv
+        -o ${stem}_watchlist_hits.tsv
     """
 
     stub:
@@ -69,7 +63,6 @@ process mutation_watch {
     def stem = "${sample_id}_${prefix}"
     """
     touch ${stem}_watchlist_hits.tsv
-    touch ${stem}_watchlist_coverage.tsv
     touch ${stem}_mutation_watch_provenance.yml
     """
 }
