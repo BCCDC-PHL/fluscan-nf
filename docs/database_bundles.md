@@ -20,8 +20,8 @@ nextflow run BCCDC-PHL/fluscan-nf \
 ├── db.yml                                      optional metadata; every key optional
 ├── blastn_db.fa                                nt reference; headers accession|subtype|segment
 ├── nextclade/
-│   ├── pb2/  reference.fasta, genome_annotation.gff3, pathogen.json
-│   ├── pb1/  …  and pa, ha, np, na, m, ns  (lowercase segment names)
+│   ├── PB2/  reference.fasta, genome_annotation.gff3, pathogen.json
+│   ├── PB1/  …  and PA, HA, NP, NA, M, NS  (uppercase segment names)
 │   └── config.json                             optional; written by scripts/build_dataset.py
 └── snpeff/
     ├── snpEff.config

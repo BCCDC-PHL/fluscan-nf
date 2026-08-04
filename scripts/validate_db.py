@@ -168,9 +168,9 @@ def check_nextclade(root: Path, report: Report) -> None:
 
     incomplete: list[str] = []
     for segment in SEGMENTS:
-        directory = datasets / segment.lower()
+        directory = datasets / segment
         if not directory.is_dir():
-            incomplete.append(f"{segment} (no {segment.lower()}/)")
+            incomplete.append(f"{segment} (no {segment}/)")
             continue
 
         missing = [
@@ -190,7 +190,7 @@ def check_nextclade(root: Path, report: Report) -> None:
         # pathogen.json is what `nextclade run --input-dataset` reads for QC config;
         # nextclade will run without it but silently skips the dataset's QC rules.
         if not (directory / "pathogen.json").is_file():
-            report.warnings.append(f"nextclade/{segment.lower()}/ has no pathogen.json; dataset QC will not run")
+            report.warnings.append(f"nextclade/{segment}/ has no pathogen.json; dataset QC will not run")
 
     if incomplete:
         report.problems.append("incomplete Nextclade datasets: " + "; ".join(incomplete))

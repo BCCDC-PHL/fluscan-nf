@@ -6,7 +6,7 @@
 //   <db>/
 //   |-- db.yml                 optional metadata; every key optional
 //   |-- blastn_db.fa           nt reference, headers accession|subtype|segment
-//   |-- nextclade/             one lowercase directory per segment (ha/, na/, ...)
+//   |-- nextclade/             one directory per segment, uppercase (HA/, NA/, ...)
 //   `-- snpeff/
 //       |-- snpEff.config      its data.dir is overridden at runtime by -dataDir
 //       `-- data/<genome>/     snpEffectPredictor.bin etc.
@@ -23,8 +23,8 @@
 
 import org.yaml.snakeyaml.Yaml
 
-// The canonical segment set. Nextclade datasets are resolved by lowercasing these, and
-// coordinate_conversion shards its map by exactly these labels.
+// The canonical segment set. Nextclade datasets are resolved using these labels directly,
+// and coordinate_conversion shards its map by exactly these labels.
 @groovy.transform.Field
 List DB_SEGMENTS = ['PB2', 'PB1', 'PA', 'HA', 'NP', 'NA', 'M', 'NS']
 
@@ -36,7 +36,7 @@ Expected bundle layout:
   <db>/
     db.yml                                       (optional metadata)
     blastn_db.fa                                 (nt reference; headers accession|subtype|segment)
-    nextclade/{pb2,pb1,pa,ha,np,na,m,ns}/        (reference.fasta + genome_annotation.gff3 each)
+    nextclade/{PB2,PB1,PA,HA,NP,NA,M,NS}/        (reference.fasta + genome_annotation.gff3 each)
     snpeff/snpEff.config
     snpeff/data/<genome>/snpEffectPredictor.bin
 
@@ -88,7 +88,7 @@ def read_db_metadata(root) {
 // minutes into a run, for a dataset that was never going to work.
 def incomplete_nextclade_segments(nextclade_dir) {
     return DB_SEGMENTS.findAll { segment ->
-        def dataset = nextclade_dir.resolve(segment.toLowerCase())
+        def dataset = nextclade_dir.resolve(segment)
         !dataset.isDirectory() ||
             !dataset.resolve('reference.fasta').exists() ||
             !dataset.resolve('genome_annotation.gff3').exists()
@@ -136,9 +136,9 @@ def resolve_db(String path, List required, String param_name = '--db') {
             case 'nextclade':
                 // The single most likely mistake is pointing at the dataset directory
                 // itself rather than at the bundle that contains it.
-                if (root.resolve('ha').isDirectory()) {
+                if (root.resolve('HA').isDirectory()) {
                     problems << "  missing ${nextclade} -- ${path} looks like a Nextclade dataset\n" +
-                                "  directory rather than a bundle root (it contains ha/). Pass its parent instead:\n" +
+                                "  directory rather than a bundle root (it contains HA/). Pass its parent instead:\n" +
                                 "    ${param_name} ${root.parent}"
                 }
                 else {

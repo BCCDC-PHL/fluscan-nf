@@ -14,8 +14,8 @@
  *       e.g. >EPI_ISL_20399898|A_/_H5N1|NA|6|EPI5261179|2.3.4.4b_NA
  *   Cleaned headers are normalised to {sample_id}_{SEGMENT} by prepare_consensus.
  *
- *   Segment datasets are resolved from <--db>/nextclade/ by lowercasing the segment
- *   label (e.g. HA -> ha, M -> m).
+ *   Segment datasets are resolved from <--db>/nextclade/ using the segment label
+ *   directly (e.g. HA -> HA, M -> M).
  *
  *   Batching strategy: sequences are grouped by segment across all samples so
  *   nextclade runs 8 times total (once per segment) rather than 8 × N times.
