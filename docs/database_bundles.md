@@ -25,11 +25,14 @@ nextflow run BCCDC-PHL/fluscan-nf \
 │   └── config.json                             optional; written by scripts/build_dataset.py
 └── snpeff/
     ├── snpEff.config
-    └── data/
-        └── influenza_h5n1/
-            ├── genes.gbk
-            └── snpEffectPredictor.bin
+    └── influenza_h5n1/
+        ├── genes.gbk
+        └── snpEffectPredictor.bin
 ```
+
+The `<genome>/` directories sit directly under `snpeff/`. A standalone SnpEff install
+nests them one level deeper under `data/`; a bundle does not, because `snpeff/` is
+already the per-bundle directory that level provided.
 
 The filenames are fixed and not configurable. `modules/shared/database.nf` is the only
 place that knows this layout; `--db` is the only path you supply.
@@ -79,12 +82,12 @@ published coordinate maps.
 ## Why SnpEff data lives inside the bundle
 
 A SnpEff config carries `data.dir`, an absolute path to wherever the database was built.
-The pipeline passes `-dataDir <staged snpeff/data>` on every invocation, which overrides
+The pipeline passes `-dataDir <staged snpeff/>` on every invocation, which overrides
 it — so the config's `data.dir` is inert at runtime and the bundle is self-contained:
 copy it, hand it to a colleague, or mount it in a container and it still works.
 
-Set `data.dir = ./data` in the shipped config anyway, as documentation of where the data
-is meant to be. `scripts/validate_db.py` warns if it points at an absolute path that does
+Set `data.dir = .` in the shipped config anyway, as documentation of where the data is
+meant to be. `scripts/validate_db.py` warns if it points at an absolute path that does
 not exist, which is a reliable sign a bundle was moved without being rebuilt.
 
 ## Building a bundle
@@ -103,13 +106,13 @@ ACGT…
 **SnpEff database** — one `genes.gbk` per genome, then build in place:
 
 ```bash
-mkdir -p <db>/snpeff/data/influenza_h5n1
+mkdir -p <db>/snpeff/influenza_h5n1
 cat pb2.gb pb1.gb pa.gb ha.gb np.gb na.gb m.gb ns.gb \
-    > <db>/snpeff/data/influenza_h5n1/genes.gbk
+    > <db>/snpeff/influenza_h5n1/genes.gbk
 # <db>/snpeff/snpEff.config declares influenza_h5n1.genome and its chromosomes
 snpEff build -genbank -v influenza_h5n1 \
     -config  <db>/snpeff/snpEff.config \
-    -dataDir <db>/snpeff/data
+    -dataDir <db>/snpeff
 ```
 
 The genome key must be `influenza_<subtype>` in lowercase — both annotation processes
@@ -130,7 +133,7 @@ from the bundle are reported `SKIP`, not as failures; `--require` makes a named 
 mandatory. Exit code 0 is valid, 1 is not.
 
 The case worth running it for is a `snpEff.config` that declares a genome with no built
-database under `data/`: SnpEff then emits an empty `ANN=` on every record instead of
+database under `snpeff/`: SnpEff then emits an empty `ANN=` on every record instead of
 failing, and nothing downstream notices.
 
 ## Migrating an existing reference tree
@@ -139,12 +142,14 @@ If your references are still laid out as `<db>/snpEff.config` beside a separate 
 data tree, per bundle:
 
 ```bash
-mkdir -p <db>/snpeff/data
+mkdir -p <db>/snpeff
 mv <db>/snpEff.config <db>/snpeff/snpEff.config
-cp -r /path/to/snpeff/<name>/influenza_h5n1 <db>/snpeff/data/
-sed -i 's|^data.dir.*|data.dir = ./data|' <db>/snpeff/snpEff.config
+cp -r /path/to/snpeff/<name>/influenza_h5n1 <db>/snpeff/
+sed -i 's|^data.dir.*|data.dir = .|' <db>/snpeff/snpEff.config
 scripts/validate_db.py <db>
 ```
+
+On macOS that `sed -i` needs an explicit empty backup suffix: `sed -i '' …`.
 
 `nextclade/` and `blastn_db.fa` are already where they need to be. `db.yml` can be added
 whenever convenient.

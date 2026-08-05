@@ -9,7 +9,7 @@ set, in a fixed layout:
       blastn_db.fa                            headers accession|subtype|segment
       nextclade/{pb2,pb1,pa,ha,np,na,m,ns}/   reference.fasta + genome_annotation.gff3
       snpeff/snpEff.config
-      snpeff/data/<genome>/snpEffectPredictor.bin
+      snpeff/<genome>/snpEffectPredictor.bin
 
 `modules/shared/database.nf` validates the same layout at the start of every run, but
 only structurally and only for the components that run's workflow consumes. This script
@@ -19,8 +19,8 @@ genome named in snpEff.config has a built database next to it, that the Nextclad
 datasets carry the reference each segment claims.
 
 The failure this exists to catch is a bundle that resolves fine and then annotates
-nothing: a snpEff.config listing influenza_h5n1 with no influenza_h5n1/ under data/
-produces an empty ANN= on every record rather than an error.
+nothing: a snpEff.config listing influenza_h5n1 with no built influenza_h5n1/ under
+snpeff/ produces an empty ANN= on every record rather than an error.
 
 Bundles may legitimately be partial -- the Nextclade workflow needs no BLAST database.
 Missing components are reported as SKIP, not failure; only a component that is present
@@ -214,7 +214,6 @@ def parse_snpeff_genomes(config: Path) -> list[str]:
 def check_snpeff(root: Path, report: Report, declared: list | None) -> None:
     directory = root / "snpeff"
     config = directory / "snpEff.config"
-    data = directory / "data"
 
     if not directory.is_dir():
         report.components["snpeff"] = "SKIP (no snpeff/)"
@@ -222,10 +221,6 @@ def check_snpeff(root: Path, report: Report, declared: list | None) -> None:
 
     if not config.is_file():
         report.problems.append(f"snpeff/ exists but {config.name} is missing")
-        report.components["snpeff"] = "FAIL"
-        return
-    if not data.is_dir():
-        report.problems.append("snpeff/ exists but snpeff/data/ is missing")
         report.components["snpeff"] = "FAIL"
         return
 
@@ -244,19 +239,19 @@ def check_snpeff(root: Path, report: Report, declared: list | None) -> None:
             if value.startswith("/") and not Path(value).is_dir():
                 report.warnings.append(
                     f"snpEff.config data.dir points outside the bundle at a path that does not exist "
-                    f"({value}); the pipeline overrides it with -dataDir, but set it to ./data"
+                    f"({value}); the pipeline overrides it with -dataDir, but set it to ."
                 )
             break
 
     unbuilt = []
     for genome in genomes:
-        predictor = data / genome / "snpEffectPredictor.bin"
+        predictor = directory / genome / "snpEffectPredictor.bin"
         if not predictor.is_file():
             unbuilt.append(genome)
 
     if unbuilt:
         report.problems.append(
-            "snpEff.config declares genome(s) with no built database under snpeff/data/: "
+            "snpEff.config declares genome(s) with no built database under snpeff/: "
             + ", ".join(unbuilt)
             + " -- annotation would produce empty ANN= rather than fail"
         )

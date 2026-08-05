@@ -9,7 +9,11 @@
 //   |-- nextclade/             one directory per segment, uppercase (HA/, NA/, ...)
 //   `-- snpeff/
 //       |-- snpEff.config      its data.dir is overridden at runtime by -dataDir
-//       `-- data/<genome>/     snpEffectPredictor.bin etc.
+//       `-- <genome>/          snpEffectPredictor.bin etc.
+//
+// The <genome>/ directories sit directly under snpeff/, which is what -dataDir is
+// pointed at. snpEff's own install nests them one level deeper under data/; a bundle
+// does not, because snpeff/ is already the per-bundle directory that level provided.
 //
 // The filenames are fixed on purpose. A bundle is identified by its layout, so this
 // file is the only place that knows where anything inside one lives; --db is the only
@@ -38,7 +42,7 @@ Expected bundle layout:
     blastn_db.fa                                 (nt reference; headers accession|subtype|segment)
     nextclade/{PB2,PB1,PA,HA,NP,NA,M,NS}/        (reference.fasta + genome_annotation.gff3 each)
     snpeff/snpEff.config
-    snpeff/data/<genome>/snpEffectPredictor.bin
+    snpeff/<genome>/snpEffectPredictor.bin
 
 Not every component is needed by every workflow; see docs/database_bundles.md.
 """.stripIndent()
@@ -96,6 +100,21 @@ def incomplete_nextclade_segments(nextclade_dir) {
 }
 
 
+// Genomes with a database actually built under snpeff/. Identified by the presence of the
+// predictor rather than by directory name, because a <genome>/ directory that exists but
+// is empty is the one bundle defect that survives a whole run: snpEff answers with an
+// empty ANN= on every record instead of failing, so the run publishes unannotated VCFs
+// and exits 0.
+def built_snpeff_genomes(snpeff_dir) {
+    if (!snpeff_dir.isDirectory()) {
+        return []
+    }
+    return snpeff_dir.list().findAll { entry ->
+        snpeff_dir.resolve(entry).resolve('snpEffectPredictor.bin').exists()
+    }.sort()
+}
+
+
 // Resolve a bundle root into the paths and metadata the workflows consume, validating
 // the components named in `required` (a subset of ['blastn', 'nextclade', 'snpeff']).
 def resolve_db(String path, List required, String param_name = '--db') {
@@ -114,14 +133,14 @@ def resolve_db(String path, List required, String param_name = '--db') {
 
     def blastn        = root.resolve('blastn_db.fa')
     def nextclade     = root.resolve('nextclade')
-    def snpeff_dir    = root.resolve('snpeff')
-    def snpeff_config = snpeff_dir.resolve('snpEff.config')
-    def snpeff_data   = snpeff_dir.resolve('data')
+    def snpeff_dir     = root.resolve('snpeff')
+    def snpeff_config  = snpeff_dir.resolve('snpEff.config')
+    def snpeff_genomes = built_snpeff_genomes(snpeff_dir)
 
     def present = [
         blastn:    blastn.exists(),
         nextclade: nextclade.isDirectory(),
-        snpeff:    snpeff_config.exists() && snpeff_data.isDirectory(),
+        snpeff:    snpeff_config.exists() && snpeff_genomes,
     ]
 
     def problems = []
@@ -149,8 +168,9 @@ def resolve_db(String path, List required, String param_name = '--db') {
                 if (!snpeff_config.exists()) {
                     problems << "  missing SnpEff config: ${snpeff_config}"
                 }
-                if (!snpeff_data.isDirectory()) {
-                    problems << "  missing SnpEff data directory: ${snpeff_data}"
+                if (!snpeff_genomes) {
+                    problems << "  no built SnpEff database under ${snpeff_dir}\n" +
+                                "  (expected ${snpeff_dir}/<genome>/snpEffectPredictor.bin)"
                 }
                 break
             default:
@@ -187,7 +207,7 @@ def resolve_db(String path, List required, String param_name = '--db') {
         nextclade:          nextclade,
         snpeff_dir:         snpeff_dir,
         snpeff_config:      snpeff_config,
-        snpeff_data:        snpeff_data,
+        snpeff_genomes:     snpeff_genomes,
         has_blastn:         present.blastn,
         has_nextclade:      present.nextclade,
         has_snpeff:         present.snpeff,

@@ -84,10 +84,10 @@ process short_read_snpeff_annotation {
     printf -- "  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n"   >> ${sample_id}_snpeff_provenance.yml
 
     # --data-dir overrides the config's data.dir, which points wherever the bundle was
-    # built; the staged snpeff/data is what this task must actually read.
+    # built; the staged snpeff/ is what this task must actually read. 
     run_snpeff.py --input ${vcf} \\
         --config snpeff/snpEff.config \\
-        --data-dir "\$PWD/snpeff/data" \\
+        --data-dir "\$PWD/snpeff" \\
         --outname ${sample_id}
     """
 

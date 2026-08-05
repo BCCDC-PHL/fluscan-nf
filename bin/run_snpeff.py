@@ -53,7 +53,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="Run snpEff on a multi-segment influenza VCF.")
     parser.add_argument('-i', '--input', required=True, help="Input VCF")
     parser.add_argument('-c', '--config', required=True, help="Path to the snpEff.config for the custom database")
-    parser.add_argument('-d', '--data-dir', required=True, help="snpEff data directory holding <genome>/snpEffectPredictor.bin (overrides data.dir in the config)")
+    parser.add_argument('-d', '--data-dir', required=True, help="snpEff data directory holding <genome>/snpEffectPredictor.bin directly, i.e. the bundle's snpeff/ (overrides data.dir in the config)")
     parser.add_argument('-o', '--outname', required=True, help="Output VCF name prefix")
     return parser.parse_args()
 
