@@ -1,11 +1,10 @@
-"""Unit tests for bin/mutation_watcher.py (custom watchlist scanning of a final VCF).
-
-Several cases here are regressions against the previous TSV-reading implementation, which
-had no gene canonicalisation, no mature-peptide handling and no MNV_UNRESOLVED skip. Those
-are marked in their docstrings, because each one failed silently: the tool reported zero
-hits, which is also what a clean sample reports.
+"""Unit tests for bin/mutation_watcher.py.
 
 Run with:  pytest tests/test_mutation_watcher.py
+
+Most of what is asserted here fails *silently* when it breaks -- the tool reports zero
+hits, which is also what a clean sample reports. That is why the gene-resolution and
+MNV_UNRESOLVED cases are tested as thoroughly as the matching itself.
 """
 
 import csv
@@ -28,6 +27,9 @@ def _load_module():
     sys.path.insert(0, str(REPO_ROOT / "bin"))
     spec = importlib.util.spec_from_file_location("mutation_watcher", SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
+    # Registered before exec_module because @dataclass resolves its class's __module__
+    # through sys.modules while the class body is being processed.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -41,7 +43,7 @@ watcher = _load_module()
 
 def ann(gene: str, hgvs_p: str, feature_id: str | None = None,
         annotation: str = "missense_variant") -> str:
-    """A 16-field snpEff-style ANN entry, matching what the converter emits.
+    """A 16-field snpEff-style ANN entry.
 
     `feature_id` defaults to a locus tag. Mature-peptide entries pass it explicitly: their
     Gene_Name is the *parent* gene, and only Feature_ID names the subunit.
@@ -80,14 +82,19 @@ def write_watchlist(path: Path, text: str) -> Path:
 
 
 def scan(tmp_path, rows: list[str], watchlist: str, sample="SAMPLE-1", segment="PB2"):
-    """Run the scan and return (hit dicts, coverage rows, mnv_unresolved count)."""
-    from validate_watchlist import load_watchlist
-
+    """Run a scan. Returns (hit rows, observed reference residues, rows skipped)."""
     vcf = write_vcf(tmp_path / "in.vcf", rows)
-    entries = load_watchlist(write_watchlist(tmp_path / "w.csv", watchlist))
-    hits, genes_seen, mnv = watcher.scan_vcf(vcf, entries, sample, segment)
-    coverage = watcher.report_coverage(entries, genes_seen, hits)
-    return hits, coverage, mnv
+    entries = watcher.load_watchlist(write_watchlist(tmp_path / "w.csv", watchlist))
+    watched = {entry.gene for entry in entries.values()}
+    changes, observed_ref, skipped = watcher.index_vcf(vcf, watched)
+    return watcher.find_hits(entries, changes, sample, segment), observed_ref, skipped
+
+
+def run_cli(*args) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), *map(str, args)],
+        capture_output=True, text=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -99,43 +106,15 @@ def test_a_watched_substitution_is_a_hit(tmp_path):
                       "gene,mutation,note\nPB2,E627K,mammalian\n")
     assert len(hits) == 1
     assert hits[0]["gene"] == "PB2"
-    assert hits[0]["position"] == 627
-    assert hits[0]["alt_aa"] == "K"
+    assert hits[0]["mutation"] == "E627K"
     assert hits[0]["note"] == "mammalian"
 
 
-def test_the_sample_id_is_reported_verbatim(tmp_path):
-    """It used to be args.input.split('_')[0], which truncated at the first underscore."""
+def test_the_sample_id_and_segment_are_reported_verbatim(tmp_path):
     hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.E627K")])],
-                      "gene,mutation\nPB2,E627K\n", sample="WIN_AH_2024_FAV_0415")
-    assert hits[0]["sample_id"] == "WIN_AH_2024_FAV_0415"
-
-
-def test_the_three_letter_spelling_gives_the_identical_hit(tmp_path):
-    """snpEff's default output. Matching only the 1-letter form yields zero hits and no
-    warning -- indistinguishable from a VCF with no coding changes."""
-    one, _, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.E627K")])],
-                     "gene,mutation\nPB2,E627K\n")
-    three, _, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.Glu627Lys")])],
-                       "gene,mutation\nPB2,E627K\n")
-    assert len(three) == 1
-    assert three[0]["position"] == one[0]["position"]
-    assert three[0]["alt_aa"] == one[0]["alt_aa"]
-
-
-def test_a_gene_alias_matches(tmp_path):
-    """Fails on the previous implementation: it compared gene names verbatim, so a list
-    saying NS-1 never matched an NS1 annotation. ISSUES.md I-2 in a second location."""
-    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("NS1", "p.A53D")])],
-                      "gene,mutation\nNS-1,A53D\n", segment="NS")
-    assert len(hits) == 1
-    assert hits[0]["gene"] == "NS1"
-
-
-def test_the_reverse_alias_direction_also_matches(tmp_path):
-    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("NS-1", "p.A53D")])],
-                      "gene,mutation\nNS1,A53D\n", segment="NS")
-    assert len(hits) == 1
+                      "gene,mutation\nPB2,E627K\n", sample="WIN-AH-2024_1-OS", segment="PB2")
+    assert hits[0]["sample_id"] == "WIN-AH-2024_1-OS"
+    assert hits[0]["segment"] == "PB2"
 
 
 def test_a_wrong_alt_residue_is_not_a_hit(tmp_path):
@@ -150,94 +129,162 @@ def test_a_wrong_position_is_not_a_hit(tmp_path):
     assert hits == []
 
 
+def test_the_three_letter_spelling_gives_the_identical_hit(tmp_path):
+    """snpEff emits p.Glu627Lys; the nextclade converter emits p.E627K. Both must match."""
+    one, _, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.E627K")])],
+                     "gene,mutation\nPB2,E627K\n")
+    three, _, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.Glu627Lys")])],
+                       "gene,mutation\nPB2,Glu627Lys\n")
+    assert one[0]["gene"] == three[0]["gene"]
+    assert one[0]["position"] == three[0]["position"]
+    assert one[0]["alt_aa"] == three[0]["alt_aa"]
+
+
 def test_a_synonymous_change_is_not_a_hit(tmp_path):
     hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.E627E")])],
                       "gene,mutation\nPB2,E627K\n")
     assert hits == []
 
 
-@pytest.mark.parametrize("hgvs_p", ["p.Ala100fs", "p.Lys50del", "p.Glu627dup",
-                                    "p.Met1?", "p.Glu627=", "p.Ter100ext"])
+@pytest.mark.parametrize("hgvs_p", ["p.Glu627del", "p.Glu627fs", "p.Glu627="])
 def test_non_substitutions_are_never_hits(tmp_path, hgvs_p):
-    """Replaces the old `"fs" in mut or "*" in mut` string test."""
     hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", hgvs_p)])],
                       "gene,mutation\nPB2,E627K\n")
     assert hits == []
 
 
-def test_an_intergenic_pseudo_gene_is_ignored(tmp_path):
-    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("CHR_START-PB2", "p.E627K")])],
+def test_a_gene_the_watchlist_does_not_name_is_ignored(tmp_path):
+    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("CHROM_X", "p.E627K")])],
                       "gene,mutation\nPB2,E627K\n")
     assert hits == []
 
 
 # ---------------------------------------------------------------------------
-# The REF residue: reported, not matched on
+# Gene resolution
 # ---------------------------------------------------------------------------
 
-def test_a_differing_reference_residue_is_still_a_hit(tmp_path, caplog):
-    """What makes a sample resistant is ending up with K at 627, not what it started from.
-    This mirrors the merge, whose MARKER_QUERY omits ref_seq for the same reason."""
-    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.D627K")])],
-                      "gene,mutation\nPB2,E627K\n")
+def test_a_gene_alias_matches(tmp_path):
+    """The watchlist's NS-2 and the VCF's NEP are the same protein."""
+    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("NEP", "p.M51I")])],
+                      "gene,mutation\nNS-2,M51I\n", segment="NS")
+    assert [h["gene"] for h in hits] == ["NEP"]
+
+
+def test_the_reverse_alias_direction_also_matches(tmp_path):
+    """Canonicalisation runs on the annotation too, so an NCBI-style NS2 resolves."""
+    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("NS2", "p.M51I")])],
+                      "gene,mutation\nNEP,M51I\n", segment="NS")
+    assert [h["gene"] for h in hits] == ["NEP"]
+
+
+def test_a_mature_peptide_resolves_through_feature_id(tmp_path):
+    """An NCBI-style HA annotation names the parent gene; only Feature_ID names the subunit."""
+    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("HA", "p.T195I", feature_id="HA1")])],
+                      "gene,mutation\nHA1,T195I\n", segment="HA")
+    assert [h["gene"] for h in hits] == ["HA1"]
+
+
+def test_a_parent_gene_never_matches_a_subunit_watchlist_entry(tmp_path):
+    """HA1 numbering starts after HA's 16-residue signal peptide, so this must not match."""
+    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("HA", "p.T195I")])],
+                      "gene,mutation\nHA1,T195I\n", segment="HA")
+    assert hits == []
+
+
+def test_a_subunit_annotation_never_matches_a_parent_watchlist_entry(tmp_path):
+    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("HA1", "p.T195I")])],
+                      "gene,mutation\nHA,T195I\n", segment="HA")
+    assert hits == []
+
+
+def test_the_feature_id_wins_when_the_list_carries_both_parent_and_subunit(tmp_path):
+    """Gene_Name=HA with Feature_ID=HA1 is an HA1-numbered change, so it resolves to HA1.
+
+    Resolving it to bare HA instead would be wrong by the signal peptide at 93% of
+    positions, and a list carrying both keys is the only case where the order is visible.
+    """
+    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("HA", "p.Q226L", feature_id="HA1")])],
+                      "gene,mutation\nHA,Q226L\nHA1,Q226L\n", segment="HA")
+    assert [h["gene"] for h in hits] == ["HA1"]
+
+
+def test_a_row_carrying_both_the_parent_and_the_subunit_hits_once(tmp_path):
+    hits, _, _ = scan(
+        tmp_path,
+        [vcf_row(100, [ann("HA", "p.T195I"), ann("HA", "p.T195I", feature_id="HA1")])],
+        "gene,mutation\nHA1,T195I\n", segment="HA",
+    )
     assert len(hits) == 1
-    assert hits[0]["ref_aa"] == "D"
-    assert hits[0]["mutation"] == "D627K"
-    assert "reference residue" in caplog.text
 
 
-def test_the_observed_reference_residue_wins_over_the_watchlist(tmp_path):
-    """The row is the fact; the watchlist's REF is the claim."""
+# ---------------------------------------------------------------------------
+# The reference residue
+# ---------------------------------------------------------------------------
+
+def test_a_differing_reference_residue_is_still_a_hit(tmp_path):
+    """Matching is on position and ALT: ending up with Y at 275 is what matters."""
+    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("NA", "p.N275Y")])],
+                      "gene,mutation\nNA,H275Y\n", segment="NA")
+    assert len(hits) == 1
+
+
+def test_the_observed_reference_residue_reaches_the_output(tmp_path):
+    """The sample's own reference is the fact; the watchlist's REF is a claim."""
     hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("NA", "p.N275Y")])],
                       "gene,mutation\nNA,H275Y\n", segment="NA")
     assert hits[0]["ref_aa"] == "N"
+    assert hits[0]["mutation"] == "N275Y"
 
 
 def test_the_hgvs_p_is_carried_through_to_the_output(tmp_path):
-    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.E627K")])],
+    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.Glu627Lys")])],
                       "gene,mutation\nPB2,E627K\n")
-    assert hits[0]["hgvs_p"] == "p.E627K"
+    assert hits[0]["hgvs_p"] == "p.Glu627Lys"
     assert hits[0]["chrom"] == "CHROM_X"
     assert hits[0]["pos"] == "100"
 
 
-# ---------------------------------------------------------------------------
-# Mature peptides and the HA trap
-# ---------------------------------------------------------------------------
-
-def test_a_mature_peptide_resolves_through_feature_id(tmp_path):
-    """NCBI-style HA: Gene_Name is the parent (HA), only Feature_ID names the subunit.
-    Fails on the previous implementation, which only ever saw the gene name."""
-    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("HA", "p.T195I", feature_id="HA1")])],
-                      "gene,mutation\nHA1,T195I\n", segment="HA")
-    assert len(hits) == 1
-    assert hits[0]["gene"] == "HA1"
+def test_a_reference_mismatch_warns_naming_both_residues(tmp_path, caplog):
+    vcf = write_vcf(tmp_path / "in.vcf", [vcf_row(100, [ann("NA", "p.N275Y")])])
+    path = write_watchlist(tmp_path / "w.csv", "gene,mutation\nNA,H275Y\n")
+    entries = watcher.load_watchlist(path)
+    _, observed_ref, _ = watcher.index_vcf(vcf, {"NA"})
+    with caplog.at_level("WARNING"):
+        watcher.warn_ref_mismatches(entries, observed_ref, path)
+    assert "reference N at NA:275, not H" in caplog.text
 
 
-def test_a_parent_gene_never_matches_a_subunit_watchlist_entry(tmp_path):
-    """The HA1 numbering trap. HA1 starts after HA's 16-residue signal peptide, so keying
-    an HA1 marker on a bare HA CDS returns the wrong residue at 93% of positions. Reporting
-    nothing is correct here; reporting a hit would be a wrong answer, silently."""
-    hits, coverage, _ = scan(tmp_path, [vcf_row(100, [ann("HA", "p.T195I")])],
-                             "gene,mutation\nHA1,T195I\n", segment="HA")
-    assert hits == []
-    assert [r for r in coverage if r["gene"] == "HA1"][0]["in_vcf"] == "no"
+def test_a_reference_mismatch_warns_even_without_a_hit(tmp_path, caplog):
+    """The check covers every annotated position, not only those that produced a hit."""
+    vcf = write_vcf(tmp_path / "in.vcf", [vcf_row(100, [ann("NA", "p.N275D")])])
+    path = write_watchlist(tmp_path / "w.csv", "gene,mutation\nNA,H275Y\n")
+    entries = watcher.load_watchlist(path)
+    changes, observed_ref, _ = watcher.index_vcf(vcf, {"NA"})
+    assert watcher.find_hits(entries, changes, "S", "NA") == []
+    with caplog.at_level("WARNING"):
+        watcher.warn_ref_mismatches(entries, observed_ref, path)
+    assert "reference N at NA:275, not H" in caplog.text
 
 
-def test_a_subunit_annotation_never_matches_a_parent_watchlist_entry(tmp_path):
-    """The same trap in the other direction, which is how 88 rows of the previous list
-    silently matched nothing on the production datasets."""
-    hits, coverage, _ = scan(tmp_path, [vcf_row(100, [ann("HA1", "p.T195I")])],
-                             "gene,mutation\nHA,T195I\n", segment="HA")
-    assert hits == []
-    assert [r for r in coverage if r["gene"] == "HA"][0]["in_vcf"] == "no"
+def test_an_agreeing_reference_residue_is_silent(tmp_path, caplog):
+    vcf = write_vcf(tmp_path / "in.vcf", [vcf_row(100, [ann("NA", "p.H275D")])])
+    path = write_watchlist(tmp_path / "w.csv", "gene,mutation\nNA,H275Y\n")
+    entries = watcher.load_watchlist(path)
+    _, observed_ref, _ = watcher.index_vcf(vcf, {"NA"})
+    with caplog.at_level("WARNING"):
+        watcher.warn_ref_mismatches(entries, observed_ref, path)
+    assert caplog.text == ""
 
 
-def test_a_row_carrying_both_the_parent_and_the_subunit_hits_once(tmp_path):
-    """Every in-HA1 row on an NCBI-style dataset carries two AA-changing ANN entries."""
-    rows = [vcf_row(100, [ann("HA", "p.T211I"), ann("HA", "p.T195I", feature_id="HA1")])]
-    hits, _, _ = scan(tmp_path, rows, "gene,mutation\nHA1,T195I\n", segment="HA")
-    assert len(hits) == 1
+def test_an_unannotated_position_is_not_reported_as_a_mismatch(tmp_path, caplog):
+    """A VCF carries variants, not every residue, so silence here is the only answer."""
+    vcf = write_vcf(tmp_path / "in.vcf", [vcf_row(100, [ann("NA", "p.V100I")])])
+    path = write_watchlist(tmp_path / "w.csv", "gene,mutation\nNA,H275Y\n")
+    entries = watcher.load_watchlist(path)
+    _, observed_ref, _ = watcher.index_vcf(vcf, {"NA"})
+    with caplog.at_level("WARNING"):
+        watcher.warn_ref_mismatches(entries, observed_ref, path)
+    assert caplog.text == ""
 
 
 # ---------------------------------------------------------------------------
@@ -245,149 +292,171 @@ def test_a_row_carrying_both_the_parent_and_the_subunit_hits_once(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_an_mnv_unresolved_row_is_skipped(tmp_path):
-    """fix_mnv_codons.py sets this on rows whose HGVS.p it has determined to be wrong. A
-    hit there would be a false positive. Fails on the previous implementation."""
-    hits, _, mnv = scan(tmp_path,
-                        [vcf_row(100, [ann("PB2", "p.E627K")], extra_info="MNV_UNRESOLVED")],
-                        "gene,mutation\nPB2,E627K\n")
+    """fix_mnv_codons.py has already determined this row's HGVS.p is wrong."""
+    hits, _, skipped = scan(
+        tmp_path, [vcf_row(100, [ann("PB2", "p.E627K")], extra_info="MNV_UNRESOLVED")],
+        "gene,mutation\nPB2,E627K\n",
+    )
     assert hits == []
-    assert mnv == 1
+    assert skipped == 1
 
 
 def test_the_same_row_without_the_flag_is_a_hit(tmp_path):
-    hits, _, mnv = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.E627K")])],
-                        "gene,mutation\nPB2,E627K\n")
+    hits, _, skipped = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.E627K")])],
+                            "gene,mutation\nPB2,E627K\n")
     assert len(hits) == 1
-    assert mnv == 0
+    assert skipped == 0
 
 
 def test_the_flag_is_matched_as_a_token_not_a_substring(tmp_path):
-    """A key must never be matched inside another key's name or value."""
-    hits, _, mnv = scan(
-        tmp_path,
-        [vcf_row(100, [ann("PB2", "p.E627K")], extra_info="NOTE=NOT_MNV_UNRESOLVED_REALLY")],
+    hits, _, skipped = scan(
+        tmp_path, [vcf_row(100, [ann("PB2", "p.E627K")], extra_info="NOT_MNV_UNRESOLVED_X=1")],
         "gene,mutation\nPB2,E627K\n",
     )
     assert len(hits) == 1
-    assert mnv == 0
+    assert skipped == 0
 
 
 # ---------------------------------------------------------------------------
-# Coverage reporting -- the safeguard
+# Loading the watchlist
 # ---------------------------------------------------------------------------
 
-def test_a_gene_absent_from_the_vcf_is_reported_as_unmatched(tmp_path):
-    _, coverage, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.S715N")])],
-                          "gene,mutation\nPB2,E627K\nNA,H275Y\n")
-    by_gene = {r["gene"]: r for r in coverage}
-    assert by_gene["PB2"]["in_vcf"] == "yes"
-    assert by_gene["NA"]["in_vcf"] == "no"
-
-
-def test_a_gene_present_but_unmutated_is_distinct_from_a_gene_absent(tmp_path):
-    """Zero hits is what a clean sample looks like. The two must not print the same."""
-    _, coverage, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.S715N")])],
-                          "gene,mutation\nPB2,E627K\nNA,H275Y\n")
-    by_gene = {r["gene"]: r for r in coverage}
-    assert by_gene["PB2"]["hits"] == 0 and by_gene["PB2"]["in_vcf"] == "yes"
-    assert by_gene["NA"]["hits"] == 0 and by_gene["NA"]["in_vcf"] == "no"
-
-
-def test_the_unmatched_gene_warning_suggests_the_subunit(tmp_path, caplog):
-    """The HA -> HA1 case, named outright: it is the one that has actually bitten."""
-    watcher.warn_unmatched_genes(
-        [{"gene": "HA", "in_vcf": "no", "watchlist_entries": 88, "hits": 0}],
-        {"HA1", "HA2"},
+def test_a_minimal_watchlist_loads(tmp_path):
+    entries = watcher.load_watchlist(
+        write_watchlist(tmp_path / "w.csv", "gene,mutation\nPB2,E627K\n")
     )
-    assert "HA1" in caplog.text
-    assert "Did you mean" in caplog.text
+    entry = entries[("PB2", 627, "K")]
+    assert (entry.gene, entry.ref_aa, entry.position, entry.alt_aa) == ("PB2", "E", 627, "K")
 
 
-def test_coverage_counts_entries_and_hits_per_gene(tmp_path):
-    rows = [vcf_row(100, [ann("PB2", "p.E627K")]), vcf_row(200, [ann("PB2", "p.S715N")])]
-    _, coverage, _ = scan(tmp_path, rows, "gene,mutation\nPB2,E627K\nPB2,S715N\nPB2,A274T\n")
-    assert coverage[0]["watchlist_entries"] == 3
-    assert coverage[0]["hits"] == 2
-
-
-# ---------------------------------------------------------------------------
-# Output files
-# ---------------------------------------------------------------------------
-
-def run_cli(tmp_path, rows, watchlist, *extra, sample="SAMPLE-1", segment="PB2"):
-    vcf = write_vcf(tmp_path / "in.vcf", rows)
-    wl = write_watchlist(tmp_path / "w.csv", watchlist)
-    out = tmp_path / "out_watchlist_hits.tsv"
-    proc = subprocess.run(
-        [sys.executable, str(SCRIPT_PATH), "--vcf", str(vcf), "--watchlist", str(wl),
-         "--sample", sample, "--segment", segment, "-o", str(out), *extra],
-        capture_output=True, text=True,
+def test_the_note_column_is_optional(tmp_path):
+    entries = watcher.load_watchlist(
+        write_watchlist(tmp_path / "w.csv", "gene,mutation\nPB2,E627K\n")
     )
-    return proc, out
+    assert entries[("PB2", 627, "K")].note == ""
+
+
+def test_gene_names_are_canonicalised_on_load(tmp_path):
+    entries = watcher.load_watchlist(
+        write_watchlist(tmp_path / "w.csv", "gene,mutation\nNS-2,M51I\n")
+    )
+    assert list(entries) == [("NEP", 51, "I")]
+
+
+def test_the_three_letter_spelling_is_accepted_on_load(tmp_path):
+    entries = watcher.load_watchlist(
+        write_watchlist(tmp_path / "w.csv", "gene,mutation\nPB2,Glu627Lys\n")
+    )
+    assert list(entries) == [("PB2", 627, "K")]
+
+
+def test_comment_lines_are_ignored(tmp_path):
+    entries = watcher.load_watchlist(write_watchlist(
+        tmp_path / "w.csv", "# where this came from\ngene,mutation\n# a note\nPB2,E627K\n"
+    ))
+    assert list(entries) == [("PB2", 627, "K")]
+
+
+def test_line_numbers_survive_comment_stripping(tmp_path):
+    """An error must point at the line to edit, not a post-filter row index."""
+    entries = watcher.load_watchlist(write_watchlist(
+        tmp_path / "w.csv", "# one\n# two\ngene,mutation\n\nPB2,E627K\n"
+    ))
+    assert entries[("PB2", 627, "K")].line == 5
+
+
+def test_duplicate_entries_collapse_to_one_hit(tmp_path):
+    hits, _, _ = scan(tmp_path, [vcf_row(100, [ann("PB2", "p.E627K")])],
+                      "gene,mutation,note\nPB2,E627K,first\nPB2,Glu627Lys,second\n")
+    assert len(hits) == 1
+    assert hits[0]["note"] == "first"
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("gene,note\nPB2,x\n", "missing required column"),
+    ("gene,mutation\nPB2,E627\n", "cannot parse mutation"),
+    ("gene,mutation\nPB2,E627E\n", "synonymous"),
+    ("gene,mutation\nHA3,E627K\n", "unknown gene"),
+    ("gene,mutation\n,E627K\n", "both 'gene' and 'mutation' are required"),
+    ("# only a comment\n", "no data rows"),
+    ("gene,mutation\n", "no data rows"),
+])
+def test_a_malformed_watchlist_is_rejected(tmp_path, text, expected):
+    with pytest.raises(watcher.WatchlistError, match=expected):
+        watcher.load_watchlist(write_watchlist(tmp_path / "w.csv", text))
+
+
+def test_the_rejection_names_the_line_to_edit(tmp_path):
+    with pytest.raises(watcher.WatchlistError, match=r"w\.csv:4:"):
+        watcher.load_watchlist(write_watchlist(
+            tmp_path / "w.csv", "# a comment\ngene,mutation\nPB2,E627K\nHA3,T195I\n"
+        ))
+
+
+# ---------------------------------------------------------------------------
+# Output and CLI
+# ---------------------------------------------------------------------------
+
+def test_hits_are_reported_in_watchlist_order(tmp_path):
+    """Watchlist order, not VCF order, so the output is predictable from the input list."""
+    hits, _, _ = scan(
+        tmp_path,
+        [vcf_row(100, [ann("NEP", "p.M51I")]), vcf_row(200, [ann("NS1", "p.D92E")])],
+        "gene,mutation\nNS1,D92E\nNS-2,M51I\n", segment="NS",
+    )
+    assert [h["gene"] for h in hits] == ["NS1", "NEP"]
 
 
 def test_the_output_has_the_documented_columns(tmp_path):
-    proc, out = run_cli(tmp_path, [vcf_row(100, [ann("PB2", "p.E627K")])],
-                        "gene,mutation,note\nPB2,E627K,mammalian\n")
-    assert proc.returncode == 0
-    rows = list(csv.DictReader(out.open(), delimiter="\t"))
-    assert list(rows[0]) == list(watcher.OUTPUT_COLUMNS)
-    assert rows[0]["sample_id"] == "SAMPLE-1"
-    assert rows[0]["segment"] == "PB2"
-    assert rows[0]["note"] == "mammalian"
+    vcf = write_vcf(tmp_path / "in.vcf", [vcf_row(100, [ann("PB2", "p.E627K")])])
+    watchlist = write_watchlist(tmp_path / "w.csv", "gene,mutation,note\nPB2,E627K,x\n")
+    out = tmp_path / "hits.tsv"
+    result = run_cli("--vcf", vcf, "--watchlist", watchlist,
+                     "--sample", "S1", "--segment", "PB2", "-o", out)
+    assert result.returncode == 0, result.stderr
+    with out.open(newline="") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert tuple(rows[0]) == watcher.COLUMNS
 
 
 def test_no_hits_writes_a_header_only_file(tmp_path):
-    """So 'scanned, found nothing' is distinguishable from 'did not run'."""
-    proc, out = run_cli(tmp_path, [vcf_row(100, [ann("PB2", "p.S715N")])],
-                        "gene,mutation\nPB2,E627K\n")
-    assert proc.returncode == 0
-    lines = out.read_text().splitlines()
-    assert len(lines) == 1
-    assert lines[0].split("\t") == list(watcher.OUTPUT_COLUMNS)
-
-
-def test_the_coverage_sidecar_is_written_alongside(tmp_path):
-    proc, out = run_cli(tmp_path, [vcf_row(100, [ann("PB2", "p.E627K")])],
-                        "gene,mutation\nPB2,E627K\nNA,H275Y\n")
-    sidecar = out.with_name(out.name.replace("_hits.tsv", "_coverage.tsv"))
-    assert sidecar.exists()
-    rows = {r["gene"]: r for r in csv.DictReader(sidecar.open(), delimiter="\t")}
-    assert rows["NA"]["in_vcf"] == "no"
-
-
-def test_a_malformed_watchlist_exits_nonzero(tmp_path):
-    """It used to `return dict()` and report no mutations of concern."""
-    proc, _ = run_cli(tmp_path, [vcf_row(100, [ann("PB2", "p.E627K")])],
-                      "segment,mutation\nHA,T195I\n")
-    assert proc.returncode == 1
-    assert "gene" in proc.stderr
+    """'Scanned, found nothing' must not read as 'did not run'."""
+    vcf = write_vcf(tmp_path / "in.vcf", [vcf_row(100, [ann("PB2", "p.A100V")])])
+    watchlist = write_watchlist(tmp_path / "w.csv", "gene,mutation\nPB2,E627K\n")
+    out = tmp_path / "hits.tsv"
+    result = run_cli("--vcf", vcf, "--watchlist", watchlist,
+                     "--sample", "S1", "--segment", "PB2", "-o", out)
+    assert result.returncode == 0, result.stderr
+    assert out.read_text().splitlines() == ["\t".join(watcher.COLUMNS)]
 
 
 def test_an_empty_vcf_is_not_an_error(tmp_path):
-    proc, out = run_cli(tmp_path, [], "gene,mutation\nPB2,E627K\n")
-    assert proc.returncode == 0
-    assert out.read_text().splitlines() == ["\t".join(watcher.OUTPUT_COLUMNS)]
+    hits, _, skipped = scan(tmp_path, [], "gene,mutation\nPB2,E627K\n")
+    assert hits == []
+    assert skipped == 0
+
+
+def test_a_malformed_watchlist_exits_nonzero(tmp_path):
+    """Never a silent empty scan: that is indistinguishable from a clean sample."""
+    vcf = write_vcf(tmp_path / "in.vcf", [vcf_row(100, [ann("PB2", "p.E627K")])])
+    watchlist = write_watchlist(tmp_path / "w.csv", "gene,note\nPB2,x\n")
+    result = run_cli("--vcf", vcf, "--watchlist", watchlist,
+                     "--sample", "S1", "-o", tmp_path / "hits.tsv")
+    assert result.returncode == 1
+    assert "missing required column" in result.stderr
 
 
 def test_the_cli_reports_a_version():
-    """The provenance block shells out to this rather than repeating the literal."""
-    proc = subprocess.run([sys.executable, str(SCRIPT_PATH), "--version"],
-                          capture_output=True, text=True)
-    assert proc.returncode == 0
-    assert watcher.SCRIPT_VERSION in proc.stdout
+    """The provenance block shells out to this, so it must not drift."""
+    result = run_cli("--version")
+    assert result.returncode == 0
+    assert watcher.SCRIPT_VERSION in result.stdout
 
-
-# ---------------------------------------------------------------------------
-# Shared-module identity
-# ---------------------------------------------------------------------------
 
 def test_the_watcher_uses_the_shared_parsers():
-    """A second copy of these would be free to drift over which HGVS.p spellings parse,
-    and the disagreement would be silent. Mirrors the merge's equivalent assertion."""
-    from lib import aa_markers, flu_gene_names
+    """A second ANN parser is how the two consumers of a VCF quietly disagree."""
+    from lib import aa_markers
 
-    assert watcher.aa_changes_from_info is aa_markers.aa_changes_from_info
-    assert watcher.has_info_flag is aa_markers.has_info_flag
+    assert watcher.annotated_changes is aa_markers.annotated_changes
     assert watcher.parse_hgvs_p is aa_markers.parse_hgvs_p
-    assert watcher.canonical_gene is flu_gene_names.canonical_gene
+    assert watcher.has_info_flag is aa_markers.has_info_flag

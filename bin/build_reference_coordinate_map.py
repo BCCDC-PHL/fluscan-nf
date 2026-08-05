@@ -336,9 +336,9 @@ def read_combined_fasta_segments(combined_fasta: Path) -> dict[str, Any]:
 def read_reference_models(reference_dir: Path) -> dict[str, dict[str, CdsModel]]:
     models: dict[str, dict[str, CdsModel]] = {}
     for segment in SEGMENTS:
-        gff = reference_dir / segment.lower() / "genome_annotation.gff3"
+        gff = reference_dir / segment / "genome_annotation.gff3"
         if not gff.exists():
-            gff = reference_dir / f"{segment.lower()}.gff3"
+            gff = reference_dir / f"{segment}.gff3"
         if gff.exists():
             models[segment] = read_cds_models(gff, segment)
     return models

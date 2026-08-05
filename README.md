@@ -106,7 +106,7 @@ flowchart TD
         split_results --> nc2vcf
         nc2vcf --> fixmnv_nc
         fixmnv_nc --> nc_final
-        dispatch -.->|"flumut_reference_dir + nextclade_datasets_dir, sample-independent (if merge_flumut_mutations)"| coord_map
+        dispatch -.->|"flumut_db + db nextclade datasets, sample-independent (if merge_flumut_mutations)"| coord_map
         coord_map --> coord_final
         coord_map -.->|"per-segment shard (if merge_flumut_mutations)"| flumut_merge
         nc_final -.-> flumut_merge
@@ -125,6 +125,28 @@ flowchart TD
 
 Cleaned output headers (`{sample_id}.fasta`) are normalised to `{sample_id}_{SEGMENT}` (e.g. `EPI-ISL-20399898_NA`).
 
+## Reference databases
+
+Every reference the pipeline needs for one reference set lives in a single directory — a
+*bundle* — passed as `--db`:
+
+```
+<db>/
+├── db.yml            optional metadata (name, version, …)
+├── blastn_db.fa      nt reference; headers accession|subtype|segment
+├── nextclade/        one lowercase directory per segment (ha/, na/, …)
+└── snpeff/           snpEff.config + data/<genome>/
+```
+
+Bundles may be partial — each workflow validates only the components it consumes, and
+fails at the start of the run, before any task is submitted, naming the path it expected.
+See [docs/database_bundles.md](docs/database_bundles.md) for the full layout, the
+`db.yml` schema, and how to build and validate a bundle.
+
+```bash
+scripts/validate_db.py /path/to/refs/gsgd
+```
+
 ## Usage
 
 **Example command (short-read):**
@@ -134,12 +156,12 @@ nextflow run BCCDC-PHL/fluscan-nf \
   -profile conda \
   --cache ~/.conda/envs \
   --fastq_input /path/to/your_fastqs \
+  --db /path/to/refs/gsgd \
   --outdir /path/to/output_dir
 ```
 
 Optional short-read parameters:
 - `--samplesheet_input` — CSV samplesheet (`ID,R1,R2`) consumed by the short-read workflow; note that `main.nf` currently still switches into short-read mode based on `--fastq_input`
-- `--snpeff_config` — path to a custom SnpEff config (defaults to the built-in database)
 - `--aligner` — `bwa` (default) or `minimap2`
 
 Optional in every workflow:
@@ -152,15 +174,17 @@ nextflow run BCCDC-PHL/fluscan-nf \
   -profile conda \
   --cache ~/.conda/envs \
   --fasta_input /path/to/consensus_fastas \
-  --snpeff_config /path/to/snpeff.config \
+  --db /path/to/refs/gsgd \
+  --flumut_db /path/to/refs/flumut \
+  --merge_flumut_mutations \
   --outdir /path/to/output_dir
 ```
 
-> **Note:** FASTA mode requires `params.snpeff_config` to resolve to an existing SnpEff config because the PAFTOOLS branch requires it. By default this comes from the built-in database configured in `nextflow.config`; use `--snpeff_config` to override it. In the short-read workflow, `--snpeff_config` is optional and also defaults to the built-in config.
+> **Note:** FASTA mode launches both branches, so the bundle must carry all three components: PAFTOOLS requires `blastn_db.fa` and `snpeff/`, NEXTCLADE requires `nextclade/` with all eight segment datasets.
 >
-> The NEXTCLADE branch additionally requires `--nextclade_datasets_dir` (the selected Nextclade reference dataset, containing one subdirectory per segment — the canonical *target* coordinate system), which must point to an existing directory or the pipeline will error out before running.
+> In the short-read workflow only `blastn_db.fa` is required. SnpEff annotation — and the MNV correction and watchlist scan that read its output — runs when the bundle carries a `snpeff/` directory, and is skipped when it does not; consensus and FluMut complete either way.
 >
-> `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and FluMutDB annotation of the VCF (`*_flumut_merged.vcf`). When set to `true`, `--flumut_reference_dir` (flumut's Nextclade dataset directory — the fixed *source* reference lifted onto the target by the `coordinate_conversion` step) becomes mandatory and must point to an existing directory, or the pipeline will error out before running. The marker set comes from the `flumutdb` conda package, so the annotation step does not consume the per-sample `flumut` output.
+> `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and FluMutDB annotation of the VCF (`*_flumut_merged.vcf`). When set to `true`, `--flumut_db` becomes mandatory: FluMut's own bundle, whose `nextclade/` datasets are the fixed *source* reference lifted onto the `--db` datasets by the `coordinate_conversion` step. Point it at the bundle root, not at its `nextclade/` subdirectory. The marker set comes from the `flumutdb` conda package, so the annotation step does not consume the per-sample `flumut` output.
 
 **Package management:**
 - Conda is used for dependency management. The `-profile conda` flag and `--cache` parameter are required on BCCDC systems.

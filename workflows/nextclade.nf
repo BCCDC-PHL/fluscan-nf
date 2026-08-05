@@ -14,8 +14,8 @@
  *       e.g. >EPI_ISL_20399898|A_/_H5N1|NA|6|EPI5261179|2.3.4.4b_NA
  *   Cleaned headers are normalised to {sample_id}_{SEGMENT} by prepare_consensus.
  *
- *   Segment datasets are resolved from --nextclade_datasets_dir by lowercasing
- *   the segment label (e.g. HA -> ha, M -> m).
+ *   Segment datasets are resolved from <--db>/nextclade/ using the segment label
+ *   directly (e.g. HA -> HA, M -> M).
  *
  *   Batching strategy: sequences are grouped by segment across all samples so
  *   nextclade runs 8 times total (once per segment) rather than 8 × N times.
@@ -36,11 +36,36 @@ include { merge_flumut_mutations }               from '../modules/nextclade/merg
 include { mutation_watch }                       from '../modules/shared/mutation_watch.nf'
 include { pipeline_provenance }                  from '../modules/shared/provenance.nf'
 include { collect_provenance }                   from '../modules/shared/provenance.nf'
+include { resolve_db }                           from '../modules/shared/database.nf'
+include { resolve_flumut_db }                    from '../modules/shared/database.nf'
 
 workflow NEXTCLADE {
 
     // The canonical segment set, and the only labels coordinate_conversion shards the map by.
     def SEGMENTS = ['PB2', 'PB1', 'PA', 'HA', 'NP', 'NA', 'M', 'NS']
+
+    // Only the Nextclade datasets are read here; this branch never BLASTs or runs SnpEff.
+    // resolve_db also checks that all eight segment datasets are present and complete.
+    def db = resolve_db(params.db, ['nextclade'])
+
+    // Resolved unconditionally when the merge is enabled, so a missing or mistyped
+    // --flumut_db fails before any sample is processed rather than at step 7.
+    def flumut_db = params.merge_flumut_mutations ? resolve_flumut_db(params.flumut_db) : null
+
+    // The flumut bundle is recorded only when the merge ran, so the provenance record
+    // never implies a coordinate conversion that did not happen.
+    def db_provenance = [
+        database_name:    db.name,
+        database_version: db.version,
+        database_path:    db.root,
+    ]
+    if (flumut_db) {
+        db_provenance += [
+            flumut_database_name:    flumut_db.name,
+            flumut_database_version: flumut_db.version,
+            flumut_database_path:    flumut_db.root,
+        ]
+    }
 
     ch_workflow_metadata = Channel.value([
         workflow.sessionId,
@@ -48,6 +73,7 @@ workflow NEXTCLADE {
         workflow.manifest.name,
         workflow.manifest.version,
         workflow.start,
+        db_provenance,
     ])
 
     ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
@@ -75,25 +101,6 @@ workflow NEXTCLADE {
         // on as they are produced, and concatenated at the end by collect_provenance.
         ch_provenance = ch_fasta_input.map{ it -> it[0] }
 
-        if (
-            !params.nextclade_datasets_dir ||
-            params.nextclade_datasets_dir == 'NO_FILE' ||
-            !file(params.nextclade_datasets_dir).exists()
-        ) {
-            error "ERROR: --nextclade_datasets_dir must be set to an existing path for the Nextclade workflow."
-        }
-
-        if (
-            params.merge_flumut_mutations &&
-            (
-                !params.flumut_reference_dir ||
-                params.flumut_reference_dir == 'NO_FILE' ||
-                !file(params.flumut_reference_dir).exists()
-            )
-        ) {
-            error "ERROR: --flumut_reference_dir must be set to an existing path (flumut's Nextclade dataset directory, the source coordinate reference) when --merge_flumut_mutations is enabled."
-        }
-
         // --- Step 1: Validate and clean input consensus FASTA ---
         prepare_consensus(ch_fasta_input)
 
@@ -107,7 +114,7 @@ workflow NEXTCLADE {
         //   Pair each consensus segment with its Nextclade dataset reference.
         ch_identity_qc = ch_consensus_segments
             .map { sample_id, segment, consensus ->
-                def ref_fasta = file("${params.nextclade_datasets_dir}/${segment.toLowerCase()}/reference.fasta")
+                def ref_fasta = db.nextclade.resolve("${segment.toLowerCase()}/reference.fasta")
                 return [sample_id, segment, consensus, ref_fasta]
             }
         consensus_identity_qc(ch_identity_qc)
@@ -120,7 +127,7 @@ workflow NEXTCLADE {
             .map { sample_id, segment, fa -> [segment, sample_id, fa] }
             .groupTuple()                                  // [segment, [sample_ids], [fastas]]
             .map { segment, sample_ids, fastas ->
-                def dataset_dir = file("${params.nextclade_datasets_dir}/${segment.toLowerCase()}")
+                def dataset_dir = db.nextclade.resolve(segment.toLowerCase())
                 return [segment, sample_ids, fastas, dataset_dir]
             }
 
@@ -162,7 +169,7 @@ workflow NEXTCLADE {
 
         // --- Steps 7-8: Coordinate conversion + flumut mutation merging (optional) ---
         //   Gated behind --merge_flumut_mutations (default false). When enabled,
-        //   --flumut_reference_dir is validated above and these two steps run;
+        //   --flumut_db is resolved and validated above and these two steps run;
         //   otherwise the workflow stops at the *_final.vcf produced above.
         if (params.merge_flumut_mutations) {
 
@@ -174,17 +181,14 @@ workflow NEXTCLADE {
             //   Idempotent, including the trivial identity case where the selected
             //   Nextclade dataset is derived from flumut's reference.
             //   Note: source = flumut (lift FROM), target = nextclade (lift ONTO).
+            //   The reference labels come from each bundle's db.yml (falling back to its
+            //   directory name); they are written into the published coordinate map, so
+            //   they identify the reference rather than wherever the bundle happens to sit.
             ch_source_reference = Channel.value(
-                [
-                    file(params.flumut_reference_dir).parent.name,
-                    file(params.flumut_reference_dir),
-                ]
+                [flumut_db.nextclade_ref_name, flumut_db.nextclade]
             )
             ch_target_reference = Channel.value(
-                [
-                    file(params.nextclade_datasets_dir).parent.name,
-                    file(params.nextclade_datasets_dir),
-                ]
+                [db.nextclade_ref_name, db.nextclade]
             )
             coordinate_conversion(ch_source_reference.combine(ch_target_reference))
 

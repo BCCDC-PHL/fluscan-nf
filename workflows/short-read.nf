@@ -34,9 +34,16 @@ include { post_process_vcf }               from '../modules/shared/post_process.
 include { split_fasta as split_fasta_reference } from '../modules/shared/consensus_qc.nf'
 include { mutation_watch }                 from '../modules/shared/mutation_watch.nf'
 include { short_read_make_coverage_plot }  from '../modules/short_read/plotting.nf'
+include { resolve_db }                     from '../modules/shared/database.nf'
 
 
 workflow SHORT_READ {
+
+    // Only the BLAST reference is required here. SnpEff annotation (and the MNV
+    // correction and watchlist scan that depend on its output) runs when the bundle
+    // carries a snpeff/ component, so whether it runs is now a property of the
+    // reference set rather than of a separate flag.
+    def db = resolve_db(params.db, ['blastn'])
 
     ch_workflow_metadata = Channel.value([
         workflow.sessionId,
@@ -44,6 +51,11 @@ workflow SHORT_READ {
         workflow.manifest.name,
         workflow.manifest.version,
         workflow.start,
+        [
+            database_name:    db.name,
+            database_version: db.version,
+            database_path:    db.root,
+        ],
     ])
 
     ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
@@ -56,7 +68,7 @@ workflow SHORT_READ {
         ch_fastq_input = Channel.fromFilePairs( params.fastq_search_path, flat: true ).map{ it -> [it[0].split('_')[0], it[1], it[2]] }.unique{ it -> it[0] }
     }
 
-    ch_nt_database = Channel.fromPath(params.nt_database)
+    ch_blastn_db = Channel.fromPath(db.blastn)
 
     main:
 
@@ -82,7 +94,7 @@ workflow SHORT_READ {
         short_read_multiqc(short_read_fastp.out.json.mix( short_read_cutadapt.out.log, ch_fastqc_collected ).collect().ifEmpty([]) )
 
         // Build BLAST database, then search assembled contigs against it to select references
-        makeblastdb(ch_nt_database).first().set{ch_blastdb}
+        makeblastdb(ch_blastn_db).first().set{ch_blastdb}
         blastn(short_read_assembly.out.contigs, ch_blastdb)
 
         // NOTE: Currently mapping raw reads (ch_fastq_input). Consider using
@@ -99,8 +111,10 @@ workflow SHORT_READ {
         short_read_make_coverage_plot(short_read_sort_filter_sam.out.depth)
         short_read_lofreq(short_read_sort_filter_sam.out.bam.join(blastn.out.ref))
 
-        if (params.snpeff_config != 'NO_FILE') {
-            short_read_snpeff_annotation(short_read_lofreq.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
+        if (db.has_snpeff) {
+            // The whole snpeff/ directory is staged so the config and the database it
+            // names travel together; the process overrides data.dir with -dataDir.
+            short_read_snpeff_annotation(short_read_lofreq.out.vcf.combine(Channel.fromPath(db.snpeff_dir)))
 
             // Split each sample's multi-segment BLAST reference into per-segment FASTAs
             // named {sample_id}_ref_{segment}.s.fasta — the lookup post_process_vcf expects

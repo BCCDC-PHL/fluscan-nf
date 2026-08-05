@@ -14,7 +14,7 @@
  *       e.g. >EPI_ISL_20399898|A_/_H5N1|NA|6|EPI5261179|2.3.4.4b_NA
  *   Cleaned headers are normalised to {sample_id}_{SEGMENT} by prepare_consensus.
  *
- *   Reference database header format (--nt_database):
+ *   Reference database header format (<--db>/blastn_db.fa):
  *     >accession|subtype|segment
  *   e.g.
  *     >NC_026438.1|H1N1|PB2
@@ -39,10 +39,15 @@ include { paftools_snpeff_annotation }                   from '../modules/paftoo
 include { paftools_to_freebayes_vcf }                    from '../modules/paftools/variant_calling.nf'
 include { post_process_vcf }                             from '../modules/shared/post_process.nf'
 include { mutation_watch }                               from '../modules/shared/mutation_watch.nf'
+include { resolve_db }                                   from '../modules/shared/database.nf'
 
 
 
 workflow PAFTOOLS {
+
+    // Reference selection is BLAST-driven and every called variant is SnpEff-annotated,
+    // so both components are mandatory for this branch.
+    def db = resolve_db(params.db, ['blastn', 'snpeff'])
 
     def coverage_summary_header = [
         'sample_id', 'segment', 'status', 'coverage_pct',
@@ -62,6 +67,11 @@ workflow PAFTOOLS {
         workflow.manifest.name,
         workflow.manifest.version,
         workflow.start,
+        [
+            database_name:    db.name,
+            database_version: db.version,
+            database_path:    db.root,
+        ],
     ])
 
     ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
@@ -77,19 +87,13 @@ workflow PAFTOOLS {
         return [sample_id, fasta]
     }
 
-    ch_nt_database = Channel.fromPath(params.nt_database)
+    ch_blastn_db = Channel.fromPath(db.blastn)
 
     main:
 
-        if (
-            !params.snpeff_config ||
-            params.snpeff_config == 'NO_FILE' ||
-            !file(params.snpeff_config).exists()
-        ) {
-            error "ERROR: --snpeff_config must be set to an existing path for the PAFTOOLS workflow."
-        }
-
-        ch_snpeff_config = Channel.fromPath(params.snpeff_config, checkIfExists: true)
+        // The whole snpeff/ directory is staged so the config and the database it names
+        // travel together; the process overrides data.dir with -dataDir.
+        ch_snpeff_dir = Channel.fromPath(db.snpeff_dir, checkIfExists: true)
 
         // Provenance channel
         ch_provenance = ch_fasta_input.map{ it -> it[0] }
@@ -98,7 +102,7 @@ workflow PAFTOOLS {
         prepare_consensus(ch_fasta_input)
 
         // --- Step 2: Build BLAST database (once, shared across all samples) ---
-        makeblastdb(ch_nt_database).first().set{ch_blastdb}
+        makeblastdb(ch_blastn_db).first().set{ch_blastdb}
 
         // --- Step 3: BLAST cleaned consensus against reference database ---
         blastn(prepare_consensus.out.cleaned, ch_blastdb)
@@ -133,7 +137,7 @@ workflow PAFTOOLS {
         paftools_sort_vcf(paftools_call.out.vcf)
 
         // --- Step 7: Annotate amino-acid impacts with SnpEff ---
-        paftools_snpeff_annotation(paftools_sort_vcf.out.vcf.combine(ch_snpeff_config))
+        paftools_snpeff_annotation(paftools_sort_vcf.out.vcf.combine(ch_snpeff_dir))
 
         paftools_to_freebayes_vcf(
             paftools_snpeff_annotation.out.vcf.join(consensus_coverage_qc.out.coverage)
