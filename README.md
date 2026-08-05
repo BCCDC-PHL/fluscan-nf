@@ -135,7 +135,7 @@ Every reference the pipeline needs for one reference set lives in a single direc
 ├── db.yml            optional metadata (name, version, …)
 ├── blastn_db.fa      nt reference; headers accession|subtype|segment
 ├── nextclade/        one lowercase directory per segment (ha/, na/, …)
-└── snpeff/           snpEff.config + data/<genome>/
+└── snpeff/           snpEff.config + <genome>/
 ```
 
 Bundles may be partial — each workflow validates only the components it consumes, and
@@ -165,7 +165,7 @@ Optional short-read parameters:
 - `--aligner` — `bwa` (default) or `minimap2`
 
 Optional in every workflow:
-- `--watchlist_dir` — directory of `*watchlist.csv` files (`gene,mutation[,note]`) scanned out of the final VCF into a published TSV. Defaults to `assets/watchlists/`; set to `NO_FILE` to disable. See [docs/watchlists.md](docs/watchlists.md)
+- `--watchlist_dir` — directory of `*watchlist.csv` files (`gene,mutation[,note]`) scanned out of the final VCF into a published TSV. Defaults to `assets/watchlists/`; set to `NO_FILE` to disable. `HA1`/`HA2` entries are matched against the reference annotation's mature-peptide coordinates, so they work whether or not the VCF annotates the subunits directly. See [docs/watchlists.md](docs/watchlists.md)
 
 **FASTA-mode example (runs both PAFTOOLS and NEXTCLADE):**
 ```
@@ -213,7 +213,6 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `*_low_coverage.bed` | Low-coverage regions masked during consensus generation |
 | `short_read/*_final.vcf` | Per-segment final VCF after SnpEff annotation and MNV codon correction |
 | `short_read/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF |
-| `short_read/*_watchlist_coverage.tsv` | Per-watchlist-gene report saying whether the VCF annotated that gene at all |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
@@ -232,7 +231,6 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `qc/*_coverage_qc.tsv` | Per-segment PAFTOOLS consensus coverage QC with coverage percentage and PASS/WARN/FAIL status |
 | `paftools/*_final.vcf` | Per-segment final VCF after `paftools.js`, SnpEff, freebayes-style conversion, and MNV codon correction |
 | `paftools/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF |
-| `paftools/*_watchlist_coverage.tsv` | Per-watchlist-gene report saying whether the VCF annotated that gene at all |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
@@ -247,7 +245,6 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `nextclade/*_final.vcf` | Per-segment final VCF after Nextclade-to-VCF conversion and MNV codon correction |
 | `nextclade/*_flumut_merged.vcf` | *Optional* (`--merge_flumut_mutations`): the same VCF with a `FLUMUT=` INFO field (`Protein\|AA_Pos\|Alt_AA\|Mutation_Name\|DirectEffect\|AssociatedEffect`) on rows whose amino-acid change matches a curated FluMutDB marker |
 | `nextclade/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF. Independent of `--merge_flumut_mutations`: `FLUMUT=` is a curated annotation written *into* the VCF, this is a custom list scanned *out* of it |
-| `nextclade/*_watchlist_coverage.tsv` | Per-watchlist-gene report saying whether the VCF annotated that gene at all |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
