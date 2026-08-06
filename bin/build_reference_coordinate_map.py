@@ -25,6 +25,13 @@ Reference directory layout (both source and target must follow this):
 
 An optional top-level config.json may define segment directories and an
 id_prefix used as the reference's display name; see read_reference_segments().
+That name is only a fallback -- an explicit --source-name/--target-name wins,
+so the caller can predict the output filenames it produces.
+
+HA is read from either annotation shape: HA1/HA2 as two CDS features, or as
+mature_protein_region_of_CDS children of one HA CDS (the NCBI/RefSeq model).
+FluMutDB numbers HA by those subunits, so a dataset exposing neither cannot
+carry HA markers and is flagged stale_annotation.
 
 The eight influenza A segments are fixed:
 
@@ -56,13 +63,15 @@ from Bio import SeqIO
 from Bio.Align import PairwiseAligner, substitution_matrices
 from Bio.Seq import Seq
 
-# Reuse the converter's GFF parser so the serialized target-CDS placement is exactly what
-# the downstream merge step would otherwise compute itself (guarantees identical ANN).
+# lib/flu_gene_names holds the gene-key aliases that merge_flumut_mutations.py must apply
+# to ANN Gene_Name for its lookups to hit the keys written here; sharing the table is what
+# keeps the two sides from drifting apart. Importable modules live in bin/lib/, so this
+# script's own directory (bin/) goes on sys.path to make the package resolvable.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from nextclade_to_freebayes_vcf import load_gff3  # noqa: E402
+from lib.flu_gene_names import canonical_gene  # noqa: E402,F401  (re-exported for callers)
 
-SCRIPT_VERSION = "2.1.0"
-SCHEMA_VERSION = "2.1"
+SCRIPT_VERSION = "2.3.0"
+SCHEMA_VERSION = "2.2"
 
 SEGMENTS = ("PB2", "PB1", "PA", "HA", "NP", "NA", "M", "NS")
 SEGMENT_ALIASES = {segment.lower(): segment for segment in SEGMENTS}
@@ -81,9 +90,14 @@ AA_ALIGNMENT_PARAMS = {
     "extend_gap_score": -1,
 }
 
-# Below these thresholds a map is still written, but flagged with a QC warning.
+# Below these thresholds a map is still written, but flagged with a QC warning (and, with
+# --fail-on-low-identity, rejected).
 IDENTITY_WARNING_THRESHOLD_PCT = 80.0
 COVERAGE_WARNING_THRESHOLD_PCT = 95.0
+
+# Co-optimal alignment counts are only ever read as "was this choice arbitrary, and how
+# badly"; the exact figure can be astronomically large, so it is capped for reporting.
+CO_OPTIMAL_REPORTING_CAP = 1000
 
 
 @dataclass(frozen=True)
@@ -94,6 +108,14 @@ class CdsModel:
     strand: str
     parts: tuple[tuple[int, int], ...]
     cds_ids: tuple[str, ...]
+    # Set only for models recovered from mature_protein_region_of_CDS rows. `aliases` holds
+    # the raw (uncanonicalised) identifiers such a row can surface in a VCF's ANN Feature_ID
+    # -- its protein_id and its GFF3 ID -- so the merge can key on them when the ANN
+    # Gene_Name names the parent gene instead of the subunit. `subunit_parent` is the
+    # canonical gene key of that parent CDS.
+    aliases: tuple[str, ...] = ()
+    is_mature: bool = False
+    subunit_parent: str | None = None
 
     def coding_positions(self) -> list[int]:
         positions: list[int] = []
@@ -116,6 +138,8 @@ class SegmentBuild:
     nt_identity: int
     nt_aligned: int
     nt_gaps: int
+    nt_co_optimal: int = 1
+    aa_co_optimal: dict[str, int] = field(default_factory=dict)
     aa_maps: dict[str, dict[int, int | None]] = field(default_factory=dict)
     aa_status: dict[str, dict[int, str]] = field(default_factory=dict)
     aa_identity: dict[str, int] = field(default_factory=dict)
@@ -130,6 +154,8 @@ class SegmentBuild:
     missing_target_genes: tuple[str, ...] = ()
     extra_source_genes: tuple[str, ...] = ()
     stale_annotation: bool = False
+    gene_aliases: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    subunit_parent_genes: tuple[str, ...] = ()
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -154,13 +180,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--source-name",
         default=None,
-        help="Preferred source reference name. Overridden by config.json id_prefix if present.",
+        help="Source reference name. Takes priority over config.json id_prefix/display_name.",
     )
     parser.add_argument(
         "--target-name",
         default=None,
-        help="Preferred target reference name. Overridden by config.json id_prefix if present.",
+        help="Target reference name. Takes priority over config.json id_prefix/display_name.",
     )
+    parser.add_argument(
+        "--fail-on-low-identity",
+        action="store_true",
+        help="Exit non-zero when any nucleotide or amino-acid map falls below the identity "
+        "or coverage warning thresholds, instead of only warning on stderr.",
+    )
+    # The process's provenance block reads this rather than repeating the literal, so the
+    # recorded tool_version cannot drift from SCRIPT_VERSION.
+    parser.add_argument("--version", action="version", version=f"%(prog)s {SCRIPT_VERSION}")
     return parser.parse_args(argv)
 
 
@@ -202,13 +237,10 @@ def build_map(args: argparse.Namespace) -> None:
             target_models=target_models.get(segment, {}),
         )
 
-    target_placements = read_target_placements(target_ref_dir)
-
     map_doc = make_map_doc(
         source_name=source_name,
         target_name=target_name,
         builds=builds,
-        target_placements=target_placements,
     )
     write_json(out_dir / "coordinate_map.json", map_doc)
     shard_names = write_segment_shards(out_dir, map_doc)
@@ -217,7 +249,7 @@ def build_map(args: argparse.Namespace) -> None:
     write_qc_tsv(out_dir / "coordinate_map.qc.tsv", source_name, builds)
     write_nt_alignment_fasta(out_dir / f"{source_name}_alignment.fasta", builds)
     write_aa_alignment_fasta(out_dir / f"{source_name}_aa_alignment.fasta", builds)
-    warn_low_quality_maps(builds)
+    failures = warn_low_quality_maps(builds)
 
     for produced in (
         "coordinate_map.json",
@@ -230,14 +262,32 @@ def build_map(args: argparse.Namespace) -> None:
     ):
         print(f"Wrote {out_dir / produced}")
 
+    # Opt-in, not the default: real reference pairs legitimately sit below these thresholds
+    # (flumut -> gsgd reports NS/NS1 at 66% and PB1/PB1-F2 at 73%), so failing by default
+    # would reject a dataset the pipeline documents as supported. The maps are written either
+    # way -- the flag only decides whether a low-quality map is allowed to be used.
+    if failures and getattr(args, "fail_on_low_identity", False):
+        raise SystemExit(
+            f"Low-quality coordinate map(s) with --fail-on-low-identity: {', '.join(failures)}. "
+            f"Maps were written; see {out_dir / 'coordinate_map.qc.tsv'}."
+        )
+
 
 def resolve_reference_name(ref_dir: Path, explicit_name: str | None) -> str:
     """Resolve a stable, human-meaningful name for a reference dataset.
 
-    Priority: config.json id_prefix/display_name (curated, embedded in the
-    dataset) > explicit --source-name/--target-name argument > parent
+    Priority: explicit --source-name/--target-name argument > config.json
+    id_prefix/display_name (curated, embedded in the dataset) > parent
     directory name (last resort, e.g. .../gsgd/nextclade -> "gsgd").
+
+    The explicit argument wins because it is what the caller can predict. The
+    name reaches published filenames (`<name>_alignment.fasta`), and the
+    process's stub block can only reproduce those from the value it passed in;
+    with config.json winning, a dataset carrying an id_prefix made the real and
+    stubbed output layouts diverge.
     """
+    if explicit_name:
+        return explicit_name
     config_path = ref_dir / "config.json"
     if config_path.exists():
         with config_path.open() as handle:
@@ -246,8 +296,6 @@ def resolve_reference_name(ref_dir: Path, explicit_name: str | None) -> str:
             return str(config["id_prefix"])
         if config.get("display_name"):
             return str(config["display_name"])
-    if explicit_name:
-        return explicit_name
     return ref_dir.parent.name or ref_dir.name
 
 
@@ -288,9 +336,9 @@ def read_combined_fasta_segments(combined_fasta: Path) -> dict[str, Any]:
 def read_reference_models(reference_dir: Path) -> dict[str, dict[str, CdsModel]]:
     models: dict[str, dict[str, CdsModel]] = {}
     for segment in SEGMENTS:
-        gff = reference_dir / segment.lower() / "genome_annotation.gff3"
+        gff = reference_dir / segment / "genome_annotation.gff3"
         if not gff.exists():
-            gff = reference_dir / f"{segment.lower()}.gff3"
+            gff = reference_dir / f"{segment}.gff3"
         if gff.exists():
             models[segment] = read_cds_models(gff, segment)
     return models
@@ -329,19 +377,69 @@ def parse_gff_attributes(raw: str) -> dict[str, str]:
     return attrs
 
 
+def mature_peptide_frame_offset(parent: CdsModel, start: int, end: int) -> int | None:
+    """Nucleotide offset of a mature peptide's first base within its parent's coding sequence.
+
+    Returns None when that base is not among the parent's coding positions at all -- a
+    malformed or mismatched Parent reference.
+
+    Measured along the parent's *spliced* coding positions rather than as a genomic
+    subtraction, so a spliced parent (M2, NEP, PA-X) gives the right answer; and taken from
+    the peptide's end on the minus strand, since that is where its translation begins.
+    """
+    positions = parent.coding_positions()
+    index = {pos: i for i, pos in enumerate(positions)}
+    first = end if parent.strand == "-" else start
+    if first not in index:
+        return None
+    offset = index[first]
+    return len(positions) - 1 - offset if parent.strand == "-" else offset
+
+
 def read_cds_models(path: Path, segment: str) -> dict[str, CdsModel]:
+    """Gene key -> CDS model for one segment's GFF3.
+
+    Reads `CDS` rows, and additionally `mature_protein_region_of_CDS` rows: NCBI/RefSeq flu
+    annotations (the GsGD dataset among them) model HA as one CDS with HA1/HA2 as mature
+    peptide children, whereas FluMutDB numbers HA by those subunits. Without the mature rows
+    the gene-key intersection with the flumut source reference is empty for HA and no HA
+    amino-acid map is built at all -- 76 of FluMutDB 6.6's 333 mappings.
+
+    A mature peptide is promoted to a gene key only when no real CDS already claims that key,
+    so datasets exposing genuine HA1/HA2 CDS features (chicken2021) are unaffected.
+    """
     grouped: dict[str, dict[str, Any]] = {}
+    mature_rows: list[dict[str, Any]] = []
+    cds_key_by_id: dict[str, str] = {}   # GFF3 ID of a CDS -> its canonical gene key
     with path.open() as handle:
         for line in handle:
             if not line.strip() or line.startswith("#"):
                 continue
             fields = line.rstrip("\n").split("\t")
-            if len(fields) != 9 or fields[2] != "CDS":
+            if len(fields) != 9 or fields[2] not in ("CDS", "mature_protein_region_of_CDS"):
                 continue
             attrs = parse_gff_attributes(fields[8])
+
+            if fields[2] == "mature_protein_region_of_CDS":
+                # `product` names the subunit (HA1/HA2); protein_id/ID are what a VCF's ANN
+                # Feature_ID can carry for it, so both are kept as lookup aliases.
+                name = attrs.get("product") or attrs.get("Name") or attrs.get("protein_id")
+                if not name:
+                    continue
+                mature_rows.append({
+                    "gene": canonical_gene(name),
+                    "contig": fields[0],
+                    "strand": fields[6],
+                    "part": (int(fields[3]), int(fields[4])),
+                    "aliases": [a for a in (attrs.get("protein_id"), attrs.get("ID")) if a],
+                    "parent": attrs.get("Parent", ""),
+                })
+                continue
+
             gene = attrs.get("gene") or attrs.get("Name") or attrs.get("ID")
             if not gene:
                 continue
+            gene = canonical_gene(gene)
             grouped.setdefault(
                 gene,
                 {
@@ -356,6 +454,7 @@ def read_cds_models(path: Path, segment: str) -> dict[str, CdsModel]:
             grouped[gene]["parts"].append((int(fields[3]), int(fields[4])))
             if attrs.get("ID"):
                 grouped[gene]["cds_ids"].add(attrs["ID"])
+                cds_key_by_id[attrs["ID"]] = gene
 
     models: dict[str, CdsModel] = {}
     for gene, values in grouped.items():
@@ -367,20 +466,85 @@ def read_cds_models(path: Path, segment: str) -> dict[str, CdsModel]:
             parts=tuple(sorted(values["parts"])),
             cds_ids=tuple(sorted(values["cds_ids"])),
         )
+
+    mature_grouped: dict[str, dict[str, Any]] = {}
+    for row in mature_rows:
+        gene = row["gene"]
+        if gene in models:
+            continue  # a real CDS already defines this key; it wins
+
+        # Treating a mature peptide as a CDS is only valid if it begins on one of its
+        # parent's codon boundaries. translate_model reads the interval from its own first
+        # base, so a peptide starting mid-codon yields a frameshifted protein -- one that
+        # still translates, still aligns, still produces a position map, and reports entirely
+        # different residues. Nothing errors; the markers are simply wrong. That silence is
+        # the whole reason this is checked, and the reason an *unverifiable* peptide is
+        # refused too: accepting the one case we cannot check would undo the point of
+        # checking. RefSeq flu satisfies the condition (HA1 at 70 and HA2 at 1060 are both
+        # codon-aligned to the HA CDS at 22).
+        parent_key = cds_key_by_id.get(row["parent"])
+        parent = models.get(parent_key) if parent_key else None
+        if parent is None:
+            print(f"WARNING: {segment} mature peptide {gene} "
+                  f"({row['part'][0]}..{row['part'][1]}) has no resolvable parent CDS "
+                  f"(Parent={row['parent']!r}), so its reading frame cannot be verified; "
+                  f"skipping it rather than risking a frameshifted map",
+                  file=sys.stderr)
+            continue
+        offset = mature_peptide_frame_offset(parent, *row["part"])
+        if offset is None or offset % 3 != 0:
+            reason = ("lies outside its parent's coding positions" if offset is None
+                      else f"starts {offset % 3} base(s) into a codon of its parent")
+            print(f"WARNING: {segment} mature peptide {gene} "
+                  f"({row['part'][0]}..{row['part'][1]}) {reason} (parent CDS {parent.gene}); "
+                  f"skipping it rather than mapping positions through the wrong frame",
+                  file=sys.stderr)
+            continue
+
+        entry = mature_grouped.setdefault(
+            gene,
+            {
+                "contig": row["contig"],
+                "strand": row["strand"],
+                "parts": [],
+                "aliases": [],
+                "parent": parent_key,   # non-None: an unresolvable parent was refused above
+            },
+        )
+        entry["parts"].append(row["part"])
+        for alias in row["aliases"]:
+            if alias not in entry["aliases"]:
+                entry["aliases"].append(alias)
+
+    for gene, values in mature_grouped.items():
+        models[gene] = CdsModel(
+            segment=segment,
+            gene=gene,
+            contig=values["contig"],
+            strand=values["strand"],
+            parts=tuple(sorted(values["parts"])),
+            cds_ids=(),
+            aliases=tuple(values["aliases"]),
+            is_mature=True,
+            subunit_parent=values["parent"],
+        )
     return models
 
 
 def detect_stale_ha_annotation(
     segment: str, source_gene_keys: set[str], target_gene_keys: set[str]
 ) -> bool:
-    """Flag legacy single-CDS "HA" annotations on the target (Nextclade) dataset.
+    """Flag target (Nextclade) HA annotations that expose no HA1/HA2 split at all.
 
-    The current accepted standard splits HA into HA1/HA2 CDS features (as
-    flumut's source reference does). The target (the selected Nextclade dataset)
-    is the flexible, user-chosen reference; if it still annotates a single "HA"
-    gene (and has not also been updated to expose HA1/HA2) it is considered out
-    of date: no HA amino-acid map can be built, because the flumut source uses
-    the HA1/HA2 split and the shared-gene intersection is empty.
+    FluMutDB numbers HA by its HA1/HA2 subunits, as flumut's source reference does. The
+    target is the flexible, user-chosen reference; it may express the split either as two
+    real CDS features (chicken2021) or as mature_protein_region_of_CDS children of a single
+    HA CDS (the NCBI/RefSeq model, GsGD among them) -- read_cds_models accepts both, so
+    `target_gene_keys` already carries HA1/HA2 in either case.
+
+    What remains stale is an annotation offering *only* a bare "HA" CDS with no subunit
+    features of any kind: the shared-gene intersection is then empty and no HA amino-acid
+    map can be built.
     """
     if segment != "HA" or "HA" not in target_gene_keys:
         return False
@@ -408,6 +572,7 @@ def build_segment_map(
         nt_gaps,
         nt_target_aligned,
         nt_source_aligned,
+        nt_co_optimal,
     ) = align_position_map(target_seq=target_seq, query_seq=source_seq, kind="nt")
 
     build = SegmentBuild(
@@ -423,15 +588,31 @@ def build_segment_map(
         nt_identity=nt_identity,
         nt_aligned=nt_aligned,
         nt_gaps=nt_gaps,
+        nt_co_optimal=nt_co_optimal,
     )
 
     source_gene_keys = set(source_models)
     target_gene_keys = set(target_models)
-    build.missing_target_genes = tuple(sorted(target_gene_keys - source_gene_keys))
+
+    # A gene whose subunits were recovered from its mature peptide children (HA, when HA1/HA2
+    # came from mature_protein_region_of_CDS rows) has no source counterpart by construction.
+    # Reporting it as "missing in source" would warn, every run, about the very arrangement
+    # this build just handled correctly; name it as a subunit parent instead.
+    build.subunit_parent_genes = tuple(sorted({
+        model.subunit_parent
+        for model in target_models.values()
+        if model.is_mature and model.subunit_parent
+    }))
+    build.missing_target_genes = tuple(
+        sorted(target_gene_keys - source_gene_keys - set(build.subunit_parent_genes))
+    )
     build.extra_source_genes = tuple(sorted(source_gene_keys - target_gene_keys))
     build.stale_annotation = detect_stale_ha_annotation(
         segment, source_gene_keys, target_gene_keys
     )
+    build.gene_aliases = {
+        gene: model.aliases for gene, model in target_models.items() if model.aliases
+    }
 
     for gene, model in source_models.items():
         build.all_source_gene_lengths[gene] = len(translate_model(source_seq, model))
@@ -449,7 +630,9 @@ def build_segment_map(
             gaps,
             gene_target_aligned,
             gene_source_aligned,
+            gene_co_optimal,
         ) = align_position_map(target_seq=target_protein, query_seq=source_protein, kind="aa")
+        build.aa_co_optimal[gene] = gene_co_optimal
         build.aa_maps[gene] = gene_map
         build.aa_status[gene] = gene_status
         build.aa_identity[gene] = ident
@@ -480,13 +663,33 @@ def make_aligner(kind: str) -> PairwiseAligner:
     return aligner
 
 
+def count_co_optimal(alignments: Any) -> int:
+    """How many co-optimal alignments the aligner found, capped and never fatal.
+
+    The count is a dynamic-programming product and can be astronomically large for divergent
+    sequences, so it is capped rather than reported exactly; all the reader needs to know is
+    whether the one alignment that was used was the only choice.
+    """
+    try:
+        count = len(alignments)
+    except (OverflowError, ValueError, MemoryError, TypeError):
+        return CO_OPTIMAL_REPORTING_CAP
+    return min(int(count), CO_OPTIMAL_REPORTING_CAP)
+
+
 def align_position_map(
     target_seq: str,
     query_seq: str,
     kind: str,
-) -> tuple[dict[int, int | None], dict[int, str], int, int, int, str, str]:
+) -> tuple[dict[int, int | None], dict[int, str], int, int, int, str, str, int]:
     aligner = make_aligner(kind)
-    alignment = next(iter(aligner.align(target_seq, query_seq)))
+    alignments = aligner.align(target_seq, query_seq)
+    # PairwiseAligner can return many equally optimal alignments; this takes the first. With
+    # equal-length gapless proteins there is exactly one, but wherever an indel forces a gap
+    # the placement among co-optimal solutions is arbitrary and the position map inherits
+    # that arbitrariness -- so record how many there were, and surface it in the QC table.
+    co_optimal = count_co_optimal(alignments)
+    alignment = next(iter(alignments))
     target_aligned = str(alignment[0, :])
     query_aligned = str(alignment[1, :])
 
@@ -519,7 +722,8 @@ def align_position_map(
         elif target_has_base:
             gaps += 1
 
-    return query_to_target, status, identities, aligned, gaps, target_aligned, query_aligned
+    return (query_to_target, status, identities, aligned, gaps, target_aligned,
+            query_aligned, co_optimal)
 
 
 def translate_model(sequence: str, model: CdsModel) -> str:
@@ -540,73 +744,42 @@ def safe_pct(numerator: int, denominator: int) -> float:
     return numerator / denominator * 100.0
 
 
+def format_pct(value: float) -> str:
+    """A percentage for the QC TSV; empty rather than the literal 'nan'.
+
+    A NaN means nothing aligned at all. Writing it as text made the column awkward to parse
+    downstream and inconsistent with the missing_in_source / extra_in_source rows, which
+    already leave it blank; `status` is what carries the verdict either way.
+    """
+    return "" if math.isnan(value) else f"{value:.4f}"
+
+
+def below_threshold(identity_pct: float, coverage_pct: float) -> bool:
+    """Whether a map is poor enough to warn about.
+
+    NaN must be treated as failing. `safe_pct` returns NaN when nothing aligned -- the worst
+    possible outcome -- and every `nan < threshold` comparison is False, so a plain
+    comparison stays silent on exactly the case that most needs reporting.
+    """
+    return (
+        math.isnan(identity_pct)
+        or math.isnan(coverage_pct)
+        or identity_pct < IDENTITY_WARNING_THRESHOLD_PCT
+        or coverage_pct < COVERAGE_WARNING_THRESHOLD_PCT
+    )
+
+
 def compute_status(identity_pct: float, coverage_pct: float) -> str:
-    if math.isnan(identity_pct) or math.isnan(coverage_pct):
-        return "warning"
-    if identity_pct < IDENTITY_WARNING_THRESHOLD_PCT or coverage_pct < COVERAGE_WARNING_THRESHOLD_PCT:
-        return "warning"
-    return "ok"
-
-
-def index_transcripts(transcripts: list) -> dict[str, dict]:
-    """Map gene identifiers -> transcript, preferring main (non-mature) CDS transcripts.
-
-    Creates the coordinate-map gene keys consumed by merge_flumut_mutations, preferring
-    main CDS transcripts over mature-peptide regions.
-    """
-    by_key: dict[str, dict] = {}
-    for tx in transcripts:
-        for key in (tx.get("gene_name"), tx.get("feature_id"), tx.get("protein_id")):
-            if not key:
-                continue
-            existing = by_key.get(key)
-            if existing is None or (existing.get("is_mature") and not tx.get("is_mature")):
-                by_key[key] = tx
-    return by_key
-
-
-def read_target_placements(target_ref_dir: Path) -> dict[str, dict[str, dict]]:
-    """Per-segment {gene_key -> transcript} from the target GFFs, via the converter's
-    load_gff3, so serialized placement matches the merge step's own computation."""
-    placements: dict[str, dict[str, dict]] = {}
-    for segment in SEGMENTS:
-        gff = target_ref_dir / segment.lower() / "genome_annotation.gff3"
-        if not gff.exists():
-            gff = target_ref_dir / f"{segment.lower()}.gff3"
-        if gff.exists():
-            _, transcripts = load_gff3(str(gff))
-            placements[segment] = index_transcripts(transcripts)
-    return placements
-
-
-def target_cds_block(target_chrom: str, tx: dict) -> dict[str, Any]:
-    """Serialize a target transcript's placement + identifiers for the coordinate map.
-
-    Carries exactly the fields the merge step needs to derive a genomic POS and build the
-    ANN entry without re-parsing the GFF: 0-based half-open CDS segments (as load_gff3
-    yields), strand, lengths, and the GFF-derived gene_id/feature_id/protein_id.
-    """
-    return {
-        "chrom": target_chrom,
-        "strand": tx["strand"],
-        "segments": [list(seg) for seg in tx["segments"]],
-        "cds_length": tx["cds_length"],
-        "aa_length": tx["aa_length"],
-        "gene_id": tx["gene_id"],
-        "feature_id": tx["feature_id"],
-        "protein_id": tx["protein_id"],
-    }
+    return "warning" if below_threshold(identity_pct, coverage_pct) else "ok"
 
 
 def make_map_doc(
     source_name: str,
     target_name: str,
     builds: dict[str, SegmentBuild],
-    target_placements: dict[str, dict[str, dict]],
 ) -> dict[str, Any]:
     segments: dict[str, Any] = {}
     for segment, build in builds.items():
-        placements = target_placements.get(segment, {})
         genes: dict[str, Any] = {}
         for gene in sorted(build.aa_maps):
             gene_doc: dict[str, Any] = {
@@ -615,14 +788,18 @@ def make_map_doc(
                 "aa_identity_pct": safe_pct(build.aa_identity[gene], build.aa_aligned[gene]),
                 "aa_aligned_positions": build.aa_aligned[gene],
                 "aa_gap_columns": build.aa_gaps[gene],
+                "aa_co_optimal_alignments": build.aa_co_optimal.get(gene, 1),
                 "aa_source_to_target": {
                     str(pos): value
                     for pos, value in sorted(build.aa_maps[gene].items())
                 },
             }
-            tx = placements.get(gene)
-            if tx is not None:
-                gene_doc["target_cds"] = target_cds_block(build.target_chrom, tx)
+            # Alternative names a VCF's ANN Feature_ID may use for this gene (a mature
+            # peptide's protein_id/GFF3 ID). The merge needs them because such an entry's
+            # ANN Gene_Name is the parent gene, not the subunit.
+            aliases = build.gene_aliases.get(gene)
+            if aliases:
+                gene_doc["aliases"] = list(aliases)
             genes[gene] = gene_doc
 
         segments[segment] = {
@@ -633,12 +810,17 @@ def make_map_doc(
             "nt_identity_pct": safe_pct(build.nt_identity, build.nt_aligned),
             "nt_aligned_positions": build.nt_aligned,
             "nt_gap_columns": build.nt_gaps,
+            "nt_co_optimal_alignments": build.nt_co_optimal,
             "nt_source_to_target": {
                 str(pos): value for pos, value in sorted(build.nt_map.items())
             },
             "missing_target_genes": list(build.missing_target_genes),
             "extra_source_genes": list(build.extra_source_genes),
             "stale_annotation": build.stale_annotation,
+            # Target genes deliberately left unmapped because their subunits carry the map
+            # instead. The merge treats an ANN Gene_Name in this list as known, so it does
+            # not report the parent as an unmapped gene on every subunit row.
+            "subunit_parent_genes": list(build.subunit_parent_genes),
             "genes": genes,
         }
 
@@ -759,6 +941,7 @@ def write_qc_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
         "aligned_positions",
         "gap_columns",
         "identity_pct",
+        "co_optimal_alignments",
         "status",
     )
     with path.open("w", newline="") as handle:
@@ -778,7 +961,8 @@ def write_qc_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
                     "target_length": len(build.target_seq),
                     "aligned_positions": build.nt_aligned,
                     "gap_columns": build.nt_gaps,
-                    "identity_pct": f"{nt_identity_pct:.4f}",
+                    "identity_pct": format_pct(nt_identity_pct),
+                    "co_optimal_alignments": build.nt_co_optimal,
                     "status": compute_status(nt_identity_pct, nt_coverage_pct),
                 }
             )
@@ -795,7 +979,8 @@ def write_qc_tsv(path: Path, source_name: str, builds: dict[str, SegmentBuild]) 
                         "target_length": len(build.aa_target[gene]),
                         "aligned_positions": build.aa_aligned[gene],
                         "gap_columns": build.aa_gaps[gene],
-                        "identity_pct": f"{aa_identity_pct:.4f}",
+                        "identity_pct": format_pct(aa_identity_pct),
+                        "co_optimal_alignments": build.aa_co_optimal.get(gene, ""),
                         "status": compute_status(aa_identity_pct, aa_coverage_pct),
                     }
                 )
@@ -866,14 +1051,32 @@ def write_aa_alignment_fasta(path: Path, builds: dict[str, SegmentBuild]) -> Non
                 )
 
 
-def warn_low_quality_maps(builds: dict[str, SegmentBuild]) -> None:
+def pct_text(value: float) -> str:
+    return "n/a (nothing aligned)" if math.isnan(value) else f"{value:.2f}%"
+
+
+def co_optimal_text(count: int) -> str:
+    return f">={CO_OPTIMAL_REPORTING_CAP}" if count >= CO_OPTIMAL_REPORTING_CAP else str(count)
+
+
+def warn_low_quality_maps(builds: dict[str, SegmentBuild]) -> list[str]:
+    """Print QC warnings to stderr; return the identity/coverage failures among them."""
+    failures: list[str] = []
     for segment, build in builds.items():
         nt_identity = safe_pct(build.nt_identity, build.nt_aligned)
         nt_coverage = safe_pct(build.nt_aligned, len(build.source_seq))
-        if nt_identity < IDENTITY_WARNING_THRESHOLD_PCT or nt_coverage < COVERAGE_WARNING_THRESHOLD_PCT:
+        if below_threshold(nt_identity, nt_coverage):
+            failures.append(f"{segment} (nt)")
             print(
-                f"WARNING: {segment} nucleotide map has identity={nt_identity:.2f}% "
-                f"and source coverage={nt_coverage:.2f}%",
+                f"WARNING: {segment} nucleotide map has identity={pct_text(nt_identity)} "
+                f"and source coverage={pct_text(nt_coverage)}",
+                file=sys.stderr,
+            )
+        if build.nt_co_optimal > 1:
+            print(
+                f"WARNING: {segment} nucleotide alignment had "
+                f"{co_optimal_text(build.nt_co_optimal)} co-optimal solutions; the gap "
+                f"placement in this map is one arbitrary choice among them",
                 file=sys.stderr,
             )
         if build.stale_annotation:
@@ -892,12 +1095,23 @@ def warn_low_quality_maps(builds: dict[str, SegmentBuild]) -> None:
         for gene in sorted(build.aa_maps):
             aa_identity = safe_pct(build.aa_identity[gene], build.aa_aligned[gene])
             aa_coverage = safe_pct(build.aa_aligned[gene], len(build.aa_source[gene]))
-            if aa_identity < IDENTITY_WARNING_THRESHOLD_PCT or aa_coverage < COVERAGE_WARNING_THRESHOLD_PCT:
+            if below_threshold(aa_identity, aa_coverage):
+                failures.append(f"{segment}/{gene} (aa)")
                 print(
                     f"WARNING: {segment}/{gene} amino-acid map has "
-                    f"identity={aa_identity:.2f}% and source coverage={aa_coverage:.2f}%",
+                    f"identity={pct_text(aa_identity)} and source "
+                    f"coverage={pct_text(aa_coverage)}",
                     file=sys.stderr,
                 )
+            co_optimal = build.aa_co_optimal.get(gene, 1)
+            if co_optimal > 1:
+                print(
+                    f"WARNING: {segment}/{gene} amino-acid alignment had "
+                    f"{co_optimal_text(co_optimal)} co-optimal solutions; the gap placement "
+                    f"in this map is one arbitrary choice among them",
+                    file=sys.stderr,
+                )
+    return failures
 
 
 if __name__ == "__main__":

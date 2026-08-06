@@ -3,9 +3,8 @@
 /*
  *   Nextclade consensus FASTA workflow
  *   ------------------------------------
- *   Processes pre-assembled consensus FASTA files through quality control,
- *   per-segment Nextclade alignment against GooseGuangdong1996 reference
- *   datasets, and conversion of Nextclade JSON output to a freebayes-style VCF.
+ *   Takes pre-assembled consensus FASTAs through QC, per-segment Nextclade alignment
+ *   against the --db bundle's datasets, and conversion of the JSON to a freebayes-style VCF.
  *
  *   Accepted input FASTA header formats:
  *     Underscore-delimited (legacy): >SAMPLE_ID_segmentN_SEGMENT
@@ -13,13 +12,6 @@
  *     Pipe-delimited (GISAID-style): >EPI_ISL_ACCESSION|subtype|SEGMENT|...|clade_SEGMENT
  *       e.g. >EPI_ISL_20399898|A_/_H5N1|NA|6|EPI5261179|2.3.4.4b_NA
  *   Cleaned headers are normalised to {sample_id}_{SEGMENT} by prepare_consensus.
- *
- *   Segment datasets are resolved from --nextclade_datasets_dir by lowercasing
- *   the segment label (e.g. HA -> ha, M -> m).
- *
- *   Batching strategy: sequences are grouped by segment across all samples so
- *   nextclade runs 8 times total (once per segment) rather than 8 × N times.
- *   Per-sample JSON/TSV/VCF outputs are produced by splitting the batch results.
  */
 
 nextflow.enable.dsl = 2
@@ -33,12 +25,55 @@ include { nextclade_to_vcf_batch }               from '../modules/nextclade/next
 include { post_process_vcf_batch }               from '../modules/shared/post_process.nf'
 include { coordinate_conversion }                from '../modules/nextclade/coordinate_conversion.nf'
 include { merge_flumut_mutations }               from '../modules/nextclade/merge_flumut_mutations.nf'
+include { mutation_watch }                       from '../modules/shared/mutation_watch.nf'
+include { pipeline_provenance }                  from '../modules/shared/provenance.nf'
+include { collect_provenance }                   from '../modules/shared/provenance.nf'
+include { resolve_db }                           from '../modules/shared/database.nf'
+include { resolve_flumut_db }                    from '../modules/shared/database.nf'
+include { db_segments }                          from '../modules/shared/database.nf'
 
 workflow NEXTCLADE {
 
+    // The canonical segment set, and the only labels coordinate_conversion shards the map by.
+    def SEGMENTS = db_segments()
+
+    // Only the Nextclade datasets are read here; this branch never BLASTs or runs SnpEff.
+    def db = resolve_db(params.db, ['nextclade'])
+
+    // Resolved up front so a missing or mistyped --flumut_db fails before any sample runs.
+    def flumut_db = params.merge_flumut_mutations ? resolve_flumut_db(params.flumut_db) : null
+
+    // Recorded only when the merge ran, so provenance never implies a conversion that
+    // did not happen.
+    def db_provenance = [
+        database_name:    db.name,
+        database_version: db.version,
+        database_path:    db.root,
+    ]
+    if (flumut_db) {
+        db_provenance += [
+            flumut_database_name:    flumut_db.name,
+            flumut_database_version: flumut_db.version,
+            flumut_database_path:    flumut_db.root,
+        ]
+    }
+
+    ch_workflow_metadata = Channel.value([
+        workflow.sessionId,
+        workflow.runName,
+        workflow.manifest.name,
+        workflow.manifest.version,
+        workflow.start,
+        db_provenance,
+    ])
+
+    ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
+
+    // A name that does not match yields 'unknown_segment' rather than throwing, so the
+    // unknown-segment branch below can report it.
     def extract_segment = { sample_id, fasta ->
-        def segment = fasta =~ /.*_([A-z0-9-]+)\.s.*/
-        segment = segment[0][1] ? segment[0][1] : "unknown_segment"
+        def matcher = fasta.name =~ /.*_([A-Za-z0-9-]+)\.s.*/
+        def segment = matcher ? matcher[0][1] : "unknown_segment"
         return [sample_id, segment, fasta]
     }
 
@@ -55,39 +90,22 @@ workflow NEXTCLADE {
 
     main:
 
-        if (
-            !params.nextclade_datasets_dir ||
-            params.nextclade_datasets_dir == 'NO_FILE' ||
-            !file(params.nextclade_datasets_dir).exists()
-        ) {
-            error "ERROR: --nextclade_datasets_dir must be set to an existing path for the Nextclade workflow."
-        }
-
-        if (
-            params.merge_flumut_mutations &&
-            (
-                !params.flumut_reference_dir ||
-                params.flumut_reference_dir == 'NO_FILE' ||
-                !file(params.flumut_reference_dir).exists()
-            )
-        ) {
-            error "ERROR: --flumut_reference_dir must be set to an existing path (flumut's Nextclade dataset directory, the source coordinate reference) when --merge_flumut_mutations is enabled."
-        }
+        // Provenance channel starts with just the sample IDs; per-process YAMLs are joined
+        // on as they are produced, and concatenated at the end by collect_provenance.
+        ch_provenance = ch_fasta_input.map{ it -> it[0] }
 
         // --- Step 1: Validate and clean input consensus FASTA ---
         prepare_consensus(ch_fasta_input)
 
-        // Split each cleaned consensus into per-segment FASTAs once; reused by
-        // the identity QC and the cross-sample nextclade batching below.
+        // Split once; reused by the identity QC and the nextclade batching below.
         ch_consensus_segments = split_fasta_consensus(prepare_consensus.out.cleaned)
             .transpose()
             .map(extract_segment)                          // [sample_id, segment, fa]
 
         // --- Step 1b: Report-only consensus/reference identity QC ---
-        //   Pair each consensus segment with its Nextclade dataset reference.
         ch_identity_qc = ch_consensus_segments
             .map { sample_id, segment, consensus ->
-                def ref_fasta = file("${params.nextclade_datasets_dir}/${segment.toLowerCase()}/reference.fasta")
+                def ref_fasta = db.nextclade.resolve("${segment.toLowerCase()}/reference.fasta")
                 return [sample_id, segment, consensus, ref_fasta]
             }
         consensus_identity_qc(ch_identity_qc)
@@ -100,7 +118,7 @@ workflow NEXTCLADE {
             .map { sample_id, segment, fa -> [segment, sample_id, fa] }
             .groupTuple()                                  // [segment, [sample_ids], [fastas]]
             .map { segment, sample_ids, fastas ->
-                def dataset_dir = file("${params.nextclade_datasets_dir}/${segment.toLowerCase()}")
+                def dataset_dir = db.nextclade.resolve(segment.toLowerCase())
                 return [segment, sample_ids, fastas, dataset_dir]
             }
 
@@ -113,62 +131,110 @@ workflow NEXTCLADE {
         // --- Step 6: Post-process VCFs (fix MNV codons); one task per segment ---
         post_process_vcf_batch(nextclade_to_vcf_batch.out.vcf)
 
+        // [segment, [vcfs]] -> [sample_id, segment, vcf]. Shared by the watchlist scan below
+        // and, when enabled, by the flumut merge further down.
+        ch_final_vcf = post_process_vcf_batch.out.vcf
+            .transpose()
+            .map { segment, vcf ->
+                def sample_id = vcf.name.split('__')[0]
+                [sample_id, segment, vcf]
+            }
+
+        // Per-sample provenance. post_process_vcf_batch is keyed by segment rather than by
+        // sample, so it has no per-sample record to join here.
+        ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it -> [it[0], [it[1]]] }
+        ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+
+        // --- Step 6b: Scan the final VCF for a custom watchlist (optional) ---
+        //   Independent of --merge_flumut_mutations: FLUMUT= is a curated annotation written
+        //   into the VCF, this is a custom list scanned out of it into a separate TSV.
+        if (params.watchlist_dir != 'NO_FILE') {
+            // checkIfExists so a mistyped --watchlist_dir fails loudly rather than
+            // silently never scanning.
+            ch_watchlists = Channel.fromPath(
+                params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
+            )
+            mutation_watch(ch_final_vcf.combine(ch_watchlists))
+
+            // One task per (sample, segment, watchlist), so group back to one entry per
+            // sample. remainder: true for the same reason as the merge join below.
+            ch_provenance = ch_provenance
+                .join(mutation_watch.out.provenance.groupTuple(), remainder: true)
+                .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }
+        }
+
         // --- Steps 7-8: Coordinate conversion + flumut mutation merging (optional) ---
-        //   Gated behind --merge_flumut_mutations (default false). When enabled,
-        //   --flumut_reference_dir is validated above and these two steps run;
-        //   otherwise the workflow stops at the *_final.vcf produced above.
+        //   Gated behind --merge_flumut_mutations (default false); otherwise the workflow
+        //   stops at the *_final.vcf produced above.
         if (params.merge_flumut_mutations) {
 
             // --- Step 7: Build the flumut-to-Nextclade coordinate map ---
-            //   Runs once per pipeline invocation (independent of samples). Translates
-            //   nucleotide/amino-acid indices from flumut's fixed reference (source)
-            //   onto the selected Nextclade dataset (target) coordinate system, so a
-            //   downstream step can remap flumut mutations into Nextclade coordinates.
-            //   Idempotent, including the trivial identity case where the selected
-            //   Nextclade dataset is derived from flumut's reference.
-            //   Note: source = flumut (lift FROM), target = nextclade (lift ONTO).
+            //   source = flumut (lift FROM), target = nextclade (lift ONTO). The reference
+            //   labels come from each bundle's db.yml and are written into the published
+            //   map, so they identify the reference rather than where the bundle sits.
             ch_source_reference = Channel.value(
-                [
-                    file(params.flumut_reference_dir).parent.name,
-                    file(params.flumut_reference_dir),
-                ]
+                [flumut_db.nextclade_ref_name, flumut_db.nextclade]
             )
             ch_target_reference = Channel.value(
-                [
-                    file(params.nextclade_datasets_dir).parent.name,
-                    file(params.nextclade_datasets_dir),
-                ]
+                [db.nextclade_ref_name, db.nextclade]
             )
             coordinate_conversion(ch_source_reference.combine(ch_target_reference))
 
-            // --- Step 8: Merge flumut AA markers into each per-sample/per-segment VCF ---
-            //   New, additive step: leaves the *_final.vcf produced above untouched and writes a
-            //   separate *_flumut_merged.vcf. Labels every AA change DETECTED_BY=fluscan|flumut|both
-            //   and appends flumut-only markers, remapped into Nextclade coordinates via the
-            //   coordinate_conversion map. Run per (sample, segment) so staging stays simple.
-            //   Each task consumes only its segment's slim coordinate-map shard (target CDS
-            //   placement is carried in the shard, so no GFF/dataset dir is needed here).
-            ch_vcf_flat = post_process_vcf_batch.out.vcf       // [segment, [vcfs]]
-                .transpose()                                   // [segment, vcf]
-                .map { segment, vcf ->
-                    def sample_id = vcf.name.split('__')[0]
-                    [sample_id, segment, vcf]
-                }
+            // --- Step 8: Annotate each per-sample/per-segment VCF with FluMutDB markers ---
+            //   Additive: writes a separate *_flumut_merged.vcf and leaves *_final.vcf
+            //   untouched. Run per (sample, segment) so each task stages only its own shard.
+            ch_vcf_flat = ch_final_vcf                         // [sample_id, segment, vcf]
+
+            // The combine below matches on the segment label and ch_shards only carries the
+            // eight canonical ones. Split first so a VCF labelled anything else is reported
+            // rather than vanishing with no merged counterpart and no explanation.
+            ch_vcf_by_segment = ch_vcf_flat.branch { sample_id, segment, vcf ->
+                known:   SEGMENTS.contains(segment)
+                unknown: true
+            }
+
+            ch_vcf_by_segment.unknown.subscribe { sample_id, segment, vcf ->
+                log.warn "merge_flumut_mutations: ${sample_id} has no coordinate map for segment " +
+                         "'${segment}' (not one of ${SEGMENTS.join(', ')}); ${vcf.name} is left " +
+                         "unannotated and produces no *_flumut_merged.vcf"
+            }
 
             // Key each per-segment shard by its segment label parsed from the filename.
             ch_shards = coordinate_conversion.out.json_shards
                 .flatten()
-                .map { f -> [ (f.name =~ /coordinate_map\.([^.]+)\.json/)[0][1], f ] }  // [SEG, shard]
+                .map { f ->                                    // [SEG, shard]
+                    def matcher = f.name =~ /coordinate_map\.([^.]+)\.json/
+                    if (!matcher) {
+                        error "coordinate_conversion emitted '${f.name}', which does not follow " +
+                              "coordinate_map.<SEGMENT>.json; cannot key it by segment"
+                    }
+                    [matcher[0][1], f]
+                }
 
-            ch_merge_in = ch_vcf_flat
+            ch_merge_in = ch_vcf_by_segment.known
                 .map { sample_id, segment, vcf -> [segment, sample_id, vcf] }
                 .combine(ch_shards, by: 0)                     // + coord shard (by segment)
                 .map { segment, sample_id, vcf, shard -> [sample_id, segment, vcf, shard] }
-                .combine(flumut.out.mutations, by: 0)          // + flumut TSV (by sample)
-                .combine(prepare_consensus.out.cleaned, by: 0) // + consensus FASTA (by sample)
-                // -> [sample_id, segment, vcf, coord_shard, mutations, consensus]
+                // -> [sample_id, segment, vcf, coord_shard]
 
             merge_flumut_mutations(ch_merge_in)
+
+            // One merge task per (sample, segment), so group back to one entry per sample
+            // before joining; it[2] is a list of YAMLs here, hence '+' rather than '<<'.
+            // remainder: true keeps a sample whose segments all failed to merge, which an
+            // inner join would drop along with every record it had already accumulated.
+            ch_provenance = ch_provenance
+                .join(merge_flumut_mutations.out.provenance.groupTuple(), remainder: true)
+                .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }
+
+            // coordinate_conversion runs once per pipeline invocation, not per sample, so
+            // its single provenance file is combined onto every sample rather than joined.
+            ch_provenance = ch_provenance
+                .combine(coordinate_conversion.out.provenance)
+                .map{ it -> [it[0], it[1] << it[2]] }
         }
+
+        collect_provenance(ch_provenance)
 
 }

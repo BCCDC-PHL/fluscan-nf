@@ -16,7 +16,7 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - Nucleotide variant calling using [LoFreq](https://csb5.github.io/lofreq/)
 - Annotation of amino acid variant calls using SnpEff
 - MNV codon correction
-- Detection of mutations of interest via watchlist scanning
+- Detection of mutations of interest via customisable watchlist scanning of the final VCF
 - Consensus sequence generation
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
 
@@ -39,7 +39,7 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - Conversion to freebayes-style VCF
 - MNV codon correction
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
-- *Optional* (`--merge_flumut_mutations`, default off): reference coordinate conversion — builds a run-level, idempotent nucleotide/amino-acid coordinate map lifting flumut's fixed reference onto the selected Nextclade reference dataset coordinate system (`bin/build_reference_coordinate_map.py`) — followed by merging flumut mutations into the VCF, so flumut markers are remapped into Nextclade coordinates and inserted alongside the fluscan calls
+- *Optional* (`--merge_flumut_mutations`, default off): reference coordinate conversion — builds a run-level, idempotent nucleotide/amino-acid coordinate map lifting flumut's fixed reference onto the selected Nextclade reference dataset coordinate system (`bin/build_reference_coordinate_map.py`) — followed by FluMutDB annotation of the VCF, which tags each fluscan amino-acid call that matches a curated FluMutDB marker with a `FLUMUT=` INFO field carrying the mutation name and its published effects, split into those directly attributable to that mutation and those associated with it through a multi-mutation marker, each qualified by the subtype it was observed in. No rows are added or removed, so a marker is only reported where fluscan called a difference from the Nextclade reference. Because FluMutDB numbers HA by its HA1/HA2 subunits, HA markers are only annotated when the Nextclade dataset also exposes that split — either as two dedicated `HA1`/`HA2` CDS features, or as `mature_protein_region_of_CDS` children of a single HA CDS (the NCBI/RefSeq model, which the GsGD dataset uses). A dataset offering only a bare `HA` CDS is flagged `stale_annotation` and passes through with its HA rows unannotated
 
 ```mermaid
 flowchart TD
@@ -95,6 +95,8 @@ flowchart TD
         nc_final[Final NEXTCLADE VCFs]
         coord_map[coordinate_conversion: build_reference_coordinate_map.py]
         coord_final[aggregate/reference_remap]
+        flumut_merge[merge_flumut_mutations: merge_flumut_mutations.py]
+        flumut_merged[FluMutDB-annotated VCFs]
 
         nextclade_prepare --> nextclade_flumut
         nextclade_prepare --> split_consensus
@@ -104,8 +106,11 @@ flowchart TD
         split_results --> nc2vcf
         nc2vcf --> fixmnv_nc
         fixmnv_nc --> nc_final
-        dispatch -.->|"flumut_reference_dir + nextclade_datasets_dir, sample-independent (if merge_flumut_mutations)"| coord_map
+        dispatch -.->|"flumut_db + db nextclade datasets, sample-independent (if merge_flumut_mutations)"| coord_map
         coord_map --> coord_final
+        coord_map -.->|"per-segment shard (if merge_flumut_mutations)"| flumut_merge
+        nc_final -.-> flumut_merge
+        flumut_merge --> flumut_merged
     end
 ```
 
@@ -120,6 +125,28 @@ flowchart TD
 
 Cleaned output headers (`{sample_id}.fasta`) are normalised to `{sample_id}_{SEGMENT}` (e.g. `EPI-ISL-20399898_NA`).
 
+## Reference databases
+
+Every reference the pipeline needs for one reference set lives in a single directory — a
+*bundle* — passed as `--db`:
+
+```
+<db>/
+├── db.yml            optional metadata (name, version, …)
+├── blastn_db.fa      nt reference; headers accession|subtype|segment
+├── nextclade/        one lowercase directory per segment (ha/, na/, …)
+└── snpeff/           snpEff.config + <genome>/
+```
+
+Bundles may be partial — each workflow validates only the components it consumes, and
+fails at the start of the run, before any task is submitted, naming the path it expected.
+See [docs/database_bundles.md](docs/database_bundles.md) for the full layout, the
+`db.yml` schema, and how to build and validate a bundle.
+
+```bash
+scripts/validate_db.py /path/to/refs/gsgd
+```
+
 ## Usage
 
 **Example command (short-read):**
@@ -129,14 +156,16 @@ nextflow run BCCDC-PHL/fluscan-nf \
   -profile conda \
   --cache ~/.conda/envs \
   --fastq_input /path/to/your_fastqs \
+  --db /path/to/refs/gsgd \
   --outdir /path/to/output_dir
 ```
 
 Optional short-read parameters:
 - `--samplesheet_input` — CSV samplesheet (`ID,R1,R2`) consumed by the short-read workflow; note that `main.nf` currently still switches into short-read mode based on `--fastq_input`
-- `--watchlist_dir` — directory containing `*watchlist.csv` files for mutation-of-interest scanning
-- `--snpeff_config` — path to a custom SnpEff config (defaults to the built-in database)
 - `--aligner` — `bwa` (default) or `minimap2`
+
+Optional in every workflow:
+- `--watchlist_dir` — directory of `*watchlist.csv` files (`gene,mutation[,note]`) scanned out of the final VCF into a published TSV. Defaults to `assets/watchlists/`; set to `NO_FILE` to disable. `HA1`/`HA2` entries are matched against the reference annotation's mature-peptide coordinates, so they work whether or not the VCF annotates the subunits directly. See [docs/watchlists.md](docs/watchlists.md)
 
 **FASTA-mode example (runs both PAFTOOLS and NEXTCLADE):**
 ```
@@ -145,15 +174,17 @@ nextflow run BCCDC-PHL/fluscan-nf \
   -profile conda \
   --cache ~/.conda/envs \
   --fasta_input /path/to/consensus_fastas \
-  --snpeff_config /path/to/snpeff.config \
+  --db /path/to/refs/gsgd \
+  --flumut_db /path/to/refs/flumut \
+  --merge_flumut_mutations \
   --outdir /path/to/output_dir
 ```
 
-> **Note:** FASTA mode requires `params.snpeff_config` to resolve to an existing SnpEff config because the PAFTOOLS branch requires it. By default this comes from the built-in database configured in `nextflow.config`; use `--snpeff_config` to override it. In the short-read workflow, `--snpeff_config` is optional and also defaults to the built-in config.
+> **Note:** FASTA mode launches both branches, so the bundle must carry all three components: PAFTOOLS requires `blastn_db.fa` and `snpeff/`, NEXTCLADE requires `nextclade/` with all eight segment datasets.
 >
-> The NEXTCLADE branch additionally requires `--nextclade_datasets_dir` (the selected Nextclade reference dataset, containing one subdirectory per segment — the canonical *target* coordinate system), which must point to an existing directory or the pipeline will error out before running.
+> In the short-read workflow only `blastn_db.fa` is required. SnpEff annotation — and the MNV correction and watchlist scan that read its output — runs when the bundle carries a `snpeff/` directory, and is skipped when it does not; consensus and FluMut complete either way.
 >
-> `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and merging flumut mutations into the VCF (`*_flumut_merged.vcf`). When set to `true`, `--flumut_reference_dir` (flumut's Nextclade dataset directory — the fixed *source* reference lifted onto the target by the `coordinate_conversion` step) becomes mandatory and must point to an existing directory, or the pipeline will error out before running.
+> `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and FluMutDB annotation of the VCF (`*_flumut_merged.vcf`). When set to `true`, `--flumut_db` becomes mandatory: FluMut's own bundle, whose `nextclade/` datasets are the fixed *source* reference lifted onto the `--db` datasets by the `coordinate_conversion` step. Point it at the bundle root, not at its `nextclade/` subdirectory. The marker set comes from the `flumutdb` conda package, so the annotation step does not consume the per-sample `flumut` output.
 
 **Package management:**
 - Conda is used for dependency management. The `-profile conda` flag and `--cache` parameter are required on BCCDC systems.
@@ -181,6 +212,7 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `*_depth.tsv` | Per-position alignment depth (samtools depth) |
 | `*_low_coverage.bed` | Low-coverage regions masked during consensus generation |
 | `short_read/*_final.vcf` | Per-segment final VCF after SnpEff annotation and MNV codon correction |
+| `short_read/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
@@ -198,6 +230,7 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `*_blastn_filter.tsv` | Filtered BLAST search results |
 | `qc/*_coverage_qc.tsv` | Per-segment PAFTOOLS consensus coverage QC with coverage percentage and PASS/WARN/FAIL status |
 | `paftools/*_final.vcf` | Per-segment final VCF after `paftools.js`, SnpEff, freebayes-style conversion, and MNV codon correction |
+| `paftools/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
@@ -210,6 +243,8 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `nextclade/json/*_nextclade.json` | Per-segment Nextclade JSON split out from the cross-sample batch result |
 | `nextclade/tsv/*_nextclade.tsv` | Per-segment Nextclade TSV split out from the cross-sample batch result |
 | `nextclade/*_final.vcf` | Per-segment final VCF after Nextclade-to-VCF conversion and MNV codon correction |
+| `nextclade/*_flumut_merged.vcf` | *Optional* (`--merge_flumut_mutations`): the same VCF with a `FLUMUT=` INFO field (`Protein\|AA_Pos\|Alt_AA\|Mutation_Name\|DirectEffect\|AssociatedEffect`) on rows whose amino-acid change matches a curated FluMutDB marker |
+| `nextclade/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF. Independent of `--merge_flumut_mutations`: `FLUMUT=` is a curated annotation written *into* the VCF, this is a custom list scanned *out* of it |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
@@ -224,8 +259,8 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `aggregate/reference_remap/coordinate_map.json` | Primary machine-readable nucleotide/amino-acid coordinate map lifting flumut's reference (source) onto the selected Nextclade reference dataset (target) (NEXTCLADE workflow only) |
 | `aggregate/reference_remap/coordinate_map.nt.tsv` | Flat per-position nucleotide coordinate map (source/flumut position/base -> target/nextclade position/base, per segment) |
 | `aggregate/reference_remap/coordinate_map.aa.tsv` | Flat per-residue amino-acid coordinate map (source/flumut position/residue -> target/nextclade position/residue, per segment/gene) |
-| `aggregate/reference_remap/coordinate_map.qc.tsv` | Per-segment/per-gene alignment QC: identity, coverage, and status (`ok`/`warning`/`missing_in_source`/`extra_in_source`/`stale_annotation`) |
-| `aggregate/reference_remap/<source>_alignment.fasta` | Target/source (nextclade/flumut) nucleotide alignment blocks, one per segment |
+| `aggregate/reference_remap/coordinate_map.qc.tsv` | Per-segment/per-gene alignment QC: identity, coverage, the number of co-optimal alignments the map's gap placement was chosen from, and status (`ok`/`warning`/`missing_in_source`/`extra_in_source`/`stale_annotation`) |
+| `aggregate/reference_remap/<source>_alignment.fasta` (`<source>` is the `--source-name` the workflow passes, i.e. the flumut reference directory's parent name) | Target/source (nextclade/flumut) nucleotide alignment blocks, one per segment |
 | `aggregate/reference_remap/<source>_aa_alignment.fasta` | Target/source (nextclade/flumut) amino-acid alignment blocks, one per gene |
 | `${run_name}_fluscan-nf_nextflow_report.html` | Nextflow execution report |
 | `${run_name}_fluscan-nf_nextflow_timeline.html` | Nextflow execution timeline |

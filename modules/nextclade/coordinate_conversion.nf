@@ -1,14 +1,9 @@
 // nextclade/coordinate_conversion.nf - Build a source->target reference coordinate map.
 //
-// Runs once per pipeline invocation (not per-sample). Translates nucleotide and
-// amino-acid indices from flumut's fixed reference (the source) onto the selected
-// Nextclade reference dataset (the target) coordinate system, so a downstream step
-// can remap flumut mutations into Nextclade coordinates. Idempotent: given the same
-// two reference directories it always produces the same map, including the trivial
-// identity case where the Nextclade dataset is derived from flumut's reference.
-//
-// This step is independent of, and does not modify, nextclade_to_freebayes_vcf.py
-// or any of its consuming processes (nextclade_to_vcf*, post_process_vcf*).
+// Runs once per pipeline invocation, not per sample. Translates nucleotide and amino-acid
+// indices from flumut's fixed reference (source) onto the selected Nextclade dataset
+// (target), so merge_flumut_mutations can place FluMutDB positions in Nextclade
+// coordinates. Idempotent: the same two reference directories always give the same map.
 
 process coordinate_conversion {
 
@@ -36,7 +31,7 @@ process coordinate_conversion {
     printf -- "  tools:\\n"                                                                          >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "    - tool_name: python\\n      tool_version: \$(python3 --version 2>&1 | cut -d' ' -f2)\\n" >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "    - tool_name: biopython\\n      tool_version: \$(python3 -c 'import Bio; print(Bio.__version__)')\\n" >> reference_remap/coordinate_conversion_provenance.yml
-    printf -- "    - tool_name: build_reference_coordinate_map.py\\n      tool_version: 2.1.0\\n"     >> reference_remap/coordinate_conversion_provenance.yml
+    printf -- "    - tool_name: build_reference_coordinate_map.py\\n      tool_version: \$(build_reference_coordinate_map.py --version | awk '{print \$NF}')\\n" >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "  parameters:\\n"                                                                     >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "    - parameter: source_reference\\n      value: ${source_name}\\n"                   >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "    - parameter: target_reference\\n      value: ${target_name}\\n"                   >> reference_remap/coordinate_conversion_provenance.yml

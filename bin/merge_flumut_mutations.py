@@ -1,27 +1,23 @@
 #!/usr/bin/env python3
-"""Merge flumut amino-acid marker mutations into a Nextclade freebayes-style VCF.
+"""Annotate an existing fluscan/Nextclade VCF with FluMutDB marker matches.
 
-Reads an existing per-sample/per-segment VCF (produced upstream by
-nextclade_to_freebayes_vcf.py -> fix_mnv_codons.py), the flumut->Nextclade coordinate
-map JSON (build_reference_coordinate_map.py), and flumut's per-sample melted mutations
-TSV. It labels every existing AA change with which tool(s) found it and appends new rows
-for flumut markers that Nextclade/fluscan did not call.
+Walks the VCF and, for every amino-acid change already annotated in a row's ANN= field,
+queries FluMutDB for a curated marker matching that (protein, AA position, alt AA).
+Matching rows gain one extra INFO field, one comma-separated entry per matching ANN
+annotation; ANN= itself is untouched. Rows are never added, removed or reordered.
 
-Each variant row gets an INFO field:
-    DETECTED_BY=fluscan   variant/AA change called by the Nextclade (fluscan) branch only
-    DETECTED_BY=flumut     AA marker called by flumut only (a newly inserted row)
-    DETECTED_BY=both       the same exact AA substitution called by both tools
+    FLUMUT=<Protein>|<AA_Pos>|<Alt_AA>|<Mutation_Name>|<DirectEffect>|<AssociatedEffect>
 
-flumut only reports amino-acid substitutions, so newly inserted flumut-only rows carry
-filler nucleotide alleles (REF=N, ALT=N); their POS is derived from the coordinate map
-(flumut AA -> Nextclade AA) and the target GFF (Nextclade AA -> nucleotide codon start).
-The amino-acid change itself is carried in the ANN= annotation, matching the snpEff-style
-format used by the existing converter.
+DirectEffect carries effects of markers this mutation alone defines; AssociatedEffect
+carries them for markers needing further mutations, which are NOT asserted to be present.
+Both hold 'Subtype:Effect' pairs, '.' when empty.
 
-This script does not modify any existing file; it writes a new VCF.
+FluMutDB positions are in flumut's reference coordinates and are translated onto the
+Nextclade dataset through the coordinate_conversion map. FluMutDB numbers HA by its
+HA1/HA2 subunits, so HA markers match only where the dataset exposes that split.
 
 Pipeline position: after post_process_vcf_batch (nextclade workflow), consuming
-coordinate_conversion + flumut outputs.
+coordinate_conversion output. See docs/vcf_annotation_and_flumut_insertion.md.
 """
 
 import argparse
@@ -29,36 +25,47 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
+from functools import lru_cache
 
-import pandas as pd
-
-# Reuse helpers from the existing (untouched) converter and the shared VCF I/O in tools.py.
-# Both live in bin/, so adding this script's directory to sys.path makes them importable.
+# realpath so `from lib...` still resolves when bin/ is reached through a symlink.
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from nextclade_to_freebayes_vcf import (  # noqa: E402
-    _build_ann_entry,
-    _cds_to_genomic,
-    _format_hgvs_p_sub,
-    variant_row,
+from lib.aa_markers import (  # noqa: E402
+    AA3_TO_AA1,
+    HGVS_P_NON_SUB_RE,
+    HGVS_P_RE,
+    HGVS_P_RE_3LETTER,
+    aa_changes_from_info,
+    ann_entries,
+    has_info_flag,
+    parse_hgvs_p,
 )
-from tools import read_vcf, write_vcf  # noqa: E402
+from lib.flu_gene_names import canonical_gene  # noqa: E402
+from lib.tools import read_vcf, write_vcf  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
-QUAL = 60
+SCRIPT_VERSION = "2.3.0"
 
-DETECTED_BY_HEADER = (
-    '##INFO=<ID=DETECTED_BY,Number=1,Type=String,'
-    'Description="Tool(s) detecting this AA change: flumut, fluscan, or both">'
+FLUMUT_HEADER = (
+    '##INFO=<ID=FLUMUT,Number=.,Type=String,'
+    'Description="FluMutDB marker matches: '
+    "'Protein | AA_Pos | Alt_AA | Mutation_Name | DirectEffect | AssociatedEffect'. "
+    "DirectEffect lists Subtype:Effect pairs from markers this mutation alone defines; "
+    "AssociatedEffect lists them for markers needing further mutations, which are not "
+    "asserted to be present. '.' means the class is empty. "
+    "'&' separates multiple values within a field; ',' separates one entry per "
+    'matching ANN annotation. AA_Pos is in this VCF\'s coordinates.">'
 )
 
-# flumut protein names carry a trailing "-<digits>" that is either a FluMutDB reference
-# version (HA1-5 -> HA1) or, for NS, a protein number (NS-1 -> NS1, NS-2 -> NEP). Rather
-# than guess, gene resolution generates candidate names and keeps whichever exists as a
-# gene key in the coordinate map for the segment being processed. This alias table covers
-# names that differ between flumut and the Nextclade annotation.
+# FluMutDB names the M segment reference 'MP'; every other segment label matches verbatim.
+SEGMENT_TO_DB_REFERENCE = {"M": "MP"}
+
+# FluMutDB protein names differ from some Nextclade annotations (NS-1/NS-2 vs NS1/NEP).
+# Gene resolution generates candidates and keeps whichever exists as a gene key in the
+# coordinate map for the segment being processed.
 GENE_ALIASES = {
     "NS2": ["NEP"],
     "NEP": ["NS2"],
@@ -66,8 +73,33 @@ GENE_ALIASES = {
     "MP": ["M"],
 }
 
-HGVS_P_RE = re.compile(r"p\.([A-Za-z*])(\d+)([A-Za-z*])")
-MUTATION_RE = re.compile(r"^([A-Za-z*])(\d+)([A-Za-z*])$")
+# HGVS.p parsing, ANN extraction and the INFO-flag test are imported from lib/aa_markers.py
+# rather than reimplemented: mutation_watcher.py asks the same questions of the same VCFs
+# and the two must not disagree about which spellings parse.
+
+# ref_seq is deliberately absent from the WHERE clause: a marker is defined by its alt
+# allele, and the sample's reference amino acid may legitimately differ from FluMutDB's.
+# One row per marker/effect association rather than a group_concat, so each effect keeps its
+# marker's mutation count and subtype. Every join stays LEFT: detecting a mutation must not
+# depend on it having any published effect.
+MARKER_QUERY = """
+SELECT mm.mutation_name, s.all_mutations_count, me.subtype, me.effect_name
+FROM mutation_mappings mm
+JOIN mutations m               ON m.name = mm.mutation_name
+LEFT JOIN markers_mutations mk ON mk.mutation_name = mm.mutation_name
+LEFT JOIN markers_summary s    ON s.marker_id = mk.marker_id
+LEFT JOIN markers_effects me   ON me.marker_id = mk.marker_id
+WHERE mm.reference_name = ? AND m.protein_name = ? AND mm.position = ? AND mm.alt_seq = ?
+ORDER BY mm.mutation_name
+"""
+
+PROTEIN_QUERY = """
+SELECT DISTINCT m.protein_name
+FROM mutations m
+JOIN mutation_mappings mm ON mm.mutation_name = m.name
+WHERE mm.reference_name = ?
+ORDER BY m.protein_name
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -75,19 +107,26 @@ MUTATION_RE = re.compile(r"^([A-Za-z*])(\d+)([A-Za-z*])$")
 # ---------------------------------------------------------------------------
 
 def resolve_gene(raw: str, available_genes: set) -> str | None:
-    """Resolve a flumut gene name to a coordinate-map gene key for this segment.
+    """Resolve a FluMutDB protein name to a coordinate-map gene key, or None.
 
-    Returns the matching key, or None if the gene does not belong to this segment
-    (or cannot be reconciled with the annotation).
+    Candidates are tried most-specific first and the bare stem last. That ordering is
+    load-bearing: a dataset naming its NS1 gene 'NS' offers the stem to both NS-1 and NS-2,
+    and resolving NS-2 that way would query NEP positions through NS1's map -- false
+    positives rather than silence. See docs/vcf_annotation_and_flumut_insertion.md.
     """
-    candidates: list[str] = [raw]
+    specific: list[str] = [raw]
+    stem: list[str] = []
     m = re.match(r"^(.*?)-(\d+)$", raw)
     if m:
         base, suffix = m.group(1), m.group(2)
-        candidates.append(base)            # HA1-5 -> HA1 ; NS-1 -> NS
-        candidates.append(base + suffix)   # NS-1 -> NS1 ; NS-2 -> NS2
-    for c in list(candidates):
-        candidates.extend(GENE_ALIASES.get(c, []))
+        specific.append(base + suffix)     # NS-1 -> NS1 ; NS-2 -> NS2
+        stem.append(base)                  # HA1-5 -> HA1 ; NS-1 -> NS
+    candidates: list[str] = []
+    for group in (specific, stem):
+        for c in group:
+            for candidate in (c, *GENE_ALIASES.get(c, [])):
+                if candidate not in candidates:
+                    candidates.append(candidate)
     for c in candidates:
         if c in available_genes:
             return c
@@ -98,181 +137,221 @@ def resolve_gene(raw: str, available_genes: set) -> str | None:
 # VCF annotation helpers
 # ---------------------------------------------------------------------------
 
-def ann_entries(info: str) -> list[list[str]]:
-    """Extract ANN entries (each a list of fields) from a VCF INFO string."""
-    for token in info.split(";"):
-        if token.startswith("ANN="):
-            return [entry.split("|") for entry in token[4:].split(",") if entry]
-    return []
+def sanitize(text: str) -> str:
+    """Make a free-text database value safe for a VCF INFO value.
 
-
-def row_aa_changes(info: str) -> set:
-    """Set of (gene, aa_pos, alt_aa) AA substitutions annotated on a VCF row."""
-    changes = set()
-    for fields in ann_entries(info):
-        if len(fields) < 11:
-            continue
-        gene = fields[3]
-        hp = HGVS_P_RE.search(fields[10])
-        if not hp:
-            continue
-        ref_aa, pos, alt_aa = hp.group(1), int(hp.group(2)), hp.group(3)
-        if ref_aa == alt_aa:  # synonymous
-            continue
-        changes.add((gene, pos, alt_aa))
-    return changes
-
-
-def contig_chrom(header_lines: list) -> str | None:
-    """CHROM id from the ##contig header line (fallback when the VCF has no data rows)."""
-    for line in header_lines:
-        if line.startswith("##contig="):
-            m = re.search(r"ID=([^,>]+)", line)
-            if m:
-                return m.group(1)
-    return None
+    INFO may not contain whitespace, ';' or ','; '|' and '=' are reserved by this field.
+    """
+    text = text.replace("–", "-").replace("—", "-")
+    text = re.sub(r"\s+", "_", text.strip())
+    return re.sub(r"[;,=|]", "", text)
 
 
 # ---------------------------------------------------------------------------
-# Inputs (coordinate map, target GFF, flumut mutations)
+# Inputs (FluMutDB, coordinate map)
 # ---------------------------------------------------------------------------
 
-def load_segment_genes(coord_map_path: str, segment: str) -> dict:
-    """Per-gene aa/nt maps for one segment from the coordinate map JSON ({} if absent)."""
+def locate_db(explicit: str | None) -> str:
+    """Path to flumut_db.sqlite: --flumut-db when given, else the installed flumutdb."""
+    if explicit:
+        if not os.path.exists(explicit):
+            log.error("FluMutDB not found at %s", explicit)
+            sys.exit(1)
+        return explicit
+    try:
+        from flumut.DbReader import get_db_file
+    except ImportError:
+        log.error("flumut is not importable and --flumut-db was not given; "
+                  "install flumut/flumutdb (see environments/fluscan.yml) or pass a path")
+        sys.exit(1)
+    return str(get_db_file())
+
+
+def db_version(conn: sqlite3.Connection) -> str:
+    """FluMutDB version string for logging ('unknown' if the table is missing)."""
+    try:
+        major, minor, date = conn.execute("SELECT major, minor, date FROM db_version").fetchone()
+        return f"{major}.{minor} ({date})"
+    except (sqlite3.Error, TypeError):
+        return "unknown"
+
+
+def load_segment_map(coord_map_path: str, segment: str) -> dict:
+    """The coordinate map's block for one segment ({} if the segment is absent)."""
     with open(coord_map_path) as fh:
         coord = json.load(fh)
     seg_map = coord.get("segments", {}).get(segment)
     if not seg_map:
-        log.warning("Segment %s not present in coordinate map; copying VCF with fluscan labels only", segment)
+        log.warning("Segment %s not present in coordinate map; copying VCF unannotated", segment)
         return {}
-    return seg_map.get("genes", {})
+    return seg_map
 
 
-def read_flumut_mutations(path: str, sample: str) -> pd.DataFrame:
-    """Read the melted flumut mutations TSV, restricted to one sample.
+def build_alias_index(genes_map: dict) -> dict[str, str]:
+    """{ANN Feature_ID alias -> coordinate-map gene key} for this segment.
 
-    Returns a DataFrame with columns sample/gene/mutation/allele (as strings); empty when
-    the sample has no mutations.
+    Only mature peptides carry aliases: their ANN entry names the *parent* gene, so the
+    subunit is identifiable only through Feature_ID. Empty where subunits are real CDSs.
     """
-    df = pd.read_csv(path, sep="\t", dtype=str).fillna("")
-    missing = {"sample", "gene", "mutation"} - set(df.columns)
-    if missing:
-        log.error("flumut mutations TSV %s missing column(s): %s", path, ", ".join(sorted(missing)))
-        sys.exit(1)
-    return df[df["sample"] == sample].reset_index(drop=True)
+    index: dict[str, str] = {}
+    for gene_key, gene_doc in genes_map.items():
+        for alias in gene_doc.get("aliases", []):
+            index.setdefault(alias, gene_key)
+    return index
 
 
-# ---------------------------------------------------------------------------
-# flumut marker -> VCF rows
-# ---------------------------------------------------------------------------
+def build_gene_protein_maps(conn: sqlite3.Connection, db_ref: str, genes_map: dict) -> dict:
+    """Map each coordinate-map gene key to its FluMutDB protein and a target->source index.
 
-def flumut_only_row(chrom: str, gene_key: str, ref_aa: str, target_pos: int,
-                    alt_aa: str, target_cds: dict | None) -> list[str] | None:
-    """Build a flumut-only VCF row (column list) with filler nucleotides and an AA ANN.
-
-    POS is the target CDS codon start, derived from the target_cds placement carried in the
-    coordinate map (no GFF needed). REF/ALT are filler (N). Returns None if the marker
-    cannot be placed on the target CDS.
+    Returns {gene_key: (protein_name, {target_aa_pos: source_aa_pos})}. The map stores
+    aa_source_to_target; inverting it once per gene lets the main loop start from a VCF row.
     """
-    if not target_cds:
-        log.warning("No target CDS placement for gene %s; cannot place %s%d%s; skipping",
-                    gene_key, ref_aa, target_pos, alt_aa)
-        return None
-    segments = [tuple(seg) for seg in target_cds["segments"]]
-    genomic0 = _cds_to_genomic((target_pos - 1) * 3, segments, target_cds["strand"])
-    if genomic0 is None:
-        log.warning("Target AA %d out of CDS range for gene %s; skipping", target_pos, gene_key)
-        return None
-    feature_id = target_cds.get("feature_id", gene_key)
-    ann_entry = _build_ann_entry(
-        allele="N",
-        annotation="missense_variant",
-        impact="MODERATE",
-        gene_name=gene_key,
-        gene_id=feature_id,
-        feature_id=feature_id,
-        transcript_biotype="protein_coding",
-        hgvs_c="",
-        hgvs_p=_format_hgvs_p_sub(ref_aa, target_pos, alt_aa),
-        cds_pos=(target_pos - 1) * 3 + 1,
-        cds_len=target_cds.get("cds_length", 0),
-        aa_pos=target_pos,
-        aa_len=target_cds.get("aa_length", 0),
-        warnings="INFO_FLUMUT_INSERTED_NO_NUCLEOTIDE_EVIDENCE",
-    )
-    # Reuse variant_row for the freebayes INFO/FORMAT shape, then split to columns and
-    # append the DETECTED_BY tag to the INFO field (column index 7).
-    cols = variant_row(chrom, genomic0 + 1, "N", "N", QUAL, ann="ANN=" + ann_entry).split("\t")
-    cols[7] = cols[7] + ";DETECTED_BY=flumut"
-    return cols
+    gene_maps: dict[str, tuple[str, dict]] = {}
+    available = set(genes_map)
+    unresolved: list[str] = []
 
-
-def build_flumut_inserts(flumut_df: pd.DataFrame, genes_map: dict, available_genes: set,
-                         fluscan_changes: set, chrom: str) -> tuple[set, list, dict]:
-    """Map flumut markers into target coordinates.
-
-    Returns (flumut_keys, new_rows, stats):
-      flumut_keys : {(gene, target_pos, alt_aa)} markers that resolved to this segment
-      new_rows    : VCF column lists for flumut-only markers (not already called by fluscan)
-      stats       : {'unmapped': int, 'other_segment': int}
-    """
-    flumut_keys: set = set()
-    new_rows: list[list[str]] = []
-    stats = {"unmapped": 0, "other_segment": 0}
-
-    for gene_raw, mutation in zip(flumut_df["gene"], flumut_df["mutation"]):
-        gene_key = resolve_gene(gene_raw, available_genes)
+    for (protein,) in conn.execute(PROTEIN_QUERY, (db_ref,)):
+        gene_key = resolve_gene(protein, available)
         if gene_key is None:
-            stats["other_segment"] += 1
+            unresolved.append(protein)
             continue
-        mm = MUTATION_RE.match(mutation)
-        if not mm:
-            log.warning("Unparseable flumut mutation '%s' (gene %s)", mutation, gene_raw)
+        if gene_key in gene_maps:
+            # Two proteins on one gene key means the annotation cannot tell them apart.
+            # Overwriting would query one protein's markers through the other's map, so
+            # refuse and keep the first -- PROTEIN_QUERY is ORDER BY'd, so that is stable.
+            log.warning("FluMutDB proteins %s and %s both resolve to coordinate-map gene key "
+                        "%s; keeping %s and skipping %s. The target annotation does not "
+                        "distinguish them, so %s markers cannot be annotated.",
+                        gene_maps[gene_key][0], protein, gene_key,
+                        gene_maps[gene_key][0], protein, protein)
             continue
-        ref_aa, src_pos, alt_aa = mm.group(1), int(mm.group(2)), mm.group(3)
-
-        target_pos = genes_map[gene_key].get("aa_source_to_target", {}).get(str(src_pos))
-        if target_pos is None:
-            stats["unmapped"] += 1
-            log.warning("flumut %s:%s%d%s has no target mapping (gapped/unaligned); skipping",
-                        gene_key, ref_aa, src_pos, alt_aa)
+        # aa_source_to_target comes from a pairwise alignment, so columns pair 1:1 and the
+        # inverse is well defined. Keep the lowest source position so the annotation can
+        # never depend on dict ordering.
+        source_to_target = genes_map[gene_key].get("aa_source_to_target", {})
+        target_to_source: dict[int, int] = {}
+        for src, tgt in sorted((int(s), t) for s, t in source_to_target.items()):
+            if tgt is None:
+                continue
+            if int(tgt) in target_to_source:
+                log.warning("Gene %s: target AA %d has several source positions (%d, %d); "
+                            "keeping %d", gene_key, int(tgt), target_to_source[int(tgt)],
+                            src, target_to_source[int(tgt)])
+                continue
+            target_to_source[int(tgt)] = src
+        if not target_to_source:
+            log.warning("Gene %s (FluMutDB protein %s) has an empty amino-acid map; skipping",
+                        gene_key, protein)
             continue
+        gene_maps[gene_key] = (protein, target_to_source)
 
-        key = (gene_key, int(target_pos), alt_aa)
-        flumut_keys.add(key)
-        if key in fluscan_changes:
-            continue  # detected by both -> existing row retagged by caller, no insert
-
-        row = flumut_only_row(chrom, gene_key, ref_aa, int(target_pos), alt_aa,
-                              genes_map[gene_key].get("target_cds"))
-        if row is not None:
-            new_rows.append(row)
-
-    return flumut_keys, new_rows, stats
+    if unresolved:
+        log.warning("FluMutDB protein(s) %s have no counterpart gene in the coordinate map "
+                    "(available: %s); their markers cannot be annotated",
+                    ", ".join(unresolved), ", ".join(sorted(available)) or "none")
+    return gene_maps
 
 
 # ---------------------------------------------------------------------------
-# Output assembly
+# FluMutDB lookup
 # ---------------------------------------------------------------------------
 
-def assemble_output(df: pd.DataFrame, new_rows: list, flumut_keys: set,
-                    row_changes: list) -> pd.DataFrame:
-    """Label existing rows (both/fluscan), append flumut-only rows, and sort by POS.
+def make_marker_lookup(conn: sqlite3.Connection, db_ref: str):
+    """Build a cached (protein, source_pos, alt_aa) -> marker matches lookup.
 
-    row_changes holds the pre-parsed AA-change set for each existing row (index-aligned
-    with df), so a row's ANN is parsed once rather than twice.
+    Each match is (mutation_name, direct_effects, associated_effects), holding sorted
+    'Subtype:Effect' values. An effect is *direct* when its marker is defined by this
+    mutation alone; a mutation in both kinds of marker populates both tuples.
     """
-    labels = ["both" if (rc & flumut_keys) else "fluscan" for rc in row_changes]
-    df = df.copy()
-    df["INFO"] = df["INFO"].astype(str) + ";DETECTED_BY=" + pd.Series(labels, index=df.index)
 
-    if new_rows:
-        new_df = pd.DataFrame(new_rows, columns=list(df.columns))
-        out_df = pd.concat([df, new_df], ignore_index=True)
-    else:
-        out_df = df
-    out_df["POS"] = out_df["POS"].astype(int)
-    return out_df.sort_values("POS", kind="stable").reset_index(drop=True)
+    @lru_cache(maxsize=None)
+    def lookup(protein: str, source_pos: int, alt_aa: str) -> tuple:
+        # dict rather than a set of names: preserves mutation_name order (the query is
+        # ORDER BY'd) while folding the several effect rows each name fans out to.
+        matches: dict[str, tuple[set, set]] = {}
+        for name, mutation_count, subtype, effect in conn.execute(
+            MARKER_QUERY, (db_ref, protein, source_pos, alt_aa)
+        ):
+            direct, associated = matches.setdefault(sanitize(name), (set(), set()))
+            if not effect:  # LEFT JOIN miss: mutation in no marker, or marker with no effect
+                continue
+            # Qualifying by subtype is what keeps the field honest: the same mutation is
+            # reported with opposite effects in different experimental systems.
+            qualified = f"{sanitize(subtype)}:{sanitize(effect)}"
+            (direct if mutation_count == 1 else associated).add(qualified)
+        return tuple(
+            (name, tuple(sorted(direct)), tuple(sorted(associated)))
+            for name, (direct, associated) in matches.items()
+        )
+
+    return lookup
+
+
+def resolve_ann_gene(gene: str, feature_id: str, gene_maps: dict,
+                     alias_index: dict) -> tuple[str, dict] | None:
+    """The (protein, target->source map) an ANN entry's gene/feature names key onto.
+
+    Three attempts, in order: canonicalised Gene_Name (map keys are canonicalised too, so a
+    dataset spelling the gene NS2 still reaches its NEP map); Feature_ID against the map's
+    aliases, which is how a mature HA1/HA2 peptide is identified; then Feature_ID as a gene
+    key in its own right. See docs/vcf_annotation_and_flumut_insertion.md § Gene names.
+    """
+    for candidate in (canonical_gene(gene), alias_index.get(feature_id),
+                      canonical_gene(feature_id) if feature_id else None):
+        if candidate is None:
+            continue
+        mapped = gene_maps.get(candidate)
+        if mapped is not None:
+            return mapped
+    return None
+
+
+def row_flumut_field(info: str, gene_maps: dict, lookup, want_effects: bool,
+                     alias_index: dict | None = None,
+                     subunit_parent_genes: set | None = None,
+                     unmapped_genes: set | None = None,
+                     unparsed_hgvs_p: list | None = None) -> str:
+    """The 'FLUMUT=...' INFO sub-field for one VCF row, or '' when nothing matches.
+
+    Genes this segment's map cannot place go into ``unmapped_genes`` for the caller to
+    report, so a dataset lacking FluMutDB's gene split does not just match nothing silently.
+    A name is reported only when *nothing* on the row resolved: on a mature-peptide dataset
+    every subunit row also carries the parent CDS entry, which cannot resolve by design.
+    """
+    alias_index = alias_index or {}
+    subunit_parent_genes = subunit_parent_genes or set()
+    entries: list[str] = []
+    unresolved: list[str] = []
+    resolved_any = False
+    for gene, feature_id, target_pos, alt_aa in aa_changes_from_info(info, unparsed_hgvs_p):
+        mapped = resolve_ann_gene(gene, feature_id, gene_maps, alias_index)
+        if mapped is None:
+            if gene not in subunit_parent_genes:
+                unresolved.append(gene)
+            continue
+        resolved_any = True
+        protein, target_to_source = mapped
+        source_pos = target_to_source.get(target_pos)
+        if source_pos is None:
+            log.debug("%s target AA %d has no flumut-reference counterpart; skipping",
+                      gene, target_pos)
+            continue
+        matches = lookup(protein, source_pos, alt_aa)
+        if not matches:
+            continue
+        # A few (protein, position, alt) keys are shared by two mutation names differing
+        # only in a reference residue this VCF does not constrain; union over them.
+        names = "&".join(name for name, _, _ in matches)
+        fields = [protein, str(target_pos), alt_aa, names]
+        if want_effects:
+            direct = sorted({e for _, eff, _ in matches for e in eff})
+            associated = sorted({e for _, _, eff in matches for e in eff})
+            fields.append("&".join(direct) or ".")
+            fields.append("&".join(associated) or ".")
+        entries.append("|".join(fields))
+    if unresolved and not resolved_any and unmapped_genes is not None:
+        unmapped_genes.update(unresolved)
+    return "FLUMUT=" + ",".join(entries) if entries else ""
 
 
 # ---------------------------------------------------------------------------
@@ -281,12 +360,15 @@ def assemble_output(df: pd.DataFrame, new_rows: list, flumut_keys: set,
 
 def get_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--vcf", required=True, help="Existing per-sample/per-segment VCF to augment")
-    p.add_argument("--coord-map", required=True, help="coordinate_map.json (flumut -> Nextclade)")
-    p.add_argument("--flumut-mutations", required=True, help="Melted flumut mutations TSV (sample/gene/mutation/allele)")
-    p.add_argument("--consensus", required=False, help="Cleaned consensus FASTA (context; not required for placement)")
+    # The process's provenance block reads this, so tool_version cannot drift.
+    p.add_argument("--version", action="version", version=f"%(prog)s {SCRIPT_VERSION}")
+    p.add_argument("--vcf", required=True, help="Existing per-sample/per-segment VCF to annotate")
+    p.add_argument("--coord-map", required=True, help="coordinate_map.<SEG>.json (flumut -> Nextclade)")
     p.add_argument("--segment", required=True, help="Segment label, e.g. HA, M, NS")
-    p.add_argument("--sample", required=True, help="Sample id (matches flumut TSV 'sample' column)")
+    p.add_argument("--sample", required=True, help="Sample id (used for logging only)")
+    p.add_argument("--flumut-db", help="Path to flumut_db.sqlite (default: the installed flumutdb)")
+    p.add_argument("--no-effects", action="store_true",
+                   help="Omit both effect fields, emitting only Protein|AA_Pos|Alt_AA|Mutation_Name")
     p.add_argument("-o", "--output", required=True, help="Output VCF path")
     return p.parse_args()
 
@@ -294,39 +376,93 @@ def get_args() -> argparse.Namespace:
 def main() -> None:
     args = get_args()
     segment = args.segment.upper()
+    want_effects = not args.no_effects
 
     df, header_lines = read_vcf(args.vcf)
-    chrom = str(df["CHROM"].iloc[0]) if len(df) else contig_chrom(header_lines)
-    if chrom is None:
-        log.error("Could not determine CHROM from %s (no data rows and no ##contig header)", args.vcf)
-        sys.exit(1)
 
-    genes_map = load_segment_genes(args.coord_map, segment)
-    available_genes = set(genes_map.keys())
+    seg_map = load_segment_map(args.coord_map, segment)
+    genes_map = seg_map.get("genes", {})
+    alias_index = build_alias_index(genes_map)
+    subunit_parent_genes = set(seg_map.get("subunit_parent_genes", []))
+    if seg_map.get("stale_annotation"):
+        log.warning("Coordinate map flags segment %s as stale (the Nextclade dataset does not "
+                    "expose the HA1/HA2 split FluMutDB requires); HA markers cannot be annotated",
+                    segment)
 
-    # AA changes already called by the fluscan (Nextclade) branch. Parse each row's ANN
-    # once and reuse the per-row sets for both the union here and the labelling later.
-    row_changes = [row_aa_changes(info) for info in df["INFO"].astype(str)]
-    fluscan_changes: set = set().union(*row_changes) if row_changes else set()
+    db_path = locate_db(args.flumut_db)
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        version = db_version(conn)
+        db_ref = SEGMENT_TO_DB_REFERENCE.get(segment, segment)
+        gene_maps = build_gene_protein_maps(conn, db_ref, genes_map)
+        lookup = make_marker_lookup(conn, db_ref)
 
-    # flumut markers mapped into Nextclade coordinates (placement comes from the map's
-    # per-gene target_cds block, so no GFF is needed here).
-    flumut_df = read_flumut_mutations(args.flumut_mutations, args.sample)
-    flumut_keys, new_rows, stats = build_flumut_inserts(
-        flumut_df, genes_map, available_genes, fluscan_changes, chrom,
-    )
+        # Annotate in place: rows, order, POS, REF/ALT and ANN are all preserved; only INFO
+        # grows, and only on rows that matched.
+        info_out: list[str] = []
+        annotated = 0
+        markers: set = set()
+        unmapped_genes: set = set()
+        unparsed_hgvs_p: list[str] = []
+        mnv_unresolved = 0
+        for info in df["INFO"].astype(str):
+            if has_info_flag(info, "MNV_UNRESOLVED"):
+                # fix_mnv_codons.py left this row's HGVS.p at a value already determined to
+                # be wrong; matching a curated marker against it would be a false positive.
+                mnv_unresolved += 1
+                info_out.append(info)
+                continue
+            field = row_flumut_field(info, gene_maps, lookup, want_effects,
+                                     alias_index=alias_index,
+                                     subunit_parent_genes=subunit_parent_genes,
+                                     unmapped_genes=unmapped_genes,
+                                     unparsed_hgvs_p=unparsed_hgvs_p)
+            if field:
+                annotated += 1
+                for entry in field[len("FLUMUT="):].split(","):
+                    markers.update(entry.split("|")[3].split("&"))
+                info_out.append(f"{info};{field}")
+            else:
+                info_out.append(info)
+    finally:
+        conn.close()
 
-    # Label, append, sort, and write (original *_final.vcf is left untouched).
-    out_df = assemble_output(df, new_rows, flumut_keys, row_changes)
-    out_header = header_lines[:-1] + [DETECTED_BY_HEADER, header_lines[-1]]
+    if mnv_unresolved:
+        log.warning("%d row(s) carry the MNV_UNRESOLVED flag; their HGVS.p is known to be "
+                    "wrong, so they were skipped rather than matched against FluMutDB",
+                    mnv_unresolved)
+
+    if unparsed_hgvs_p:
+        # Without this an unhandled HGVS.p spelling is indistinguishable from "this VCF has
+        # no coding changes": silence rather than an error.
+        log.warning("%d ANN entr(ies) carry an HGVS.p substitution this script cannot parse "
+                    "(e.g. %r) and were skipped; only 1-letter (p.E627K) and 3-letter "
+                    "(p.Glu627Lys) forms are recognised",
+                    len(unparsed_hgvs_p), unparsed_hgvs_p[0])
+
+    if unmapped_genes:
+        # General condition first: HA is only one cause, and leading with it misdirects
+        # every other case towards a segment that has nothing to do with it.
+        message = ("VCF gene(s) %s carry amino-acid changes but have no FluMutDB counterpart "
+                   "in the coordinate map: an ANN Gene_Name must match one of the map's gene "
+                   "keys (mapped gene(s): %s).")
+        if segment == "HA" or seg_map.get("stale_annotation"):
+            message += (" For HA specifically, FluMutDB numbers the HA1/HA2 subunits, so the "
+                        "Nextclade dataset must expose them as separate genes.")
+        log.warning(message,
+                    ", ".join(sorted(unmapped_genes)),
+                    ", ".join(sorted(gene_maps)) or "none")
+
+    out_df = df.copy()
+    out_df["INFO"] = info_out
+    out_header = header_lines[:-1] + [FLUMUT_HEADER, header_lines[-1]]
     write_vcf(out_df, out_header, args.output)
 
     log.info(
-        "Wrote %s: %d existing rows retagged, %d flumut-only rows inserted "
-        "(%d flumut marker(s) matched fluscan/both, %d unmapped, %d other-segment) for %s/%s",
-        args.output, len(df), len(new_rows),
-        len(flumut_keys & fluscan_changes), stats["unmapped"], stats["other_segment"],
-        args.sample, segment,
+        "Wrote %s: %d row(s) scanned, %d annotated, %d distinct FluMutDB marker(s) matched "
+        "across gene(s) %s for %s/%s (v%s, FluMutDB %s)",
+        args.output, len(df), annotated, len(markers),
+        ", ".join(sorted(gene_maps)) or "none", args.sample, segment, SCRIPT_VERSION, version,
     )
 
 

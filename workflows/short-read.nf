@@ -18,9 +18,6 @@ include { short_read_multiqc }             from '../modules/short_read/qc.nf'
 include { short_read_fastqc }              from '../modules/short_read/qc.nf'
 include { short_read_sample_reads }        from '../modules/short_read/assembly.nf'
 include { short_read_assembly }            from '../modules/short_read/assembly.nf'
-include { pull_genoflu }                   from '../modules/shared/genoflu.nf'
-include { checkout_genoflu }               from '../modules/shared/genoflu.nf'
-include { genoflu }                        from '../modules/shared/genoflu.nf'
 include { flumut }                         from '../modules/shared/flumut.nf'
 
 include { makeblastdb }                    from '../modules/shared/blast.nf'
@@ -35,12 +32,18 @@ include { short_read_lofreq }              from '../modules/short_read/variant_c
 include { short_read_snpeff_annotation }   from '../modules/short_read/variant_calling.nf'
 include { post_process_vcf }               from '../modules/shared/post_process.nf'
 include { split_fasta as split_fasta_reference } from '../modules/shared/consensus_qc.nf'
-include { short_read_summarize_vcf }       from '../modules/short_read/variant_calling.nf'
-include { short_read_mutation_watch }      from '../modules/short_read/variant_calling.nf'
+include { mutation_watch }                 from '../modules/shared/mutation_watch.nf'
 include { short_read_make_coverage_plot }  from '../modules/short_read/plotting.nf'
+include { resolve_db }                     from '../modules/shared/database.nf'
 
 
 workflow SHORT_READ {
+
+    // Only the BLAST reference is required here. SnpEff annotation (and the MNV
+    // correction and watchlist scan that depend on its output) runs when the bundle
+    // carries a snpeff/ component, so whether it runs is now a property of the
+    // reference set rather than of a separate flag.
+    def db = resolve_db(params.db, ['blastn'])
 
     ch_workflow_metadata = Channel.value([
         workflow.sessionId,
@@ -48,6 +51,11 @@ workflow SHORT_READ {
         workflow.manifest.name,
         workflow.manifest.version,
         workflow.start,
+        [
+            database_name:    db.name,
+            database_version: db.version,
+            database_path:    db.root,
+        ],
     ])
 
     ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
@@ -60,7 +68,7 @@ workflow SHORT_READ {
         ch_fastq_input = Channel.fromFilePairs( params.fastq_search_path, flat: true ).map{ it -> [it[0].split('_')[0], it[1], it[2]] }.unique{ it -> it[0] }
     }
 
-    ch_nt_database = Channel.fromPath(params.nt_database)
+    ch_blastn_db = Channel.fromPath(db.blastn)
 
     main:
 
@@ -86,7 +94,7 @@ workflow SHORT_READ {
         short_read_multiqc(short_read_fastp.out.json.mix( short_read_cutadapt.out.log, ch_fastqc_collected ).collect().ifEmpty([]) )
 
         // Build BLAST database, then search assembled contigs against it to select references
-        makeblastdb(ch_nt_database).first().set{ch_blastdb}
+        makeblastdb(ch_blastn_db).first().set{ch_blastdb}
         blastn(short_read_assembly.out.contigs, ch_blastdb)
 
         // NOTE: Currently mapping raw reads (ch_fastq_input). Consider using
@@ -103,9 +111,10 @@ workflow SHORT_READ {
         short_read_make_coverage_plot(short_read_sort_filter_sam.out.depth)
         short_read_lofreq(short_read_sort_filter_sam.out.bam.join(blastn.out.ref))
 
-        if (params.snpeff_config != 'NO_FILE') {
-            watchlist_files = Channel.fromPath(params.watchlist_dir + "/*watchlist.csv")
-            short_read_snpeff_annotation(short_read_lofreq.out.vcf.combine(Channel.fromPath(params.snpeff_config)))
+        if (db.has_snpeff) {
+            // The whole snpeff/ directory is staged so the config and the database it
+            // names travel together; the process overrides data.dir with -dataDir.
+            short_read_snpeff_annotation(short_read_lofreq.out.vcf.combine(Channel.fromPath(db.snpeff_dir)))
 
             // Split each sample's multi-segment BLAST reference into per-segment FASTAs
             // named {sample_id}_ref_{segment}.s.fasta — the lookup post_process_vcf expects
@@ -116,17 +125,32 @@ workflow SHORT_READ {
             ch_segment_vcfs = short_read_snpeff_annotation.out.vcfs.join(ch_reference_segments)
 
             post_process_vcf(ch_segment_vcfs)
-            short_read_summarize_vcf(post_process_vcf.out.vcf.transpose())
 
-            short_read_mutation_watch(short_read_summarize_vcf.out.tsv.combine(watchlist_files))
+            // Watchlist scanning reads the final VCF, so it keys only on a watchlist being
+            // set -- but the final VCF only exists inside this snpeff block, which is what
+            // keeps the call here.
+            if (params.watchlist_dir != 'NO_FILE') {
+                // checkIfExists so a mistyped --watchlist_dir fails loudly. Built inside the
+                // guard: an unguarded fromPath('NO_FILE/*watchlist.csv') yields an empty
+                // channel, and the scan then silently does not run at all.
+                ch_watchlists = Channel.fromPath(
+                    params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
+                )
+                // [sample_id, vcf] -> [sample_id, segment, vcf]; the segment is carried as
+                // '' because short-read post_process_vcf emits one VCF per sample, not per
+                // segment, and an invented label would be reported in the output.
+                ch_watch_in = post_process_vcf.out.vcf
+                    .transpose()
+                    .map { sample_id, vcf -> [sample_id, '', vcf] }
+                    .combine(ch_watchlists)
+                mutation_watch(ch_watch_in)
+            }
         }
 
         short_read_mask_low_coverage(short_read_sort_filter_sam.out.bam)
         short_read_make_consensus(short_read_lofreq.out.vcf.join(blastn.out.ref).join(short_read_mask_low_coverage.out.masked_bed))
 
         flumut(short_read_make_consensus.out.consensus)
-
-        //genoflu(short_read_make_consensus.out.consensus)
 
         // Provenance collection processes
         // The basic idea is to build up a channel with the following structure:

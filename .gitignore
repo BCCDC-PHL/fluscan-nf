@@ -1,5 +1,6 @@
 .claude
-assets/database/*/snpEff.config
+*__pycache__*
+assets/database/*/snpeff
 assets/database/*/nextclade
 .github/data/assemblies
 .github/data/fastq
@@ -16,4 +17,3 @@ output_test/
 Validation_notes.md
 .Rproj.user
 */__pycache__/*.pyc
-assets/genoflu/GenoFLU

@@ -7,7 +7,7 @@ import re
 import pandas as pd
 from subprocess import run
 
-from tools import read_vcf, write_vcf
+from lib.tools import read_vcf, write_vcf
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 log = logging.getLogger(__name__)
@@ -33,9 +33,16 @@ def filter_contig_headers(header_lines, accession):
     return filtered
 
 
-def run_snpeff(input_path, genome, output_path, config_path):
-    """Run snpEff annotation and write the result to *output_path*."""
-    command = ['snpEff', '-hgvs1LetterAa', '-config', config_path, genome, input_path]
+def run_snpeff(input_path, genome, output_path, config_path, data_dir):
+    """Run snpEff annotation and write the result to *output_path*.
+
+    *data_dir* overrides the config's data.dir, which records wherever the database
+    bundle was built rather than where it is staged for this task.
+    """
+    command = ['snpEff', '-hgvs1LetterAa',
+               '-config', config_path,
+               '-dataDir', data_dir,
+               genome, input_path]
     process = run(command, capture_output=True, check=True, timeout=600)
 
     with open(output_path, 'w') as outfile:
@@ -46,6 +53,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="Run snpEff on a multi-segment influenza VCF.")
     parser.add_argument('-i', '--input', required=True, help="Input VCF")
     parser.add_argument('-c', '--config', required=True, help="Path to the snpEff.config for the custom database")
+    parser.add_argument('-d', '--data-dir', required=True, help="snpEff data directory holding <genome>/snpEffectPredictor.bin directly, i.e. the bundle's snpeff/ (overrides data.dir in the config)")
     parser.add_argument('-o', '--outname', required=True, help="Output VCF name prefix")
     return parser.parse_args()
 
@@ -78,7 +86,7 @@ def main():
             output_vcf = f'{args.outname}__{accession}__{subtype}__{segment}.vcf'
 
             write_vcf(renamed_df, seg_header_lines, tmp_vcf)
-            run_snpeff(tmp_vcf, f'influenza_{subtype.lower()}', output_vcf, args.config)
+            run_snpeff(tmp_vcf, f'influenza_{subtype.lower()}', output_vcf, args.config, args.data_dir)
 
         # Read back the annotated VCF and accumulate
         ann_df, ann_header_lines = read_vcf(output_vcf)

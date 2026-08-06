@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fix_mnv_codons_v2.py
+"""fix_mnv_codons.py
 
 Post-process a snpEff-annotated VCF to correct amino acid annotations where
 two or more adjacent SNVs fall within the same codon (MNV problem).
@@ -61,14 +61,14 @@ Changes from v1
 
 Usage
 -----
-    fix_mnv_codons_v2.py -i sample_anno.vcf \\
+    fix_mnv_codons.py -i sample_anno.vcf \\
         --reference sample_ref.fa \\
         --output-vcf sample_anno_mnv_corrected.vcf \\
         --output-tsv sample_anno_mnv_corrected.tsv \\
         --min-af 0.5
 
 Pipeline integration (after snpEff, before summarize_vcf):
-    run_snpeff.py -> fix_mnv_codons_v2.py -> summarize_vcf_cyvcf2.py
+    run_snpeff.py -> fix_mnv_codons.py -> summarize_vcf.py
 """
 
 import argparse
@@ -555,7 +555,7 @@ def write_corrected_vcf(
     vcf.add_info_to_header({
         "ID": "MNV_CORRECTED", "Number": "0", "Type": "Flag",
         "Description": ("Variant is part of an MNV codon group. ANN HGVS.p, annotation type, "
-                        "and impact corrected for true combined amino acid effect (fix_mnv_codons_v2.py)."),
+                        "and impact corrected for true combined amino acid effect (fix_mnv_codons.py)."),
     })
     vcf.add_info_to_header({
         "ID": "MNV_ORIGINAL_HGVS_P", "Number": "1", "Type": "String",
@@ -564,7 +564,7 @@ def write_corrected_vcf(
     vcf.add_info_to_header({
         "ID": "MNV_UNRESOLVED", "Number": "0", "Type": "Flag",
         "Description": ("Variant is part of a detected MNV codon group that could not be resolved. "
-                        "Provide --reference to fix_mnv_codons_v2.py to enable direct reference lookup."),
+                        "Provide --reference to fix_mnv_codons.py to enable direct reference lookup."),
     })
 
     writer = Writer(output_vcf_path, vcf)

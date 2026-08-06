@@ -68,7 +68,7 @@ process short_read_snpeff_annotation {
     //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}__*.vcf", mode: 'copy'
 
     input:
-    tuple val(sample_id), path(vcf), path(vcf_index), path(snpeff_config_path)
+    tuple val(sample_id), path(vcf), path(vcf_index), path(snpeff_dir, stageAs: 'snpeff')
 
     output:
     tuple val(sample_id), path("${sample_id}_all_anno.vcf"), emit: all_vcf
@@ -83,56 +83,12 @@ process short_read_snpeff_annotation {
     printf -- "  - tool_name: samtools\\n    tool_version: \$(samtools --version 2>&1 | head -n1 | cut -d' ' -f2)\\n"   >> ${sample_id}_snpeff_provenance.yml
     printf -- "  - tool_name: bcftools\\n    tool_version: \$(bcftools --version | head -n1 | cut -d' ' -f2)\\n"   >> ${sample_id}_snpeff_provenance.yml
 
-    run_snpeff.py --input ${vcf} --config ${snpeff_config_path} --outname ${sample_id}
-    """
-
-}
-
-
-process short_read_summarize_vcf {
-    tag { sample_id }
-
-    errorStrategy 'ignore'
-
-    conda "${projectDir}/environments/fluscan.yml"
-
-    // publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*tsv", mode: 'copy'
-
-    input:
-    tuple val(sample_id), path(vcf)
-
-    output:
-    tuple val(sample_id), path("${sample_id}_mutations.tsv"), emit: tsv
-    tuple val(sample_id), path("${sample_id}_summarize_vcf_provenance.yml"), emit: provenance
-
-    script:
-    """
-    printf -- "- process_name: short_read_summarize_vcf\\n" > ${sample_id}_summarize_vcf_provenance.yml
-    printf -- "  tools: \\n" >> ${sample_id}_summarize_vcf_provenance.yml
-    printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_summarize_vcf_provenance.yml
-    printf -- "  - tool_name: summarize_vcf.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_summarize_vcf_provenance.yml
-
-    summarize_vcf.py --input ${vcf} --output ${sample_id}_mutations.tsv
-    """
-}
-
-
-process short_read_mutation_watch {
-    tag { sample_id }
-
-    conda "${projectDir}/environments/fluscan.yml"
-
-    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*{tsv}", mode: 'copy'
-
-    input:
-	tuple val(sample_id), path(vcf_filter), path(watchlist)
-
-	output:
-    tuple val(sample_id), path("${sample_id}*tsv"), emit: vcf
-    script:
-    watchlist_name = watchlist.baseName
-    """
-    mutation_watcher.py --input ${vcf_filter} --watchlist ${watchlist} --output ${sample_id}_${watchlist_name}.tsv
+    # --data-dir overrides the config's data.dir, which points wherever the bundle was
+    # built; the staged snpeff/ is what this task must actually read. 
+    run_snpeff.py --input ${vcf} \\
+        --config snpeff/snpEff.config \\
+        --data-dir "\$PWD/snpeff" \\
+        --outname ${sample_id}
     """
 
 }

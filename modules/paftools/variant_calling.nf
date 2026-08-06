@@ -67,7 +67,7 @@ process paftools_snpeff_annotation {
     tuple val(sample_id),
           path(sorted_vcfs, stageAs: 'vcf/*'),
           path(references, stageAs: 'reference/*'),
-          path(snpeff_config_path)
+          path(snpeff_dir, stageAs: 'snpeff')
 
     output:
     tuple val(sample_id), path("${sample_id}*.vcf"), emit: vcf
@@ -96,7 +96,12 @@ process paftools_snpeff_annotation {
 
         OUTPUT_FILENAME="${sample_id}__\${REF_NAME_FIELDS[0]}__\${REF_NAME_FIELDS[1]}__\${REF_NAME_FIELDS[2]}.vcf"
 
-        snpEff -Xmx4g -noStats -hgvs1LetterAa -config ${snpeff_config_path} "\$SNPEFF_DB_NAME" rename_\${segment}.vcf > "\${OUTPUT_FILENAME}"
+        # -dataDir overrides the config's data.dir, which points wherever the bundle was
+        # built; the staged snpeff/ is what this task must actually read. 
+        snpEff -Xmx4g -noStats -hgvs1LetterAa \\
+            -config snpeff/snpEff.config \\
+            -dataDir "\$PWD/snpeff" \\
+            "\$SNPEFF_DB_NAME" rename_\${segment}.vcf > "\${OUTPUT_FILENAME}"
     done
     """
 }
@@ -144,33 +149,5 @@ process paftools_to_freebayes_vcf {
           'FNR==1 && /^##fileformat/{print; print coverage_header; next} {print}' \\
           tmp_\${segment}.vcf > \${vcf_basename}_paf.vcf
     done
-    """
-}
-
-
-process summarize_vcf {
-    tag { sample_id }
-
-    errorStrategy 'ignore'
-
-    conda "${projectDir}/environments/fluscan.yml"
-
-    // publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*tsv", mode: 'copy'
-
-    input:
-    tuple val(sample_id), path(vcf)
-
-    output:
-    tuple val(sample_id), path("${sample_id}_mutations.tsv"), emit: tsv
-    tuple val(sample_id), path("${sample_id}_summarize_vcf_provenance.yml"), emit: provenance
-
-    script:
-    """
-    printf -- "- process_name: summarize_vcf\\n" > ${sample_id}_summarize_vcf_provenance.yml
-    printf -- "  tools: \\n" >> ${sample_id}_summarize_vcf_provenance.yml
-    printf -- "  - tool_name: python\\n    tool_version: \$(python --version 2>&1 | cut -d' ' -f2)\\n" >> ${sample_id}_summarize_vcf_provenance.yml
-    printf -- "  - tool_name: summarize_vcf.py\\n    tool_version: 1.0.0\\n" >> ${sample_id}_summarize_vcf_provenance.yml
-
-    summarize_vcf.py --input ${vcf} --output ${sample_id}_mutations.tsv
     """
 }

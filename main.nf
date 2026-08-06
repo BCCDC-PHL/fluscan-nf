@@ -10,7 +10,13 @@ nextflow.enable.dsl = 2
 include { SHORT_READ } from './workflows/short-read.nf'
 include { PAFTOOLS }   from './workflows/paftools.nf'
 include { NEXTCLADE }  from './workflows/nextclade.nf'
+include { resolve_db } from './modules/shared/database.nf'
+include { db_summary } from './modules/shared/database.nf'
 
+// Resolved with no required components: this only checks that --db points at something
+// that exists, so a typo fails before the banner. Each workflow re-resolves with the
+// components it actually consumes.
+def db = resolve_db(params.db, [])
 
 // prints to the screen and to the log
 log.info """
@@ -20,7 +26,7 @@ log.info """
   launchDir         : ${launchDir}
   fastqInputDir     : ${params.fastq_input}
   fastaInputDir     : ${params.fasta_input}
-  database          : ${params.nt_database}
+  database          : ${db_summary(db)}
   primers           : ${params.primers}
   outdir            : ${params.outdir}
   pipeline run name : ${workflow.runName}
