@@ -1,14 +1,9 @@
 // nextclade/coordinate_conversion.nf - Build a source->target reference coordinate map.
 //
-// Runs once per pipeline invocation (not per-sample). Translates nucleotide and
-// amino-acid indices from flumut's fixed reference (the source) onto the selected
-// Nextclade reference dataset (the target) coordinate system, so a downstream step
-// can remap flumut mutations into Nextclade coordinates. Idempotent: given the same
-// two reference directories it always produces the same map, including the trivial
-// identity case where the Nextclade dataset is derived from flumut's reference.
-//
-// This step is independent of, and does not modify, nextclade_to_freebayes_vcf.py
-// or any of its consuming processes (nextclade_to_vcf*, post_process_vcf*).
+// Runs once per pipeline invocation, not per sample. Translates nucleotide and amino-acid
+// indices from flumut's fixed reference (source) onto the selected Nextclade dataset
+// (target), so merge_flumut_mutations can place FluMutDB positions in Nextclade
+// coordinates. Idempotent: the same two reference directories always give the same map.
 
 process coordinate_conversion {
 

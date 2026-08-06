@@ -33,6 +33,13 @@ import org.yaml.snakeyaml.Yaml
 List DB_SEGMENTS = ['PB2', 'PB1', 'PA', 'HA', 'NP', 'NA', 'M', 'NS']
 
 
+// @Field variables are not importable across an include, so workflows reach the canonical
+// set through this.
+def db_segments() {
+    return DB_SEGMENTS
+}
+
+
 def db_layout_help() {
     return """
 Expected bundle layout:

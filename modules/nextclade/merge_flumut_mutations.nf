@@ -1,17 +1,9 @@
 // nextclade/merge_flumut_mutations.nf - Annotate the Nextclade VCF with FluMutDB markers.
 //
-// Consumes the flumut->Nextclade coordinate map (per-segment shard) and a per-sample/
-// per-segment Nextclade freebayes-style VCF. For every AA change already annotated in a
-// row's ANN= field, merge_flumut_mutations.py queries FluMutDB (shipped by the flumutdb
-// conda package) for a matching curated marker and, on a hit, adds a FLUMUT= INFO field.
-// No rows are added, removed or reordered. Writes a NEW *_flumut_merged.vcf; the input
-// *_final.vcf is untouched.
-//
-// The marker set comes from the database, so no per-sample flumut output is needed here
-// (the flumut process still runs and publishes its own TSVs).
-//
-// This step does not modify any existing process or script (nextclade_to_freebayes_vcf.py,
-// post_process_vcf*, flumut, coordinate_conversion).
+// Consumes a per-segment coordinate-map shard and a per-sample/per-segment VCF, and adds a
+// FLUMUT= INFO field to rows whose ANN= AA change matches a curated FluMutDB marker. No
+// rows are added, removed or reordered. Writes a NEW *_flumut_merged.vcf, leaving the input
+// *_final.vcf untouched. Markers come from the flumutdb package, not a per-sample run.
 
 process merge_flumut_mutations {
 
