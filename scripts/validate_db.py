@@ -7,7 +7,7 @@ set, in a fixed layout:
     <db>/
       db.yml                                  optional metadata; every key optional
       blastn_db.fa                            headers accession|subtype|segment
-      nextclade/{pb2,pb1,pa,ha,np,na,m,ns}/   reference.fasta + genome_annotation.gff3
+      nextclade/{PB2,PB1,PA,HA,NP,NA,M,NS}/   reference.fasta + genome_annotation.gff3
       snpeff/snpEff.config
       snpeff/<genome>/snpEffectPredictor.bin
 
@@ -166,11 +166,21 @@ def check_nextclade(root: Path, report: Report) -> None:
         report.components["nextclade"] = "SKIP (no nextclade/)"
         return
 
+    # Matched against the real directory names rather than by is_dir(), which answers yes
+    # to HA/ for a ha/ on a case-insensitive filesystem. The pipeline resolves the
+    # uppercase name, so a lowercase bundle validates on macOS and fails on every Linux
+    # host -- exactly the defect this check exists to catch.
+    present = {entry.name for entry in datasets.iterdir() if entry.is_dir()}
+
     incomplete: list[str] = []
     for segment in SEGMENTS:
         directory = datasets / segment
-        if not directory.is_dir():
-            incomplete.append(f"{segment} (no {segment}/)")
+        if segment not in present:
+            miscased = [name for name in present if name.upper() == segment]
+            if miscased:
+                incomplete.append(f"{segment} (directory is named {miscased[0]}/, must be {segment}/)")
+            else:
+                incomplete.append(f"{segment} (no {segment}/)")
             continue
 
         missing = [
