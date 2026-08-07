@@ -2,7 +2,7 @@
 //
 // Consumes a per-segment coordinate-map shard and a per-sample/per-segment VCF, and adds a
 // FLUMUT= INFO field to rows whose ANN= AA change matches a curated FluMutDB marker. No
-// rows are added, removed or reordered. Writes a NEW *_flumut_merged.vcf, leaving the input
+// rows are added, removed or reordered. Writes a NEW *_flumut_annotated.vcf, leaving the input
 // *_final.vcf untouched. Markers come from the flumutdb package, not a per-sample run.
 
 process merge_flumut_mutations {
@@ -13,9 +13,9 @@ process merge_flumut_mutations {
 
     publishDir "${params.outdir}", mode: 'copy',
         saveAs: { filename ->
-            if (filename.endsWith('_flumut_merged.vcf')) {
+            if (filename.endsWith('_flumut_annotated.vcf')) {
                 def wf = task.ext.workflow ?: 'nextclade'
-                return "${sample_id}/${wf}/${filename}"
+                return "${sample_id}/${wf}/flumut_annotated/${filename}"
             }
             // Provenance is not published from here: collect_provenance concatenates it
             // with the rest of the sample's records and publishes that single file.
@@ -26,7 +26,7 @@ process merge_flumut_mutations {
     tuple val(sample_id), val(segment), path(vcf), path(coord_json)
 
     output:
-    tuple val(sample_id), val(segment), path("*_flumut_merged.vcf"),        emit: vcf
+    tuple val(sample_id), val(segment), path("*_flumut_annotated.vcf"),        emit: vcf
     tuple val(sample_id), path("${sample_id}_${segment}_merge_flumut_provenance.yml"), emit: provenance
 
     script:
@@ -44,13 +44,13 @@ process merge_flumut_mutations {
         --coord-map ${coord_json} \\
         --segment ${segment} \\
         --sample ${sample_id} \\
-        -o ${stem}_flumut_merged.vcf
+        -o ${stem}_flumut_annotated.vcf
     """
 
     stub:
     def stem = vcf.name.replaceAll(/(_final)?\.vcf$/, '')
     """
-    touch ${stem}_flumut_merged.vcf
+    touch ${stem}_flumut_annotated.vcf
     touch ${sample_id}_${segment}_merge_flumut_provenance.yml
     """
 }
