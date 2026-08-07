@@ -26,7 +26,7 @@ consensus.fasta ─► nextclade_run_batch ─► nextclade_to_freebayes_vcf.py 
                                               fix_mnv_codons.py (post_process) ─► *_final.vcf
                                                                              │
       coordinate_conversion (flumut→Nextclade map) ─┐                        │
-      FluMutDB (flumutdb conda package) ────────────┼─► merge_flumut_mutations.py ─► *_flumut_merged.vcf
+      FluMutDB (flumutdb conda package) ────────────┼─► merge_flumut_mutations.py ─► *_flumut_annotated.vcf
                                                      │
                               *_final.vcf ───────────┘
 ```
@@ -159,7 +159,7 @@ FluMutDB is a curated catalogue of influenza amino-acid markers and their publis
 phenotypic effects. This script tags the fluscan calls that *are* such markers: it walks the
 VCF and, for every AA change already annotated in a row's `ANN=`, asks the database whether a
 marker exists for that (protein, AA position, alt AA). It **writes a new file**
-(`*_flumut_merged.vcf`) and never touches the input `*_final.vcf`.
+(`*_flumut_annotated.vcf`) and never touches the input `*_final.vcf`.
 
 **No row is added, removed or reordered**, and no existing field is rewritten — matching rows
 simply gain one extra INFO key. `ANN=` stays strictly snpEff 16-field compatible.

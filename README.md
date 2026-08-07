@@ -96,7 +96,7 @@ flowchart TD
         coord_map[coordinate_conversion: build_reference_coordinate_map.py]
         coord_final[aggregate/reference_remap]
         flumut_merge[merge_flumut_mutations: merge_flumut_mutations.py]
-        flumut_merged[FluMutDB-annotated VCFs]
+        flumut_annotated[FluMutDB-annotated VCFs]
 
         nextclade_prepare --> nextclade_flumut
         nextclade_prepare --> split_consensus
@@ -110,7 +110,7 @@ flowchart TD
         coord_map --> coord_final
         coord_map -.->|"per-segment shard (if merge_flumut_mutations)"| flumut_merge
         nc_final -.-> flumut_merge
-        flumut_merge --> flumut_merged
+        flumut_merge --> flumut_annotated
     end
 ```
 
@@ -184,7 +184,7 @@ nextflow run BCCDC-PHL/fluscan-nf \
 >
 > In the short-read workflow only `blastn_db.fa` is required. SnpEff annotation — and the MNV correction and watchlist scan that read its output — runs when the bundle carries a `snpeff/` directory, and is skipped when it does not; consensus and FluMut complete either way.
 >
-> `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and FluMutDB annotation of the VCF (`*_flumut_merged.vcf`). When set to `true`, `--flumut_db` becomes mandatory: FluMut's own bundle, whose `nextclade/` datasets are the fixed *source* reference lifted onto the `--db` datasets by the `coordinate_conversion` step. Point it at the bundle root, not at its `nextclade/` subdirectory. The marker set comes from the `flumutdb` conda package, so the annotation step does not consume the per-sample `flumut` output.
+> `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and FluMutDB annotation of the VCF (`*_flumut_annotated.vcf`). When set to `true`, `--flumut_db` becomes mandatory: FluMut's own bundle, whose `nextclade/` datasets are the fixed *source* reference lifted onto the `--db` datasets by the `coordinate_conversion` step. Point it at the bundle root, not at its `nextclade/` subdirectory. The marker set comes from the `flumutdb` conda package, so the annotation step does not consume the per-sample `flumut` output.
 
 **Package management:**
 - Conda is used for dependency management. The `-profile conda` flag and `--cache` parameter are required on BCCDC systems.
@@ -243,7 +243,7 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `nextclade/json/*_nextclade.json` | Per-segment Nextclade JSON split out from the cross-sample batch result |
 | `nextclade/tsv/*_nextclade.tsv` | Per-segment Nextclade TSV split out from the cross-sample batch result |
 | `nextclade/*_final.vcf` | Per-segment final VCF after Nextclade-to-VCF conversion and MNV codon correction |
-| `nextclade/*_flumut_merged.vcf` | *Optional* (`--merge_flumut_mutations`): the same VCF with a `FLUMUT=` INFO field (`Protein\|AA_Pos\|Alt_AA\|Mutation_Name\|DirectEffect\|AssociatedEffect`) on rows whose amino-acid change matches a curated FluMutDB marker |
+| `nextclade/flumut_annotated/*_flumut_annotated.vcf` | *Optional* (`--merge_flumut_mutations`): the same VCF with a `FLUMUT=` INFO field (`Protein\|AA_Pos\|Alt_AA\|Mutation_Name\|DirectEffect\|AssociatedEffect`) on rows whose amino-acid change matches a curated FluMutDB marker |
 | `nextclade/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF. Independent of `--merge_flumut_mutations`: `FLUMUT=` is a curated annotation written *into* the VCF, this is a custom list scanned *out* of it |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |

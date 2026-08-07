@@ -182,7 +182,7 @@ workflow NEXTCLADE {
             coordinate_conversion(ch_source_reference.combine(ch_target_reference))
 
             // --- Step 8: Annotate each per-sample/per-segment VCF with FluMutDB markers ---
-            //   Additive: writes a separate *_flumut_merged.vcf and leaves *_final.vcf
+            //   Additive: writes a separate *_flumut_annotated.vcf and leaves *_final.vcf
             //   untouched. Run per (sample, segment) so each task stages only its own shard.
             ch_vcf_flat = ch_final_vcf                         // [sample_id, segment, vcf]
 
@@ -197,7 +197,7 @@ workflow NEXTCLADE {
             ch_vcf_by_segment.unknown.subscribe { sample_id, segment, vcf ->
                 log.warn "merge_flumut_mutations: ${sample_id} has no coordinate map for segment " +
                          "'${segment}' (not one of ${SEGMENTS.join(', ')}); ${vcf.name} is left " +
-                         "unannotated and produces no *_flumut_merged.vcf"
+                         "unannotated and produces no *_flumut_annotated.vcf"
             }
 
             // Key each per-segment shard by its segment label parsed from the filename.
