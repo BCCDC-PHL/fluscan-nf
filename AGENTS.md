@@ -79,8 +79,16 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   that function is the only thing that should know the layout.
 - The nucleotide reference FASTA used for BLAST has headers
   `accession|subtype|segment`.
-- Nextclade datasets live in lowercase per-segment subdirectories such as
-  `ha/` and must contain the expected dataset reference and annotation files.
+- Nextclade datasets live in uppercase per-segment subdirectories (`HA/`, `PB2/`,
+  …) and must contain the expected dataset reference and annotation files.
+  Resolve them with the segment label directly; never lowercase it. macOS is
+  case-insensitive, so a case mistake here fails only on Linux.
+- A dataset `config.json` is the **input manifest for
+  `scripts/build_dataset.py`** and nothing else. That script is its only
+  consumer; the pipeline, `bin/build_reference_coordinate_map.py`, and
+  `scripts/biopython_sanity_check.py` all key off the fixed uppercase layout
+  plus each segment's `pathogen.json`. Do not reintroduce a runtime read of it —
+  a bundle without one must still work.
 - SnpEff is always invoked with `-dataDir` pointing at the staged `snpeff/`,
   which overrides the config's `data.dir`. The `<genome>/` directories sit
   directly under `snpeff/` — a standalone SnpEff install nests them under
@@ -238,10 +246,9 @@ published filenames/content. Use `-profile conda`; `conda.useMamba` is enabled.
   still commented out in PAFTOOLS. `mutation_watch` emits a provenance YAML that
   only NEXTCLADE joins in; SHORT_READ does not, so its watchlist scan is absent
   from the collected record.
-- `tests/test_validate_db.py` has 11 failing tests on `main`. The fixtures build
-  a bundle whose `snpEff.config` declares a genome with no built database, which
-  `scripts/validate_db.py` now treats as a failure — a test/code mismatch, not an
-  environment problem. Do not assume you caused them.
+- `tests/conftest.py` puts `bin/` on `sys.path` so the entry points can resolve
+  their `from lib.…` imports under pytest. Fix an import failure there, not by
+  adding path manipulation to a production script.
 - `short_read_sample_reads` invokes `seqtk`, but the main environment does not
   explicitly declare it; do not rely on a transitive installation.
 - The GitHub Actions test path is legacy and short-read-only. It references an
