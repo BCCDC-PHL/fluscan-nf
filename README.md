@@ -260,7 +260,7 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `aggregate/reference_remap/coordinate_map.nt.tsv` | Flat per-position nucleotide coordinate map (source/flumut position/base -> target/nextclade position/base, per segment) |
 | `aggregate/reference_remap/coordinate_map.aa.tsv` | Flat per-residue amino-acid coordinate map (source/flumut position/residue -> target/nextclade position/residue, per segment/gene) |
 | `aggregate/reference_remap/coordinate_map.qc.tsv` | Per-segment/per-gene alignment QC: identity, coverage, the number of co-optimal alignments the map's gap placement was chosen from, and status (`ok`/`warning`/`missing_in_source`/`extra_in_source`/`stale_annotation`) |
-| `aggregate/reference_remap/<source>_alignment.fasta` (`<source>` is the `--source-name` the workflow passes, i.e. the flumut reference directory's parent name) | Target/source (nextclade/flumut) nucleotide alignment blocks, one per segment |
+| `aggregate/reference_remap/<source>_alignment.fasta` (`<source>` is the flumut bundle's reference label: `nextclade_ref_name` from its `db.yml`, else `name`, else the bundle directory name) | Target/source (nextclade/flumut) nucleotide alignment blocks, one per segment |
 | `aggregate/reference_remap/<source>_aa_alignment.fasta` | Target/source (nextclade/flumut) amino-acid alignment blocks, one per gene |
 | `${run_name}_fluscan-nf_nextflow_report.html` | Nextflow execution report |
 | `${run_name}_fluscan-nf_nextflow_timeline.html` | Nextflow execution timeline |
