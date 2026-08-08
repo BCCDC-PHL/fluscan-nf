@@ -22,7 +22,7 @@ nextflow run BCCDC-PHL/fluscan-nf \
 ├── nextclade/
 │   ├── PB2/  reference.fasta, genome_annotation.gff3, pathogen.json
 │   ├── PB1/  …  and PA, HA, NP, NA, M, NS  (uppercase segment names)
-│   └── config.json                             optional; written by scripts/build_dataset.py
+│   └── config.json                             optional; read by scripts/build_dataset.py, ignored at runtime
 └── snpeff/
     ├── snpEff.config
     └── influenza_h5n1/
@@ -93,7 +93,11 @@ not exist, which is a reliable sign a bundle was moved without being rebuilt.
 ## Building a bundle
 
 **Nextclade datasets** — `scripts/build_dataset.py` builds per-segment datasets from
-GenBank records; see its `--help`. The result goes in `<db>/nextclade/`.
+GenBank records; see its `--help`. The result goes in `<db>/nextclade/`. It *reads* a
+hand-written `config.json` as its input manifest — name each segment's `dir` there with
+the uppercase segment name, because the pipeline resolves datasets as
+`nextclade/<SEGMENT>/`. Nothing at pipeline runtime reads `config.json`: the bundle layout
+is the interface, and the file is only a record of how the datasets were built.
 
 **BLAST reference** — a plain nucleotide FASTA with `accession|subtype|segment` headers.
 The pipeline runs `makeblastdb` itself, so no index files are needed alongside it.

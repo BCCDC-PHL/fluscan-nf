@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Build Nextclade reference dataset directories from GenBank files.
 
-Reads a config.json from the dataset directory for all strain-specific
-values (display name, ID prefix, strain, QC thresholds, segment list).
+Reads a hand-written config.json from the dataset directory as its input manifest:
+display name, ID prefix, strain, QC thresholds, and the segment list. This script is
+the only consumer of that file — the pipeline resolves datasets by directory name and
+never reads it.
 
 Usage:
     python scripts/build_dataset.py <dataset_dir>
@@ -10,6 +12,8 @@ Usage:
 
 Each segment GenBank file must exist at <dataset_dir>/<segment_dir>.gb and will be moved into <dataset_dir>/<segment_dir>/<segment_dir>.gb.
 Outputs per-segment: reference.fasta, genome_annotation.gff3, pathogen.json
+
+Each segment's `dir` in config.json must be the uppercase segment name (HA, PB2, ...).
 """
 
 import argparse
