@@ -105,7 +105,7 @@ workflow NEXTCLADE {
         // --- Step 1b: Report-only consensus/reference identity QC ---
         ch_identity_qc = ch_consensus_segments
             .map { sample_id, segment, consensus ->
-                def ref_fasta = db.nextclade.resolve("${segment.toLowerCase()}/reference.fasta")
+                def ref_fasta = db.nextclade.resolve("${segment}/reference.fasta")
                 return [sample_id, segment, consensus, ref_fasta]
             }
         consensus_identity_qc(ch_identity_qc)
@@ -118,7 +118,7 @@ workflow NEXTCLADE {
             .map { sample_id, segment, fa -> [segment, sample_id, fa] }
             .groupTuple()                                  // [segment, [sample_ids], [fastas]]
             .map { segment, sample_ids, fastas ->
-                def dataset_dir = db.nextclade.resolve(segment.toLowerCase())
+                def dataset_dir = db.nextclade.resolve(segment)
                 return [segment, sample_ids, fastas, dataset_dir]
             }
 

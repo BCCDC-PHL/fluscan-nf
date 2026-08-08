@@ -134,7 +134,7 @@ Every reference the pipeline needs for one reference set lives in a single direc
 <db>/
 ├── db.yml            optional metadata (name, version, …)
 ├── blastn_db.fa      nt reference; headers accession|subtype|segment
-├── nextclade/        one lowercase directory per segment (ha/, na/, …)
+├── nextclade/        one uppercase directory per segment (HA/, NA/, …)
 └── snpeff/           snpEff.config + <genome>/
 ```
 
