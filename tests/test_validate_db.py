@@ -20,7 +20,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "validate_db.py"
 
-SEGMENTS = ["pb2", "pb1", "pa", "ha", "np", "na", "m", "ns"]
+# Uppercase, matching the dataset directory names a real bundle carries.
+SEGMENTS = ["PB2", "PB1", "PA", "HA", "NP", "NA", "M", "NS"]
 
 
 def _load_module():
@@ -41,18 +42,9 @@ vdb = _load_module()
 # ---------------------------------------------------------------------------
 
 BLAST_FASTA = "".join(
-    f">NC_00735{i}.1|H5N1|{seg.upper()}\nACGTACGTACGT\n"
+    f">NC_00735{i}.1|H5N1|{seg}\nACGTACGTACGT\n"
     for i, seg in enumerate(SEGMENTS)
 )
-
-SNPEFF_CONFIG = """\
-data.dir = ./data
-
-influenza_h5n1.genome : Influenza_A_H5N1
-influenza_h5n1.chromosomes : NC_007357.1
-influenza_h5n1.NC_007357.1.codonTable : Standard
-"""
-
 
 def make_nextclade(root: Path, segments=SEGMENTS) -> None:
     for segment in segments:
@@ -64,14 +56,20 @@ def make_nextclade(root: Path, segments=SEGMENTS) -> None:
 
 
 def make_snpeff(root: Path, genomes=("influenza_h5n1",), build=True) -> None:
+    """A bundle's SnpEff component: `<genome>/` sits directly under `snpeff/`.
+
+    A standalone SnpEff install nests those one level deeper under `data/`; a bundle does
+    not, because `snpeff/` is already the per-bundle directory that level provided, and the
+    pipeline invokes SnpEff with `-dataDir` pointing at it.
+    """
     directory = root / "snpeff"
     directory.mkdir(parents=True)
-    config = "data.dir = ./data\n\n" + "".join(
+    config = "data.dir = .\n\n" + "".join(
         f"{genome}.genome : {genome}\n" for genome in genomes
     )
     (directory / "snpEff.config").write_text(config)
     for genome in genomes:
-        data = directory / "data" / genome
+        data = directory / genome
         data.mkdir(parents=True)
         (data / "genes.gbk").write_text("LOCUS test\n//\n")
         if build:
@@ -146,7 +144,7 @@ def test_missing_bundle_is_reported(tmp_path):
 
 def test_declared_genome_without_built_database_fails(complete_bundle):
     """snpEff would emit empty ANN= rather than error, so nothing downstream notices."""
-    (complete_bundle / "snpeff" / "data" / "influenza_h5n1" / "snpEffectPredictor.bin").unlink()
+    (complete_bundle / "snpeff" / "influenza_h5n1" / "snpEffectPredictor.bin").unlink()
     report = vdb.validate(complete_bundle, [])
     assert not report.ok
     assert any("no built database" in p for p in report.problems)
@@ -157,7 +155,7 @@ def test_second_genome_without_built_database_fails(tmp_path):
     root = tmp_path / "multi"
     root.mkdir()
     make_snpeff(root, genomes=("influenza_h5n1", "influenza_h1n1"))
-    (root / "snpeff" / "data" / "influenza_h1n1" / "snpEffectPredictor.bin").unlink()
+    (root / "snpeff" / "influenza_h1n1" / "snpEffectPredictor.bin").unlink()
     report = vdb.validate(root, [])
     assert not report.ok
     assert any("influenza_h1n1" in p for p in report.problems)
@@ -231,28 +229,28 @@ def test_missing_segment_in_blast_database_warns_only(complete_bundle):
 
 def test_missing_segment_directory_fails(complete_bundle):
     import shutil
-    shutil.rmtree(complete_bundle / "nextclade" / "pb1")
+    shutil.rmtree(complete_bundle / "nextclade" / "PB1")
     report = vdb.validate(complete_bundle, [])
     assert not report.ok
     assert any("PB1" in p for p in report.problems)
 
 
 def test_segment_missing_annotation_fails(complete_bundle):
-    (complete_bundle / "nextclade" / "ha" / "genome_annotation.gff3").unlink()
+    (complete_bundle / "nextclade" / "HA" / "genome_annotation.gff3").unlink()
     report = vdb.validate(complete_bundle, [])
     assert not report.ok
     assert any("genome_annotation.gff3" in p for p in report.problems)
 
 
 def test_reference_that_is_not_fasta_fails(complete_bundle):
-    (complete_bundle / "nextclade" / "na" / "reference.fasta").write_text("ACGT\n")
+    (complete_bundle / "nextclade" / "NA" / "reference.fasta").write_text("ACGT\n")
     report = vdb.validate(complete_bundle, [])
     assert not report.ok
     assert any("not FASTA" in p for p in report.problems)
 
 
 def test_missing_pathogen_json_warns_only(complete_bundle):
-    (complete_bundle / "nextclade" / "m" / "pathogen.json").unlink()
+    (complete_bundle / "nextclade" / "M" / "pathogen.json").unlink()
     report = vdb.validate(complete_bundle, [])
     assert report.ok, report.problems
     assert any("pathogen.json" in w for w in report.warnings)
@@ -318,7 +316,7 @@ def test_cli_exit_zero_on_valid_bundle(complete_bundle):
 
 
 def test_cli_exit_one_on_invalid_bundle(complete_bundle):
-    (complete_bundle / "snpeff" / "data" / "influenza_h5n1" / "snpEffectPredictor.bin").unlink()
+    (complete_bundle / "snpeff" / "influenza_h5n1" / "snpEffectPredictor.bin").unlink()
     result = run_cli(complete_bundle)
     assert result.returncode == 1
     assert "INVALID" in result.stdout

@@ -1,6 +1,6 @@
 """Unit tests for bin/build_reference_coordinate_map.py.
 
-Two things are pinned here:
+Three things are pinned here:
 
 1. **HA subunits are read from either annotation shape.** FluMutDB numbers HA by its
    HA1/HA2 subunits. A target dataset may express that split as two real CDS features
@@ -11,7 +11,12 @@ Two things are pinned here:
 
 2. **QC reporting does not go silent on the worst input.** `safe_pct` yields NaN when
    nothing aligned, and every `nan < threshold` comparison is False, so a plain comparison
-   stays quiet on exactly the case that most needs reporting.
+   stays quiet on exactly the case that most needs reporting. A questionable map is
+   reported, never withheld.
+
+3. **The published artifacts are an interface.** Filenames, JSON keys and TSV columns are
+   consumed downstream and by hand; they are asserted here so a refactor cannot quietly
+   drop one.
 
 Only Biopython is required; the datasets are synthesised in tmp_path.
 """
@@ -109,7 +114,7 @@ def write_dataset(root: Path, prefix: str, ha_gff, ha_sequence: str) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     for segment in builder.SEGMENTS:
         chrom = f"{prefix}_{segment}"
-        seg_dir = root / segment.lower()
+        seg_dir = root / segment
         if segment == "HA":
             write_segment(seg_dir, chrom, ha_sequence, ha_gff(chrom))
             continue
@@ -286,7 +291,7 @@ def test_frame_offset_follows_a_spliced_parent(tmp_path):
     exactly why it is pinned here."""
     parent = builder.CdsModel(
         segment="M", gene="M2", contig="X", strand="+",
-        parts=((1, 26), (715, 1000)), cds_ids=(),
+        parts=((1, 26), (715, 1000)),
     )
     # Spliced coding sequence is 1..26 then 715..1000, so 715 is the 27th coding base.
     assert builder.mature_peptide_frame_offset(parent, 715, 1000) == 26
@@ -300,7 +305,7 @@ def test_frame_offset_follows_a_spliced_parent(tmp_path):
 def test_frame_offset_counts_from_the_end_on_the_minus_strand(tmp_path):
     parent = builder.CdsModel(
         segment="X", gene="G", contig="X", strand="-",
-        parts=((100, 200),), cds_ids=(),
+        parts=((100, 200),),
     )
     # Translation starts at 200 and runs down, so the peptide ending at 200 is at offset 0.
     assert builder.mature_peptide_frame_offset(parent, 150, 200) == 0
@@ -323,23 +328,42 @@ def test_v1_target_cds_payload_is_gone(tmp_path, datasets):
 # QC reporting
 # ---------------------------------------------------------------------------
 
+def alignment(identities: int, aligned: int, source_length: int) -> "builder.AlignmentResult":
+    """An AlignmentResult carrying only the counts the quality properties read."""
+    return builder.AlignmentResult(
+        source_seq="X" * source_length,
+        target_seq="X" * source_length,
+        source_aligned="",
+        target_aligned="",
+        source_to_target={},
+        identities=identities,
+        aligned=aligned,
+        gaps=0,
+        co_optimal=1,
+    )
+
+
 def test_nothing_aligned_is_reported_rather_than_passing_silently():
     """safe_pct returns NaN here, and `nan < 80.0` is False -- so a plain threshold test
     stays silent on a map with zero aligned positions, the worst possible outcome."""
+    nothing_aligned = alignment(identities=0, aligned=0, source_length=100)
+
     assert math.isnan(builder.safe_pct(0, 0))
-    assert builder.below_threshold(builder.safe_pct(0, 0), 100.0) is True
-    assert builder.compute_status(builder.safe_pct(0, 0), 100.0) == "warning"
+    assert math.isnan(nothing_aligned.identity_pct)
+    assert nothing_aligned.is_questionable is True
+    assert nothing_aligned.status == "warning"
 
 
-@pytest.mark.parametrize("identity,coverage,expected", [
-    (100.0, 100.0, False),
-    (79.9, 100.0, True),
-    (100.0, 94.9, True),
-    (math.nan, 100.0, True),
-    (100.0, math.nan, True),
+@pytest.mark.parametrize("identities,aligned,source_length,expected", [
+    (100, 100, 100, False),   # perfect identity, full coverage
+    (79, 100, 100, True),     # identity below 80%
+    (94, 94, 100, True),      # coverage below 95%
+    (0, 0, 100, True),        # nothing aligned: both percentages are NaN
 ])
-def test_below_threshold(identity, coverage, expected):
-    assert builder.below_threshold(identity, coverage) is expected
+def test_a_questionable_map_is_flagged(identities, aligned, source_length, expected):
+    result = alignment(identities, aligned, source_length)
+    assert result.is_questionable is expected
+    assert result.status == ("warning" if expected else "ok")
 
 
 def test_qc_tsv_leaves_an_unmeasurable_identity_blank():
@@ -365,37 +389,157 @@ def test_qc_tsv_carries_the_co_optimal_alignment_count(tmp_path, datasets):
     assert all(int(row.split("\t")[index]) >= 1 for row in rows if row.split("\t")[2] == "nt")
 
 
-def test_low_identity_fails_only_when_asked(tmp_path, datasets):
-    """Real reference pairs sit below these thresholds (flumut -> gsgd reports NS1 at 66%),
-    so failing by default would reject a dataset the pipeline documents as supported."""
+def test_a_questionable_map_warns_and_is_written_anyway(tmp_path, datasets, capsys):
+    """Real reference pairs sit below these thresholds -- flumut -> gsgd reports NS/NS1 at
+    66% identity -- so refusing to write one would reject a dataset the pipeline documents
+    as supported. The warning and the QC row are the whole report."""
     source, split, _ = datasets
-    common = ["--source-ref-dir", str(source), "--target-ref-dir", str(split),
-              "--source-name", "src", "--target-name", "tgt"]
+    out_dir = tmp_path / "questionable"
 
-    builder.build_map(builder.parse_args([*common, "--out-dir", str(tmp_path / "warn_only")]))
+    builder.build_map(builder.parse_args([
+        "--source-ref-dir", str(source), "--target-ref-dir", str(split),
+        "--out-dir", str(out_dir), "--source-name", "src", "--target-name", "tgt",
+    ]))
+    err = capsys.readouterr().err
 
-    with pytest.raises(SystemExit, match="Low-quality coordinate map"):
-        builder.build_map(builder.parse_args(
-            [*common, "--out-dir", str(tmp_path / "strict"), "--fail-on-low-identity"]))
+    assert "WARNING" in err and "map has identity=" in err
+
+    header, *rows = (out_dir / "coordinate_map.qc.tsv").read_text().splitlines()
+    status = header.split("\t").index("status")
+    assert any(row.split("\t")[status] == "warning" for row in rows)
+    assert (out_dir / "coordinate_map.json").exists()
+
+
+def test_per_position_status_follows_the_mapped_coordinate(tmp_path, datasets):
+    """`status` is a reading of the coordinate, not a second record kept alongside it: a
+    source position with no target counterpart is exactly the one written as unmapped."""
+    assert builder.map_status(42) == "mapped"
+    assert builder.map_status(None) == "unmapped"
+
+    source, split, _ = datasets
+    out_dir = tmp_path / "status"
+    builder.build_map(builder.parse_args([
+        "--source-ref-dir", str(source), "--target-ref-dir", str(split),
+        "--out-dir", str(out_dir), "--source-name", "src", "--target-name", "tgt",
+    ]))
+
+    header, *rows = (out_dir / "coordinate_map.nt.tsv").read_text().splitlines()
+    columns = header.split("\t")
+    target_pos = columns.index("target_pos")
+    status = columns.index("status")
+    for row in rows:
+        fields = row.split("\t")
+        assert fields[status] == ("mapped" if fields[target_pos] else "unmapped")
 
 
 # ---------------------------------------------------------------------------
-# Reference naming
+# Published artifacts
 # ---------------------------------------------------------------------------
 
-def test_explicit_name_beats_config_json(tmp_path):
-    """The caller's name wins so the process's stub block can reproduce the real output
-    filenames; a dataset carrying an id_prefix used to make the two diverge."""
-    ref_dir = tmp_path / "chicken2021" / "nextclade"
-    ref_dir.mkdir(parents=True)
-    (ref_dir / "config.json").write_text(json.dumps({"id_prefix": "CHICKEN2021"}))
+TSV_COLUMNS = {
+    "coordinate_map.nt.tsv": [
+        "source_reference", "segment", "source_chrom", "source_pos", "source_base",
+        "target_chrom", "target_pos", "target_base", "status",
+    ],
+    "coordinate_map.aa.tsv": [
+        "source_reference", "segment", "gene", "source_aa_pos", "source_residue",
+        "target_aa_pos", "target_residue", "status",
+    ],
+    "coordinate_map.qc.tsv": [
+        "source_reference", "segment", "layer", "gene", "source_length", "target_length",
+        "aligned_positions", "gap_columns", "identity_pct", "co_optimal_alignments",
+        "status",
+    ],
+}
 
-    assert builder.resolve_reference_name(ref_dir, "chicken2021") == "chicken2021"
-    assert builder.resolve_reference_name(ref_dir, None) == "CHICKEN2021"
+SEGMENT_KEYS = {
+    "source_chrom", "target_chrom", "source_length", "target_length", "nt_identity_pct",
+    "nt_aligned_positions", "nt_gap_columns", "nt_co_optimal_alignments",
+    "nt_source_to_target", "missing_target_genes", "extra_source_genes",
+    "stale_annotation", "subunit_parent_genes", "genes",
+}
+
+GENE_KEYS = {
+    "source_length", "target_length", "aa_identity_pct", "aa_aligned_positions",
+    "aa_gap_columns", "aa_co_optimal_alignments", "aa_source_to_target",
+}
 
 
-def test_parent_directory_is_the_last_resort(tmp_path):
-    ref_dir = tmp_path / "gsgd" / "nextclade"
-    ref_dir.mkdir(parents=True)
+@pytest.fixture
+def built(tmp_path, datasets):
+    """One real build, for the assertions that only read its outputs."""
+    source, split, _ = datasets
+    out_dir = tmp_path / "artifacts"
+    builder.build_map(builder.parse_args([
+        "--source-ref-dir", str(source), "--target-ref-dir", str(split),
+        "--out-dir", str(out_dir), "--source-name", "src", "--target-name", "tgt",
+    ]))
+    return out_dir
 
-    assert builder.resolve_reference_name(ref_dir, None) == "gsgd"
+
+def test_every_documented_artifact_is_written(built):
+    expected = {
+        "coordinate_map.json",
+        *(f"coordinate_map.{segment}.json" for segment in builder.SEGMENTS),
+        "coordinate_map.nt.tsv",
+        "coordinate_map.aa.tsv",
+        "coordinate_map.qc.tsv",
+        "src_alignment.fasta",
+        "src_aa_alignment.fasta",
+    }
+
+    assert expected <= {path.name for path in built.iterdir()}
+
+
+def test_tsv_columns_are_unchanged(built):
+    for name, columns in TSV_COLUMNS.items():
+        header = (built / name).read_text().splitlines()[0]
+        assert header.split("\t") == columns, name
+
+
+def test_json_fields_are_unchanged(built):
+    doc = json.loads((built / "coordinate_map.json").read_text())
+
+    assert doc["schema_version"] == "2.2"
+    assert set(doc) == {
+        "schema_version", "script_version", "source_reference", "target_reference",
+        "alignment_parameters", "segments",
+    }
+    assert sorted(doc["segments"]) == sorted(builder.SEGMENTS)
+    for seg_doc in doc["segments"].values():
+        assert set(seg_doc) == SEGMENT_KEYS
+        for gene_doc in seg_doc["genes"].values():
+            # `aliases` is present only for genes recovered from mature peptides.
+            assert set(gene_doc) - {"aliases"} == GENE_KEYS
+
+
+def test_shards_drop_only_the_nucleotide_position_map(built):
+    """Shards are what the merge actually reads. They keep the same segments[SEG] nesting
+    so a consumer works unchanged, minus the large nt map nothing downstream uses."""
+    doc = json.loads((built / "coordinate_map.json").read_text())
+
+    for segment in builder.SEGMENTS:
+        shard = json.loads((built / f"coordinate_map.{segment}.json").read_text())
+        assert set(shard["segments"]) == {segment}
+        seg_doc = shard["segments"][segment]
+        assert set(seg_doc) == SEGMENT_KEYS - {"nt_source_to_target"}
+        assert seg_doc == {
+            k: v for k, v in doc["segments"][segment].items() if k != "nt_source_to_target"
+        }
+
+
+# ---------------------------------------------------------------------------
+# Dataset discovery
+# ---------------------------------------------------------------------------
+
+def test_config_json_is_not_consulted(tmp_path, datasets):
+    """config.json is scripts/build_dataset.py's input manifest, not a runtime interface.
+    A bundle need not carry one, and a broken one must not reach the builder at all."""
+    source, split, _ = datasets
+    (split / "config.json").write_text("{ this is not json")
+
+    doc = build(tmp_path, source, split, "no_config")
+
+    assert sorted(doc["segments"]) == sorted(builder.SEGMENTS)
+    assert doc["source_reference"] == "src"
+    assert doc["target_reference"] == "tgt"

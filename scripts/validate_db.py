@@ -7,7 +7,7 @@ set, in a fixed layout:
     <db>/
       db.yml                                  optional metadata; every key optional
       blastn_db.fa                            headers accession|subtype|segment
-      nextclade/{pb2,pb1,pa,ha,np,na,m,ns}/   reference.fasta + genome_annotation.gff3
+      nextclade/{PB2,PB1,PA,HA,NP,NA,M,NS}/   reference.fasta + genome_annotation.gff3
       snpeff/snpEff.config
       snpeff/<genome>/snpEffectPredictor.bin
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Translation-based sanity check of Nextclade vs paftools AA calls.
 
-This lifts the latest session prototype into a reusable CLI that reads a
-Nextclade dataset directory directly rather than relying on hard-coded session
-paths or contig names.
+Reads the reference and annotation out of a Nextclade dataset directory, translates each
+consensus independently with Biopython, and scores both workflows' amino-acid calls against
+that independent result.
 """
 
 from __future__ import annotations
@@ -42,6 +42,8 @@ except ImportError:  # pragma: no cover - optional dependency in this repo
     px = None
     go = None
 
+
+SEGMENTS = ("PB2", "PB1", "PA", "HA", "NP", "NA", "M", "NS")
 
 AA_EFFECT_TERMS = {
     "missense_variant", "synonymous_variant", "stop_gained",
@@ -141,7 +143,7 @@ def parse_args() -> argparse.Namespace:
         "--reference-datasets-dir",
         required=True,
         type=Path,
-        help="Directory containing per-segment Nextclade datasets and config.json.",
+        help="Directory containing the uppercase per-segment Nextclade datasets (HA/, PB2/, …).",
     )
     parser.add_argument(
         "--consensus-dir",
@@ -204,36 +206,31 @@ def _parse_attrs(attrs_str: str) -> dict[str, str]:
 
 
 def load_segment_info(dataset_root: Path) -> list[SegmentInfo]:
-    config_path = dataset_root / "config.json"
-    if not config_path.exists():
-        raise SystemExit(f"config.json not found in {dataset_root}")
+    """Describe each segment dataset under `dataset_root`.
 
-    with open(config_path) as handle:
-        config = json.load(handle)
-
+    Datasets live in uppercase per-segment directories in the canonical segment order, so
+    the segment number a consensus header carries is the position in SEGMENTS. The reference
+    contig comes from each dataset's own pathogen.json, which is what Nextclade itself reads.
+    """
     segments: list[SegmentInfo] = []
-    for segment_cfg in config.get("segments", []):
-        seg_dir = dataset_root / segment_cfg["dir"]
+    for segment_num, label in enumerate(SEGMENTS, start=1):
+        seg_dir = dataset_root / label
+        if not seg_dir.is_dir():
+            raise SystemExit(f"Segment dataset directory not found: {seg_dir}")
         pathogen_path = seg_dir / "pathogen.json"
         if not pathogen_path.exists():
-            raise SystemExit(f"pathogen.json not found for segment {segment_cfg['name']}: {pathogen_path}")
+            raise SystemExit(f"pathogen.json not found for segment {label}: {pathogen_path}")
         with open(pathogen_path) as handle:
             pathogen = json.load(handle)
 
-        nextclade_contig = pathogen["attributes"]["reference accession"]
-        label = segment_cfg["name"].upper()
-        fasta_tag = f"segment{segment_cfg['segment_num']}_{label}"
         segments.append(
             SegmentInfo(
                 label=label,
-                directory=segment_cfg["dir"],
-                nextclade_contig=nextclade_contig,
-                fasta_tag=fasta_tag,
+                directory=label,
+                nextclade_contig=pathogen["attributes"]["reference accession"],
+                fasta_tag=f"segment{segment_num}_{label}",
             )
         )
-
-    if not segments:
-        raise SystemExit(f"No segment definitions found in {config_path}")
     return segments
 
 
