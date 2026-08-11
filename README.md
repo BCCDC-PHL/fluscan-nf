@@ -217,7 +217,7 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers |
-| `*_provenance.yml` | Aggregated per-sample provenance file for the short-read workflow |
+| `*_short_read_*_provenance.yml` | Aggregated per-sample provenance file for the short-read workflow |
 
 ### PAFTOOLS workflow outputs (per sample, consensus FASTA input)
 
@@ -235,6 +235,7 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers |
+| `*_paftools_*_provenance.yml` | Aggregated per-sample provenance file for the PAFTOOLS workflow |
 
 ### NEXTCLADE workflow outputs (per sample, consensus FASTA input)
 
@@ -249,6 +250,7 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers |
+| `*_nextclade_*_provenance.yml` | Aggregated per-sample provenance file for the NEXTCLADE workflow |
 
 ### Run-level outputs
 
@@ -269,7 +271,11 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 
 ## Provenance files
 
-The short-read workflow currently publishes one aggregated `${sample_id}_<timestamp>_provenance.yml` file per sample. FASTA mode defines provenance outputs for several processes internally, but sample-level provenance collection is not currently enabled for the `PAFTOOLS` and `NEXTCLADE` workflows. Note the example below is contrived.  
+All three workflows publish one aggregated `${sample_id}_<workflow>_<timestamp>_provenance.yml` file per sample, where `<workflow>` is `short_read`, `paftools`, or `nextclade`. FASTA mode runs both `PAFTOOLS` and `NEXTCLADE` over the same input, so each sample gets two files; the workflow label is what tells them apart.
+
+Every record opens with the pipeline and reference-database header, followed by the SHA-256 of each input file — the paired FASTQs in short-read mode, the consensus FASTA in FASTA mode. A sample whose `prepare_consensus` or `blastn` step fails produces no provenance file at all, since those processes run `errorStrategy 'ignore'` and the collection joins are inner joins.
+
+Note the example below is contrived.
 
 ```yml
 - pipeline_name: BCCDC-PHL/fluscan-nf
