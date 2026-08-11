@@ -1,6 +1,6 @@
-// short_read/hash_files.nf - Input file hashing for the SHORT_READ workflow
+// shared/hash_files.nf - SHA-256 hashing of workflow input files (shared by all workflows)
 
-process short_read_hash_files {
+process hash_files {
 
     tag { sample_id + " / " + file_type }
 

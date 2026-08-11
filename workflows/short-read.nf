@@ -9,7 +9,7 @@
 
 nextflow.enable.dsl = 2
 
-include { short_read_hash_files }          from '../modules/short_read/hash_files.nf'
+include { hash_files as short_read_hash_files } from '../modules/shared/hash_files.nf'
 include { pipeline_provenance }            from '../modules/shared/provenance.nf'
 include { collect_provenance }             from '../modules/shared/provenance.nf'
 include { short_read_fastp }               from '../modules/short_read/qc.nf'

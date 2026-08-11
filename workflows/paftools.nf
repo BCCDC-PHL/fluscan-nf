@@ -23,6 +23,7 @@
 
 nextflow.enable.dsl = 2
 
+include { hash_files }                                   from '../modules/shared/hash_files.nf'
 include { pipeline_provenance }                          from '../modules/shared/provenance.nf'
 include { collect_provenance }                           from '../modules/shared/provenance.nf'
 include { prepare_consensus }                            from '../modules/shared/consensus_qc.nf'
@@ -98,6 +99,9 @@ workflow PAFTOOLS {
         // Provenance channel
         ch_provenance = ch_fasta_input.map{ it -> it[0] }
 
+        // Hash the input FASTA. One file per sample, so no list-wrapping here.
+        hash_files(ch_fasta_input.combine(Channel.of("fasta_input")))
+
         // --- Step 1: Validate and clean input consensus FASTA ---
         prepare_consensus(ch_fasta_input)
 
@@ -165,13 +169,16 @@ workflow PAFTOOLS {
             mutation_watch(ch_watch_in)
         }
 
-        // // --- Provenance collection ---
-        // ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it ->      [it[0], [it[1]]] }
-        // ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        // ch_provenance = ch_provenance.join(blastn.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        // ch_provenance = ch_provenance.join(paftools_call.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        // ch_provenance = ch_provenance.join(paftools_sort_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        // ch_provenance = ch_provenance.join(paftools_snpeff_annotation.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        // collect_provenance(ch_provenance)
+        // --- Provenance collection ---
+        // Inner joins: prepare_consensus and blastn run errorStrategy 'ignore', so a sample
+        // failing either one leaves the chain and publishes no provenance file at all.
+        ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it ->      [it[0], [it[1]]] }
+        ch_provenance = ch_provenance.join(hash_files.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(blastn.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(paftools_call.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(paftools_sort_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(paftools_snpeff_annotation.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        collect_provenance(ch_provenance)
 
 }

@@ -15,8 +15,11 @@ process collect_provenance {
   tuple val(sample_id), file("${sample_id}_*_provenance.yml")
 
   script:
+  // FASTA dispatch runs PAFTOOLS and NEXTCLADE over the same samples, so the branch label
+  // is what keeps their two records from landing on the same published filename.
+  def workflow_label = task.ext.workflow ? "${task.ext.workflow}_" : ""
   """
-  cat ${provenance_files} > ${sample_id}_\$(date +%Y%m%d%H%M%S)_provenance.yml
+  cat ${provenance_files} > ${sample_id}_${workflow_label}\$(date +%Y%m%d%H%M%S)_provenance.yml
   """
 }
 

@@ -16,6 +16,7 @@
 
 nextflow.enable.dsl = 2
 
+include { hash_files }                           from '../modules/shared/hash_files.nf'
 include { prepare_consensus }                    from '../modules/shared/consensus_qc.nf'
 include { split_fasta as split_fasta_consensus } from '../modules/shared/consensus_qc.nf'
 include { consensus_identity_qc }                from '../modules/nextclade/consensus_qc.nf'
@@ -94,6 +95,9 @@ workflow NEXTCLADE {
         // on as they are produced, and concatenated at the end by collect_provenance.
         ch_provenance = ch_fasta_input.map{ it -> it[0] }
 
+        // Hash the input FASTA. One file per sample, so no list-wrapping here.
+        hash_files(ch_fasta_input.combine(Channel.of("fasta_input")))
+
         // --- Step 1: Validate and clean input consensus FASTA ---
         prepare_consensus(ch_fasta_input)
 
@@ -143,6 +147,7 @@ workflow NEXTCLADE {
         // Per-sample provenance. post_process_vcf_batch is keyed by segment rather than by
         // sample, so it has no per-sample record to join here.
         ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it -> [it[0], [it[1]]] }
+        ch_provenance = ch_provenance.join(hash_files.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
 
