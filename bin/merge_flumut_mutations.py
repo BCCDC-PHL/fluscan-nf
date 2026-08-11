@@ -390,7 +390,8 @@ def main() -> None:
                     segment)
 
     db_path = locate_db(args.flumut_db)
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    # The packaged DB never changes; immutable skips the file locking that fails on network mounts.
+    conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
     try:
         version = db_version(conn)
         db_ref = SEGMENT_TO_DB_REFERENCE.get(segment, segment)

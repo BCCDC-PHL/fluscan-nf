@@ -11,6 +11,9 @@ process merge_flumut_mutations {
 
     conda "${projectDir}/environments/fluscan.yml"
 
+    errorStrategy { task.exitStatus in 1..140 ? 'retry' : 'terminate' }
+    maxRetries 2
+
     publishDir "${params.outdir}", mode: 'copy',
         saveAs: { filename ->
             if (filename.endsWith('_flumut_annotated.vcf')) {
