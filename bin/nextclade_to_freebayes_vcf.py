@@ -14,7 +14,10 @@ Requires:
   -i    Nextclade v3 JSON (per-segment)
   -d    Nextclade reference dataset directory (must contain reference.fasta and genome_annotation.gff3)
 
-Pipeline position: after nextclade run, before reformat_vcf_cyvcf2.py.
+--output-no-mature writes a second VCF alongside the first, carrying the same records but
+no mature-peptide ANN entries: HA is annotated as HA0 only, with no HA1/HA2 entries.
+
+Pipeline position: after nextclade run, before fix_mnv_codons.py.
 """
 
 import argparse
@@ -949,6 +952,30 @@ def write_vcf(
             fh.write("\n")
     return len(rows)
 
+
+def write_results(
+    output_path: Path,
+    results:     list[tuple[str, list[tuple[int, str]]]],
+    chrom:       str,
+    ref_len:     int,
+    ref_path:    str,
+    named_sample: bool,
+) -> None:
+    """Write one VCF per result; multi-sample input appends the sample name to the stem."""
+    if len(results) == 1:
+        sample, rows = results[0]
+        n = write_vcf(str(output_path), chrom, ref_len, ref_path, sample, rows)
+        log.info("Wrote %d records for '%s' -> %s", n, sample, output_path)
+        return
+
+    if named_sample:
+        log.warning("--sample ignored for multi-sample input")
+    for sample, rows in results:
+        safe = re.sub(r"[^\w.-]", "_", sample)
+        out  = output_path.parent / f"{output_path.stem}_{safe}.vcf"
+        n    = write_vcf(str(out), chrom, ref_len, ref_path, sample, rows)
+        log.info("Wrote %d records for '%s' -> %s", n, sample, out)
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -966,6 +993,9 @@ def get_args() -> argparse.Namespace:
                    help="Nextclade reference dataset directory (must contain reference.fasta and genome_annotation.gff3)")
     p.add_argument("-o", "--output",  required=True,
                    help="Output VCF file (used as prefix when input has multiple samples)")
+    p.add_argument("--output-no-mature", default=None, dest="output_no_mature",
+                   help="Optional second output VCF with the same records but no "
+                        "mature-peptide (HA1/HA2) ANN entries")
     p.add_argument("--sample", default=None,
                    help="Override sample name (single-sample inputs only)")
     p.add_argument("--qual",   type=int, default=60,
@@ -1006,10 +1036,20 @@ def main() -> None:
         gff_path, len(genes), len(transcripts),
     )
 
+    # The no-mature output is the same annotation pass run against a transcript list with
+    # the mature peptides removed, so it matches what a GFF3 without them would produce.
+    transcripts_no_mature = [tx for tx in transcripts if not tx["is_mature"]]
+    if args.output_no_mature:
+        log.info(
+            "Also writing a no-mature VCF -> %s (%d mature-peptide transcript(s) omitted)",
+            args.output_no_mature, len(transcripts) - len(transcripts_no_mature),
+        )
+
     with open(args.input) as fh:
         data = json.load(fh)
 
-    results: list[tuple[str, list[tuple[int, str]]]] = []
+    results:           list[tuple[str, list[tuple[int, str]]]] = []
+    results_no_mature: list[tuple[str, list[tuple[int, str]]]] = []
 
     for result in data.get("results", []):
         if result.get("errors"):
@@ -1020,6 +1060,13 @@ def main() -> None:
             sample,
             variants_from_json_result(result, ref_seq, chrom, genes, transcripts, args.qual),
         ))
+        if args.output_no_mature:
+            results_no_mature.append((
+                sample,
+                variants_from_json_result(
+                    result, ref_seq, chrom, genes, transcripts_no_mature, args.qual,
+                ),
+            ))
 
     for error_entry in data.get("errors", []):
         seq_name = error_entry.get("seqName", "UNKNOWN")
@@ -1036,25 +1083,18 @@ def main() -> None:
             log.warning("Nextclade errors for '%s': %s; writing empty VCF",
                         sample, "; ".join(str(m) for m in msgs))
         results.append((sample, []))
+        if args.output_no_mature:
+            results_no_mature.append((sample, []))
 
     if not results:
         log.error("No results found in %s", args.input)
         sys.exit(1)
 
-    output_path = Path(args.output)
-
-    if len(results) == 1:
-        sample, rows = results[0]
-        n = write_vcf(str(output_path), chrom, ref_len, str(ref_path), sample, rows)
-        log.info("Wrote %d records for '%s' -> %s", n, sample, output_path)
-    else:
-        if args.sample:
-            log.warning("--sample ignored for multi-sample input")
-        for sample, rows in results:
-            safe = re.sub(r"[^\w.-]", "_", sample)
-            out  = output_path.parent / f"{output_path.stem}_{safe}.vcf"
-            n    = write_vcf(str(out), chrom, ref_len, str(ref_path), sample, rows)
-            log.info("Wrote %d records for '%s' -> %s", n, sample, out)
+    write_results(Path(args.output), results, chrom, ref_len, str(ref_path), bool(args.sample))
+    if args.output_no_mature:
+        # named_sample=False: the first call has already warned about --sample if needed.
+        write_results(Path(args.output_no_mature), results_no_mature,
+                      chrom, ref_len, str(ref_path), False)
 
 
 if __name__ == "__main__":

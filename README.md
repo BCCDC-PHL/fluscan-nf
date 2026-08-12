@@ -185,6 +185,8 @@ nextflow run BCCDC-PHL/fluscan-nf \
 > In the short-read workflow only `blastn_db.fa` is required. SnpEff annotation — and the MNV correction and watchlist scan that read its output — runs when the bundle carries a `snpeff/` directory, and is skipped when it does not; consensus and FluMut complete either way.
 >
 > `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and FluMutDB annotation of the VCF (`*_flumut_annotated.vcf`). When set to `true`, `--flumut_db` becomes mandatory: FluMut's own bundle, whose `nextclade/` datasets are the fixed *source* reference lifted onto the `--db` datasets by the `coordinate_conversion` step. Point it at the bundle root, not at its `nextclade/` subdirectory. The marker set comes from the `flumutdb` conda package, so the annotation step does not consume the per-sample `flumut` output.
+>
+> `--emit_no_mature_vcf` (boolean, default `false`) additionally writes each NEXTCLADE VCF a second time with no mature-peptide `ANN=` entries, for consumers that require HA annotated as HA0 only. The two files carry the same records, alleles and order; only the `ANN=` sub-field differs, and segments without mature peptides in their annotation come out identical. The published copy lands in `nextclade/no_mature_peptide/` and gets the same MNV codon correction as the standard VCF. Nothing downstream in the pipeline reads it: `mutation_watch` and `merge_flumut_mutations` resolve HA markers through the HA1/HA2 `Feature_ID` and stay on the standard VCF.
 
 **Package management:**
 - Conda is used for dependency management. The `-profile conda` flag and `--cache` parameter are required on BCCDC systems.
@@ -244,6 +246,7 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `nextclade/json/*_nextclade.json` | Per-segment Nextclade JSON split out from the cross-sample batch result |
 | `nextclade/tsv/*_nextclade.tsv` | Per-segment Nextclade TSV split out from the cross-sample batch result |
 | `nextclade/*_final.vcf` | Per-segment final VCF after Nextclade-to-VCF conversion and MNV codon correction |
+| `nextclade/no_mature_peptide/*_nc_nomat_final.vcf` | *Optional* (`--emit_no_mature_vcf`): the same records annotated without mature peptides, so HA carries only its HA0 `ANN=` entry and no HA1/HA2 ones |
 | `nextclade/flumut_annotated/*_flumut_annotated.vcf` | *Optional* (`--merge_flumut_mutations`): the same VCF with a `FLUMUT=` INFO field (`Protein\|AA_Pos\|Alt_AA\|Mutation_Name\|DirectEffect\|AssociatedEffect`) on rows whose amino-acid change matches a curated FluMutDB marker |
 | `nextclade/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF. Independent of `--merge_flumut_mutations`: `FLUMUT=` is a curated annotation written *into* the VCF, this is a custom list scanned *out* of it |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
