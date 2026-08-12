@@ -70,9 +70,14 @@ process post_process_vcf_batch {
 
     publishDir "${params.outdir}", mode: 'copy',
         saveAs: { filename ->
+            def workflow  = task.ext.workflow ?: 'unknown_workflow'
+            def sample_id = filename.split('__')[0]
+            // Checked first: a no-mature VCF also ends in _final.vcf, and belongs in its
+            // own subfolder rather than beside the VCF the rest of the workflow consumes.
+            if (filename.endsWith('_nomat_final.vcf')) {
+                return "${sample_id}/${workflow}/no_mature_peptide/${filename}"
+            }
             if (filename.endsWith('_final.vcf')) {
-                def workflow  = task.ext.workflow ?: 'unknown_workflow'
-                def sample_id = filename.split('__')[0]
                 return "${sample_id}/${workflow}/${filename}"
             }
             return null

@@ -42,9 +42,11 @@ process nextclade_to_vcf {
 
     output:
     tuple val(sample_id), val(segment), path("${sample_id}*nc.vcf"), path(dataset_dir), emit: vcf
+    tuple val(sample_id), val(segment), path("${sample_id}*nc_nomat.vcf"), path(dataset_dir), optional: true, emit: vcf_no_mature
 
     script:
     workflow = task.ext.workflow ?: "unknown_workflow"
+    def no_mature_arg = params.emit_no_mature_vcf ? "--output-no-mature ${sample_id}__\${REFERENCE_NAME}__\${SUBTYPE}__\${SEGMENT}_nc_nomat.vcf" : ""
     """
     REFERENCE_NAME=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/>(\\S+).*/\\1/g')
     SUBTYPE=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/.+\\(\\S+\\((\\S+)\\)\\S*\\).+/\\1/g')
@@ -56,6 +58,7 @@ process nextclade_to_vcf {
         -i ${nextclade_json} \
         -d ${dataset_dir} \
         -o ${sample_id}__\${REFERENCE_NAME}__\${SUBTYPE}__\${SEGMENT}_nc.vcf \
+        ${no_mature_arg} \
         --sample ${sample_id}
     """
 }
@@ -145,8 +148,10 @@ process nextclade_to_vcf_batch {
 
     output:
     tuple val(segment), path('*_nc.vcf'), path(dataset_dir), emit: vcf
+    tuple val(segment), path('*_nc_nomat.vcf'), path(dataset_dir), optional: true, emit: vcf_no_mature
 
     script:
+    def no_mature_arg = params.emit_no_mature_vcf ? "--output-no-mature \"\${sample_id}__\${REFERENCE_NAME}__\${SUBTYPE}__\${SEGMENT}_nc_nomat.vcf\"" : ""
     """
     REFERENCE_NAME=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/>(\\S+).*/\\1/g')
     SUBTYPE=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/.+\\(\\S+\\((\\S+)\\)\\S*\\).+/\\1/g')
@@ -160,6 +165,7 @@ process nextclade_to_vcf_batch {
             -i "\$json_file" \\
             -d ${dataset_dir} \\
             -o "\${sample_id}__\${REFERENCE_NAME}__\${SUBTYPE}__\${SEGMENT}_nc.vcf" \\
+            ${no_mature_arg} \\
             --sample "\$sample_id"
     done
     """
