@@ -6,7 +6,8 @@
  *   Takes pre-assembled consensus FASTAs through QC, per-segment Nextclade alignment
  *   against the --db bundle's datasets, and conversion of the JSON to a freebayes-style VCF.
  *
- *   Accepted input FASTA header formats:
+ *   The sample name comes from the input filename (modules/shared/sample_id.nf); input
+ *   headers supply only the segment label. Accepted header formats:
  *     Underscore-delimited (legacy): >SAMPLE_ID_segmentN_SEGMENT
  *       e.g. >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
  *     Pipe-delimited (GISAID-style): >EPI_ISL_ACCESSION|subtype|SEGMENT|...|clade_SEGMENT
@@ -33,6 +34,7 @@ include { collect_provenance }                   from '../modules/shared/provena
 include { resolve_db }                           from '../modules/shared/database.nf'
 include { resolve_flumut_db }                    from '../modules/shared/database.nf'
 include { db_segments }                          from '../modules/shared/database.nf'
+include { consensus_fasta_channel }              from '../modules/shared/sample_id.nf'
 
 workflow NEXTCLADE {
 
@@ -81,14 +83,7 @@ workflow NEXTCLADE {
 
     // Discover consensus FASTA files in the input directory.
     // Each file is expected to contain 8 segments for a single sample.
-    ch_fasta_input = Channel.fromPath(
-        params.fasta_input + "/*.{fasta,fa,fna}",
-        checkIfExists: true
-    ).map { fasta ->
-        def sample_id = fasta.baseName.replaceAll(/[_\.]consensus$/, '').replaceAll(/_/,'-')
-        sample_id = sample_id.replaceFirst(/^\d{2}-\d+(?:-IP\d+)?-/, "")
-        return [sample_id, fasta]
-    }
+    ch_fasta_input = consensus_fasta_channel(params.fasta_input)
 
     main:
 

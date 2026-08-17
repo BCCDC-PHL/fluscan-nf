@@ -1,15 +1,9 @@
 // shared/consensus_qc.nf - Consensus FASTA quality control processes (shared by PAFTOOLS and NEXTCLADE workflows)
 
-// prepare_consensus derives the authoritative isolate name from the FASTA
-// header (the input sample_id is only a provisional, possibly-colliding, tag),
-// so outputs are published under a directory named after that isolate, e.g.
-//   out/WIN-AH-2022-FAV-1687-1-OS-2.fasta -> <outdir>/WIN-AH-2022-FAV-1687-1-OS-2/WIN-AH-2022-FAV-1687-1-OS-2.fasta
-def publishUnderIsolate = { path ->
-    def filename = file(path).name
-    def isolate = filename.replaceAll(/(_qc_report)?\.(fasta|tsv)$/, '')
-    "${isolate}/${filename}"
-}
-
+// sample_id arrives final from modules/shared/sample_id.nf and names everything
+// this process emits, so the cleaned FASTA carries {sample_id}_{SEGMENT} headers
+// and publishes to <outdir>/<sample_id>/. The input is staged under input/ so a
+// file already called ${sample_id}.fasta cannot collide with the output.
 process prepare_consensus {
 
     tag { sample_id }
@@ -18,15 +12,15 @@ process prepare_consensus {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}", pattern: "out/*.fasta",         mode: 'copy', saveAs: publishUnderIsolate
-    publishDir "${params.outdir}", pattern: "out/*_qc_report.tsv", mode: 'copy', saveAs: publishUnderIsolate
+    publishDir "${params.outdir}/${sample_id}", pattern: "*.fasta",         mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}", pattern: "*_qc_report.tsv", mode: 'copy'
 
     input:
-    tuple val(sample_id), path(fasta_input)
+    tuple val(sample_id), path(fasta_input, stageAs: 'input/*')
 
     output:
-    tuple env(isolate), path("out/*.fasta"),          emit: cleaned
-    tuple env(isolate), path("out/*_qc_report.tsv"),  emit: qc
+    tuple val(sample_id), path("${sample_id}.fasta"),         emit: cleaned
+    tuple val(sample_id), path("${sample_id}_qc_report.tsv"), emit: qc
     tuple val(sample_id), path("${sample_id}_prepare_consensus_provenance.yml"), emit: provenance
 
     script:
@@ -35,16 +29,15 @@ process prepare_consensus {
     printf -- "- process_name: prepare_consensus\\n"     > ${sample_id}_prepare_consensus_provenance.yml
     printf -- "  tools:\\n"                             >> ${sample_id}_prepare_consensus_provenance.yml
     printf -- "    - tool_name: prepare_consensus.py\\n" >> ${sample_id}_prepare_consensus_provenance.yml
-    printf -- "      tool_version: 2.0.0\\n"            >> ${sample_id}_prepare_consensus_provenance.yml
+    printf -- "      tool_version: 3.1.0\\n"            >> ${sample_id}_prepare_consensus_provenance.yml
 
     prepare_consensus.py \
         --input ${fasta_input} \
-        --sample_id ${sample_id} \
-        --outdir out \
+        --sample-id ${sample_id} \
+        --output-fasta ${sample_id}.fasta \
+        --output-qc ${sample_id}_qc_report.tsv \
         ${mask_degen} \
         --max-n-frac ${params.consensus_max_n_frac}
-
-    isolate=\$(cat out/isolate_id.txt)
     """
 }
 

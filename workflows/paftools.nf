@@ -7,7 +7,8 @@
  *   subtype-aware reference selection via BLAST, minimap2/paftools variant
  *   calling, bcftools VCF sorting, SnpEff annotation, and summary extraction.
  *
- *   Accepted input FASTA header formats:
+ *   The sample name comes from the input filename (modules/shared/sample_id.nf); input
+ *   headers supply only the segment label. Accepted header formats:
  *     Underscore-delimited (legacy): >SAMPLE_ID_segmentN_SEGMENT
  *       e.g. >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
  *     Pipe-delimited (GISAID-style): >EPI_ISL_ACCESSION|subtype|SEGMENT|...|clade_SEGMENT
@@ -41,6 +42,7 @@ include { paftools_to_freebayes_vcf }                    from '../modules/paftoo
 include { post_process_vcf }                             from '../modules/shared/post_process.nf'
 include { mutation_watch }                               from '../modules/shared/mutation_watch.nf'
 include { resolve_db }                                   from '../modules/shared/database.nf'
+include { consensus_fasta_channel }                      from '../modules/shared/sample_id.nf'
 
 
 
@@ -79,14 +81,7 @@ workflow PAFTOOLS {
 
     // Discover consensus FASTA files in the input directory.
     // Each file is expected to contain 8 segments for a single sample.
-    ch_fasta_input = Channel.fromPath(
-        params.fasta_input + "/*.{fasta,fa,fna}",
-        checkIfExists: true
-    ).map { fasta ->
-        def sample_id = fasta.baseName.replaceAll(/[_\.]consensus$/, '').replaceAll(/_/,'-')
-        sample_id = sample_id.replaceFirst(/^\d{2}-\d+(?:-IP\d+)?-/, "")
-        return [sample_id, fasta]
-    }
+    ch_fasta_input = consensus_fasta_channel(params.fasta_input)
 
     ch_blastn_db = Channel.fromPath(db.blastn)
 
