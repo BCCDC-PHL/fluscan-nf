@@ -97,6 +97,19 @@ workflow NEXTCLADE {
         // --- Step 1: Validate and clean input consensus FASTA ---
         prepare_consensus(ch_fasta_input)
 
+        // One run-level table of the per-segment consensus QC rows. The name carries the
+        // workflow because main.nf runs both FASTA branches into the same outdir, and two
+        // collectFile operations must not target one path.
+        prepare_consensus.out.qc
+            .map{ it -> it[1] }
+            .collectFile(
+                name: 'nextclade_consensus_qc_summary.tsv',
+                storeDir: "${params.outdir}/aggregate",
+                keepHeader: true,                   // keep header from first file only
+                skip: 1,                            // drop the header line from the rest
+                sort: false
+            )
+
         // Split once; reused by the identity QC and the nextclade batching below.
         ch_consensus_segments = split_fasta_consensus(prepare_consensus.out.cleaned)
             .transpose()

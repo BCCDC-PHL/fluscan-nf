@@ -52,18 +52,6 @@ workflow PAFTOOLS {
     // so both components are mandatory for this branch.
     def db = resolve_db(params.db, ['blastn', 'snpeff'])
 
-    def coverage_summary_header = [
-        'sample_id', 'segment', 'status', 'coverage_pct',
-        'reference_id', 'reference_length', 'aligned_ref_bases', 'first_pos',
-        'last_pos', 'n_alignments', 'mean_identity_pct',
-    ].join('\t')
-
-    def coverage_status_order = [
-        FAIL: 0,
-        WARN: 1,
-        PASS: 2,
-    ]
-
     ch_workflow_metadata = Channel.value([
         workflow.sessionId,
         workflow.runName,
@@ -100,6 +88,19 @@ workflow PAFTOOLS {
         // --- Step 1: Validate and clean input consensus FASTA ---
         prepare_consensus(ch_fasta_input)
 
+        // One run-level table of the per-segment consensus QC rows. The name carries the
+        // workflow because main.nf runs both FASTA branches into the same outdir, and two
+        // collectFile operations must not target one path.
+        prepare_consensus.out.qc
+            .map{ it -> it[1] }
+            .collectFile(
+                name: 'paftools_consensus_qc_summary.tsv',
+                storeDir: "${params.outdir}/aggregate",
+                keepHeader: true,                   // keep header from first file only
+                skip: 1,                            // drop the header line from the rest
+                sort: false
+            )
+
         // --- Step 2: Build BLAST database (once, shared across all samples) ---
         makeblastdb(ch_blastn_db).first().set{ch_blastdb}
 
@@ -118,7 +119,7 @@ workflow PAFTOOLS {
         // --- Step 4b: Check reference coverage of each alignment ---
         consensus_coverage_qc(paftools_align.out.paf)
 
-        ch_qc_summary = consensus_coverage_qc.out.coverage
+        consensus_coverage_qc.out.coverage
             .map{ it -> it[1] }
             .flatten()                              // one Path per emission -> avoids the [name, content...] branch
             .collectFile(
