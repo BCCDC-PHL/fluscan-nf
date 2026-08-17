@@ -255,10 +255,27 @@ published filenames/content. Use `-profile conda`; `conda.useMamba` is enabled.
 - In short-read mode, SnpEff, MNV correction, and watchlist scanning run only
   when the bundle carries a `snpeff/` component; consensus and FluMut can still
   complete without those annotated final VCF steps.
-- Sample-level provenance collection is wired in NEXTCLADE and SHORT_READ, but
-  still commented out in PAFTOOLS. `mutation_watch` emits a provenance YAML that
-  only NEXTCLADE joins in; SHORT_READ does not, so its watchlist scan is absent
-  from the collected record.
+- Sample-level provenance collection is wired in all three workflows, and each
+  starts with `hash_files` (`modules/shared/hash_files.nf`, aliased to
+  `short_read_hash_files` in SHORT_READ). The collection chains are inner joins,
+  and `prepare_consensus`, `blastn` and `paftools_align` all run
+  `errorStrategy 'ignore'` — so a sample failing any of them publishes no
+  provenance file, losing its input hash along with everything else. Use
+  `join(..., remainder: true)` with a null guard
+  (the pattern in `workflows/nextclade.nf`) if that record must survive.
+- `collect_provenance` puts `task.ext.workflow` in the published filename.
+  FASTA dispatch runs PAFTOOLS and NEXTCLADE over the same samples into the same
+  `${outdir}/${sample_id}/`, and their timestamps collide at second resolution;
+  without the label one branch silently overwrites the other. Any new workflow
+  needs a `withName: '<NAME>:.*' { ext.workflow = … }` block or its records fall
+  back to the unlabelled, collision-prone name.
+- `mutation_watch` emits a provenance YAML that SHORT_READ does not join in, so
+  its watchlist scan is absent from the collected record. Both FASTA branches
+  join it, with `groupTuple()` and `remainder: true`.
+- The two FASTA branches are deliberate mirrors from input discovery through
+  `prepare_consensus`, `flumut`, the consensus QC aggregate, and the shape of
+  the provenance chain and watchlist block. Only the analysis between those
+  differs. A change to one of the mirrored parts belongs in both.
 - `tests/conftest.py` puts `bin/` on `sys.path` so the entry points can resolve
   their `from lib.…` imports under pytest. Fix an import failure there, not by
   adding path manipulation to a production script.

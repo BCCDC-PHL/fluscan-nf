@@ -187,7 +187,8 @@ workflow NEXTCLADE {
             mutation_watch(ch_final_vcf.combine(ch_watchlists))
 
             // One task per (sample, segment, watchlist), so group back to one entry per
-            // sample. remainder: true for the same reason as the merge join below.
+            // sample. remainder: true keeps a sample whose every scan failed, which an
+            // inner join would drop along with the records it had already accumulated.
             ch_provenance = ch_provenance
                 .join(mutation_watch.out.provenance.groupTuple(), remainder: true)
                 .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }
