@@ -35,6 +35,7 @@ include { split_fasta as split_fasta_reference } from '../modules/shared/consens
 include { mutation_watch }                 from '../modules/shared/mutation_watch.nf'
 include { short_read_make_coverage_plot }  from '../modules/short_read/plotting.nf'
 include { resolve_db }                     from '../modules/shared/database.nf'
+include { samplesheet_channel }            from '../modules/shared/sample_id.nf'
 
 
 workflow SHORT_READ {
@@ -63,7 +64,7 @@ workflow SHORT_READ {
     ch_primers = Channel.fromPath(params.primer_path)
 
     if (params.samplesheet_input != 'NO_FILE') {
-        ch_fastq_input = Channel.fromPath(params.samplesheet_input).splitCsv(header: true).map{ it -> [it['ID'], it['R1'], it['R2']] }
+        ch_fastq_input = samplesheet_channel(params.samplesheet_input, ['R1', 'R2'])
     } else {
         ch_fastq_input = Channel.fromFilePairs( params.fastq_search_path, flat: true ).map{ it -> [it[0].split('_')[0], it[1], it[2]] }.unique{ it -> it[0] }
     }

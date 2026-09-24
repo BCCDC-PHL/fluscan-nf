@@ -26,6 +26,7 @@ log.info """
   launchDir         : ${launchDir}
   fastqInputDir     : ${params.fastq_input}
   fastaInputDir     : ${params.fasta_input}
+  samplesheet       : ${params.samplesheet_input}
   database          : ${db_summary(db)}
   primers           : ${params.primers}
   outdir            : ${params.outdir}
@@ -41,13 +42,28 @@ log.info """
 
 workflow {
 
-    if (params.fastq_input != 'NO_FILE') {
+    if ([params.fastq_input, params.fasta_input, params.samplesheet_input].count { it != 'NO_FILE' } > 1) {
+        error "ERROR: Provide only one of --fastq_input, --fasta_input or --samplesheet_input."
+    }
+
+    if (params.samplesheet_input != 'NO_FILE') {
+        // The header row picks the workflow; samplesheet_channel validates the rest.
+        def header = file(params.samplesheet_input, checkIfExists: true).splitCsv(strip: true)[0] ?: []
+        if ('R1' in header) {
+            SHORT_READ()
+        } else if ('FASTA' in header) {
+            PAFTOOLS()
+            NEXTCLADE()
+        } else {
+            error "ERROR: --samplesheet_input needs an ID,R1,R2 header (short-read workflow) or an ID,FASTA header (PAFTOOLS/NEXTCLADE workflow)."
+        }
+    } else if (params.fastq_input != 'NO_FILE') {
         SHORT_READ()
     } else if (params.fasta_input != 'NO_FILE') {
         PAFTOOLS()
         NEXTCLADE()
     } else {
-        error "ERROR: Please provide either --fastq_input (short-read workflow) or --fasta_input (PAFTOOLS/NEXTCLADE workflow)."
+        error "ERROR: Please provide --fastq_input (short-read workflow), --fasta_input (PAFTOOLS/NEXTCLADE workflow) or --samplesheet_input (either)."
     }
 
 }

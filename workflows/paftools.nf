@@ -43,6 +43,7 @@ include { post_process_vcf }                             from '../modules/shared
 include { mutation_watch }                               from '../modules/shared/mutation_watch.nf'
 include { resolve_db }                                   from '../modules/shared/database.nf'
 include { consensus_fasta_channel }                      from '../modules/shared/sample_id.nf'
+include { samplesheet_channel }                          from '../modules/shared/sample_id.nf'
 
 
 
@@ -67,9 +68,11 @@ workflow PAFTOOLS {
 
     ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
 
-    // Discover consensus FASTA files in the input directory.
+    // Consensus FASTAs from the sample sheet or the input directory.
     // Each file is expected to contain 8 segments for a single sample.
-    ch_fasta_input = consensus_fasta_channel(params.fasta_input)
+    ch_fasta_input = params.samplesheet_input != 'NO_FILE'
+        ? samplesheet_channel(params.samplesheet_input, ['FASTA'])
+        : consensus_fasta_channel(params.fasta_input)
 
     ch_blastn_db = Channel.fromPath(db.blastn)
 

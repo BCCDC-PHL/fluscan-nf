@@ -17,9 +17,11 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 
 ## Mental model
 
-- `main.nf` dispatches by sentinel-valued parameters. A non-`NO_FILE`
-  `--fastq_input` wins and runs `SHORT_READ`; otherwise a non-`NO_FILE`
-  `--fasta_input` launches both `PAFTOOLS` and `NEXTCLADE`.
+- `main.nf` dispatches by sentinel-valued parameters, and exactly one of
+  `--fastq_input`, `--fasta_input` and `--samplesheet_input` may be set.
+  `--fastq_input` runs `SHORT_READ` and `--fasta_input` launches both `PAFTOOLS`
+  and `NEXTCLADE`. For `--samplesheet_input` the header decides: `ID,R1,R2` runs
+  `SHORT_READ`, `ID,FASTA` runs the two FASTA branches.
 - `SHORT_READ` performs read QC/primer trimming, downsampling, assembly,
   BLAST-based reference selection, mapping, LoFreq calling, SnpEff annotation,
   MNV correction, consensus generation, and FluMut screening.
@@ -57,7 +59,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 | `docs/vcf_annotation_and_flumut_insertion.md` | Detailed Nextclade VCF and FluMutDB semantics |
 | `docs/watchlists.md` | Custom watchlist schema, matching rules, and the HA1/HA numbering trap |
 | `assets/watchlists/` | The shipped `*watchlist.csv` files; `--watchlist_dir` defaults here |
-| `modules/shared/sample_id.nf` | The only place a consensus `sample_id` is derived, and the FASTA discovery channel both FASTA branches call. Changing `clean_sample_id` renames every output |
+| `modules/shared/sample_id.nf` | The only place a consensus or sample sheet `sample_id` is derived; holds the FASTA discovery channel both FASTA branches call and `samplesheet_channel`, which all three workflows call for `--samplesheet_input`. Changing `clean_sample_id` renames every output |
 | `modules/shared/database.nf` | The only place that knows the `--db` bundle layout; `resolve_db`/`resolve_flumut_db` validate it up front. Also holds the canonical segment list — `@Field DB_SEGMENTS` is not importable across an `include`, so workflows reach it through the `db_segments()` accessor rather than repeating the literal |
 | `scripts/validate_db.py` | Deeper, contents-level bundle check; run after building or moving a bundle |
 | `docs/database_bundles.md` | Bundle layout, `db.yml` schema, how to build and validate one |
@@ -66,11 +68,14 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 
 ## Data and interface contracts
 
-- The consensus `sample_id` is derived once, from the input filename, by
+- The consensus `sample_id` is derived once, from the input filename or the
+  sample sheet `ID` (in either mode), by
   `clean_sample_id` in `modules/shared/sample_id.nf`, and is final from there
   on: it keys every channel and names every file. Nothing downstream may
-  re-derive or edit it. `consensus_fasta_channel` aborts the run if two input
-  filenames collapse to one ID, and the underscores-to-dashes rule is load-bearing:
+  re-derive or edit it. `consensus_fasta_channel` and `samplesheet_channel` abort
+  the run if two inputs collapse to one ID; `samplesheet_channel` also rejects an
+  ID that still holds anything but letters, digits, `.` and `-` after cleaning
+  (`|` would break the SHORT_READ `segment_regex`). The underscores-to-dashes rule is load-bearing:
   the `saveAs` in `modules/nextclade/nextclade.nf` and the `sample_name` column in
   `bin/filter_alignments.py` both read the ID back as everything before the first
   underscore.
@@ -84,7 +89,9 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   more than one sample. Both exit 2 under `errorStrategy 'ignore'`, so the sample
   leaves the run entirely — no QC row in the aggregate summary, no provenance.
 - Directory-discovered FASTQ sample IDs currently stop at the first
-  underscore; avoid introducing or silently accepting colliding names.
+  underscore, and colliding pairs are dropped silently by `.unique`; sample sheet
+  FASTQ IDs go through `clean_sample_id` instead. Avoid introducing or silently
+  accepting colliding names.
 - All reference data comes from one bundle directory, `--db`, in the fixed
   layout `blastn_db.fa` + `nextclade/` + `snpeff/{snpEff.config,<genome>/}` plus an
   optional `db.yml`. Resolve it through `resolve_db()` in
@@ -116,8 +123,10 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 - Most unset path parameters use the literal `NO_FILE`. Do not treat that
   string as a real path. `nextflow.config` leaves `db` and `flumut_db` unset, so
   pass them explicitly unless a local config supplies them.
-- `--samplesheet_input` changes FASTQ discovery inside `SHORT_READ`, but does
-  not by itself select that workflow; dispatch still keys on `--fastq_input`.
+- `--samplesheet_input` is parsed eagerly by `samplesheet_channel`, so column,
+  blank-cell, ID and file-existence errors all fail before any task is submitted.
+  Both FASTA branches choose between it and `consensus_fasta_channel` with the same
+  ternary; keep them mirrored. `run_name` is the sheet's filename without `.csv`.
 - Channel tuple keys are part of the design. Preserve `sample_id` and `segment`
   through `join`, `combine`, `transpose`, and batching operations, and comment
   non-obvious tuple shapes next to the transformation.
