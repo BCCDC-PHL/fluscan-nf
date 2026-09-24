@@ -117,13 +117,39 @@ flowchart TD
 
 ## Input
 
-**Short-read workflow:** Illumina paired-end FASTQ files (`*.fastq.gz`, `*.fq.gz`, `*.fastq`, `*.fq`), or a samplesheet CSV with columns `ID`, `R1`, `R2`.
+**Short-read workflow:** Illumina paired-end FASTQ files (`*.fastq.gz`, `*.fq.gz`, `*.fastq`, `*.fq`), or a sample sheet (below).
 
 **PAFTOOLS/NEXTCLADE workflows:** Consensus FASTA files (one multi-FASTA per sample, one sequence per influenza segment). Two header formats are accepted:
 - Underscore-delimited (legacy): `>SAMPLE_ID_segmentN_SEGMENT` e.g. `>WIN-AH-2024-FAV-0415_segment1_PB2`
 - Pipe-delimited (GISAID-style): `>EPI_ISL_ACCESSION|subtype|SEGMENT|...|clade_SEGMENT` e.g. `>EPI_ISL_20399898|A_/_H5N1|NA|6|EPI5261179|2.3.4.4b_NA`
 
 Cleaned output headers (`{sample_id}.fasta`) are normalised to `{sample_id}_{SEGMENT}` (e.g. `EPI-ISL-20399898_NA`).
+
+### Sample sheet input
+
+`--samplesheet_input` takes a CSV in place of `--fastq_input` or `--fasta_input`. Its header picks the workflow:
+
+```csv
+ID,R1,R2
+SAMPLE-01,/path/to/SAMPLE-01_R1.fastq.gz,/path/to/SAMPLE-01_R2.fastq.gz
+SAMPLE-02,/path/to/SAMPLE-02_R1.fastq.gz,/path/to/SAMPLE-02_R2.fastq.gz
+```
+
+runs the short-read workflow, and
+
+```csv
+ID,FASTA
+SAMPLE-01,/path/to/SAMPLE-01.fasta
+SAMPLE-02,/path/to/SAMPLE-02.fasta
+```
+
+runs PAFTOOLS and NEXTCLADE. Other columns are ignored.
+
+- Each `ID` is cleaned by the same rule as a FASTA filename (see the note under Usage), so `24-1234-IP7-SAMPLE_01` is reported as `SAMPLE-01`. After cleaning, an ID may contain only letters, digits, `.` and `-`.
+- Relative paths resolve against the directory `nextflow run` is launched from; absolute paths are safer.
+- The run stops before any task starts if a column or value is missing, a file does not exist, or two IDs clean to the same sample name.
+- `run_name`, which prefixes the run-level reports, is the sample sheet's filename without `.csv`.
+- Give only one of `--fastq_input`, `--fasta_input` and `--samplesheet_input`.
 
 ## Reference databases
 
@@ -160,8 +186,9 @@ nextflow run BCCDC-PHL/fluscan-nf \
   --outdir /path/to/output_dir
 ```
 
+To run from a sample sheet, replace `--fastq_input` (or `--fasta_input` below) with `--samplesheet_input /path/to/samplesheet.csv`; see [Sample sheet input](#sample-sheet-input).
+
 Optional short-read parameters:
-- `--samplesheet_input` — CSV samplesheet (`ID,R1,R2`) consumed by the short-read workflow; note that `main.nf` currently still switches into short-read mode based on `--fastq_input`
 - `--aligner` — `bwa` (default) or `minimap2`
 
 Optional in every workflow:
@@ -180,7 +207,7 @@ nextflow run BCCDC-PHL/fluscan-nf \
   --outdir /path/to/output_dir
 ```
 
-> **Note:** In FASTA mode the sample name comes from the input filename, and it names every output. The filename is taken without its extensions, a trailing `_consensus` is dropped, underscores become dashes, and a leading submitter prefix of the form `24-1234-` or `24-1234-IP7-` is stripped — so `24-1234-IP7-SAMPLE_A_consensus.fasta` is reported as `SAMPLE-A`. Input FASTA headers are read only for the segment label; they do not affect naming.
+> **Note:** In FASTA mode the sample name comes from the input filename (or the sample sheet `ID`, cleaned by the same rule), and it names every output. The filename is taken without its extensions, a trailing `_consensus` is dropped, underscores become dashes, and a leading submitter prefix of the form `24-1234-` or `24-1234-IP7-` is stripped — so `24-1234-IP7-SAMPLE_A_consensus.fasta` is reported as `SAMPLE-A`. Input FASTA headers are read only for the segment label; they do not affect naming.
 >
 > FASTA mode launches both branches, so the bundle must carry all three components: PAFTOOLS requires `blastn_db.fa` and `snpeff/`, NEXTCLADE requires `nextclade/` with all eight segment datasets.
 >

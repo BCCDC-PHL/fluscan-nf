@@ -35,6 +35,7 @@ include { resolve_db }                           from '../modules/shared/databas
 include { resolve_flumut_db }                    from '../modules/shared/database.nf'
 include { db_segments }                          from '../modules/shared/database.nf'
 include { consensus_fasta_channel }              from '../modules/shared/sample_id.nf'
+include { samplesheet_channel }                  from '../modules/shared/sample_id.nf'
 
 workflow NEXTCLADE {
 
@@ -81,9 +82,11 @@ workflow NEXTCLADE {
         return [sample_id, segment, fasta]
     }
 
-    // Discover consensus FASTA files in the input directory.
+    // Consensus FASTAs from the sample sheet or the input directory.
     // Each file is expected to contain 8 segments for a single sample.
-    ch_fasta_input = consensus_fasta_channel(params.fasta_input)
+    ch_fasta_input = params.samplesheet_input != 'NO_FILE'
+        ? samplesheet_channel(params.samplesheet_input, ['FASTA'])
+        : consensus_fasta_channel(params.fasta_input)
 
     main:
 
