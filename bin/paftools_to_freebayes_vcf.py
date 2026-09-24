@@ -76,7 +76,7 @@ _FREEBAYES_INFO = [
 ]
 
 _FREEBAYES_FORMAT = [
-    ("GQ",  "1", "Float",   "Genotype Quality, the Phred-scaled marginal (or unconditional) probability of the called genotype"),
+    ("GQ",  "1", "Integer", "Genotype Quality, the Phred-scaled marginal (or unconditional) probability of the called genotype"),
     ("GL",  "G", "Float",   "Genotype Likelihood, log10-scaled likelihoods of the data given the called genotype for each possible genotype generated from the reference and alternate alleles given the sample ploidy"),
     ("DP",  "1", "Integer", "Read Depth"),
     ("AD",  "R", "Integer", "Number of observation for each allele"),
@@ -208,7 +208,7 @@ def convert(input_path: str, output_path: str) -> int:
             variant.set_format("QA", np.array([[qa]], dtype=np.int32))
             # GL: Number=G → for haploid with 1 alt, 2 genotype likelihoods [P(REF), P(ALT)]
             variant.set_format("GL", np.array([[-float(qa) / 10.0, 0.0]], dtype=np.float32))
-            variant.set_format("GQ", np.array([[float(qa)]], dtype=np.float32))
+            variant.set_format("GQ", np.array([[qa]], dtype=np.int32))
 
             # --- GT: rewrite paftools 1/1 → freebayes haploid 1 ---
             variant.genotypes = [[1, False] for _ in vcf.samples]

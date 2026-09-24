@@ -164,6 +164,14 @@ def test_only_the_ann_field_differs(both_outputs):
         assert std.split("\t")[:7] == nomat.split("\t")[:7]
 
 
+def test_gq_is_integer(both_outputs):
+    for vcf in both_outputs:
+        assert "##FORMAT=<ID=GQ,Number=1,Type=Integer," in vcf.read_text()
+        for record in _records(vcf):
+            fields = record.split("\t")
+            assert fields[9].split(":")[fields[8].split(":").index("GQ")].isdigit()
+
+
 def test_no_mature_entries_are_a_subset_of_the_standard_ones(both_outputs):
     """Nothing is rewritten on the way out; entries are only ever removed."""
     standard, no_mature = both_outputs

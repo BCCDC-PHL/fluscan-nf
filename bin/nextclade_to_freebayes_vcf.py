@@ -92,7 +92,7 @@ _FREEBAYES_FORMAT = [
     ("AO",  "A", "Integer", "Alternate allele observation count"),
     ("QA",  "A", "Integer", "Sum of quality of the alternate observations"),
     ("GL",  "G", "Float",   "Genotype Likelihood, log10-scaled likelihoods of the data given the called genotype for each possible genotype generated from the reference and alternate alleles given the sample ploidy"),
-    ("GQ",  "1", "Float",   "Genotype Quality, the Phred-scaled marginal (or unconditional) probability of the called genotype"),
+    ("GQ",  "1", "Integer", "Genotype Quality, the Phred-scaled marginal (or unconditional) probability of the called genotype"),
 ]
 
 # ---------------------------------------------------------------------------

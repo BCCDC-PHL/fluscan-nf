@@ -44,6 +44,7 @@ annotation.
 - `INFO` carries the full freebayes field set as filler (`DP=1;AF=1.0;…`) plus `TYPE`,
   `CIGAR`, `LEN`, and the `ANN=` annotation (`bin/nextclade_to_freebayes_vcf.py:_info`).
 - `FORMAT`/sample is a haploid alt genotype (`GT:DP:AD:… → 1:1:0,1:…`, `_sample`).
+  `GQ` is declared and written as an integer.
 
 ### The `ANN=` field
 

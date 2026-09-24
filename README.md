@@ -223,6 +223,8 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers |
 | `*_short_read_*_provenance.yml` | Aggregated per-sample provenance file for the short-read workflow |
 
+The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as an integer.
+
 ### PAFTOOLS workflow outputs (per sample, consensus FASTA input)
 
 | File | Description |
