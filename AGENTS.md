@@ -57,6 +57,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 | `docs/vcf_annotation_and_flumut_insertion.md` | Detailed Nextclade VCF and FluMutDB semantics |
 | `docs/watchlists.md` | Custom watchlist schema, matching rules, and the HA1/HA numbering trap |
 | `assets/watchlists/` | The shipped `*watchlist.csv` files; `--watchlist_dir` defaults here |
+| `modules/shared/sample_id.nf` | The only place a consensus `sample_id` is derived, and the FASTA discovery channel both FASTA branches call. Changing `clean_sample_id` renames every output |
 | `modules/shared/database.nf` | The only place that knows the `--db` bundle layout; `resolve_db`/`resolve_flumut_db` validate it up front. Also holds the canonical segment list — `@Field DB_SEGMENTS` is not importable across an `include`, so workflows reach it through the `db_segments()` accessor rather than repeating the literal |
 | `scripts/validate_db.py` | Deeper, contents-level bundle check; run after building or moving a bundle |
 | `docs/database_bundles.md` | Bundle layout, `db.yml` schema, how to build and validate one |
@@ -65,11 +66,23 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 
 ## Data and interface contracts
 
+- The consensus `sample_id` is derived once, from the input filename, by
+  `clean_sample_id` in `modules/shared/sample_id.nf`, and is final from there
+  on: it keys every channel and names every file. Nothing downstream may
+  re-derive or edit it. `consensus_fasta_channel` aborts the run if two input
+  filenames collapse to one ID, and the underscores-to-dashes rule is load-bearing:
+  the `saveAs` in `modules/nextclade/nextclade.nf` and the `sample_name` column in
+  `bin/filter_alignments.py` both read the ID back as everything before the first
+  underscore.
 - Accepted consensus headers include the legacy `SAMPLE_segmentN_SEGMENT`,
-  canonical `SAMPLE_SEGMENT`, and GISAID-like pipe forms. Preparation derives
-  the isolate from headers, requires records in a file to agree, changes
-  isolate underscores to dashes, maps `MP` to `M`, and emits
-  `{sample_id}_{SEGMENT}`.
+  canonical `SAMPLE_SEGMENT`, and GISAID-like pipe forms. Headers supply only
+  the segment label, read as the rightmost `|`/`_` token naming a segment
+  (`MP` maps to `M`). Preparation rewrites every header to
+  `{sample_id}_{SEGMENT}`. One file must hold one sample, and two things are
+  fatal because they mean it does not: two records claiming one segment, and
+  leading header fields (first pipe field, else first underscore token) that name
+  more than one sample. Both exit 2 under `errorStrategy 'ignore'`, so the sample
+  leaves the run entirely — no QC row in the aggregate summary, no provenance.
 - Directory-discovered FASTQ sample IDs currently stop at the first
   underscore; avoid introducing or silently accepting colliding names.
 - All reference data comes from one bundle directory, `--db`, in the fixed
@@ -242,10 +255,27 @@ published filenames/content. Use `-profile conda`; `conda.useMamba` is enabled.
 - In short-read mode, SnpEff, MNV correction, and watchlist scanning run only
   when the bundle carries a `snpeff/` component; consensus and FluMut can still
   complete without those annotated final VCF steps.
-- Sample-level provenance collection is wired in NEXTCLADE and SHORT_READ, but
-  still commented out in PAFTOOLS. `mutation_watch` emits a provenance YAML that
-  only NEXTCLADE joins in; SHORT_READ does not, so its watchlist scan is absent
-  from the collected record.
+- Sample-level provenance collection is wired in all three workflows, and each
+  starts with `hash_files` (`modules/shared/hash_files.nf`, aliased to
+  `short_read_hash_files` in SHORT_READ). The collection chains are inner joins,
+  and `prepare_consensus`, `blastn` and `paftools_align` all run
+  `errorStrategy 'ignore'` — so a sample failing any of them publishes no
+  provenance file, losing its input hash along with everything else. Use
+  `join(..., remainder: true)` with a null guard
+  (the pattern in `workflows/nextclade.nf`) if that record must survive.
+- `collect_provenance` puts `task.ext.workflow` in the published filename.
+  FASTA dispatch runs PAFTOOLS and NEXTCLADE over the same samples into the same
+  `${outdir}/${sample_id}/`, and their timestamps collide at second resolution;
+  without the label one branch silently overwrites the other. Any new workflow
+  needs a `withName: '<NAME>:.*' { ext.workflow = … }` block or its records fall
+  back to the unlabelled, collision-prone name.
+- `mutation_watch` emits a provenance YAML that SHORT_READ does not join in, so
+  its watchlist scan is absent from the collected record. Both FASTA branches
+  join it, with `groupTuple()` and `remainder: true`.
+- The two FASTA branches are deliberate mirrors from input discovery through
+  `prepare_consensus`, `flumut`, the consensus QC aggregate, and the shape of
+  the provenance chain and watchlist block. Only the analysis between those
+  differs. A change to one of the mirrored parts belongs in both.
 - `tests/conftest.py` puts `bin/` on `sys.path` so the entry points can resolve
   their `from lib.…` imports under pytest. Fix an import failure there, not by
   adding path manipulation to a production script.

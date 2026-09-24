@@ -6,7 +6,8 @@
  *   Takes pre-assembled consensus FASTAs through QC, per-segment Nextclade alignment
  *   against the --db bundle's datasets, and conversion of the JSON to a freebayes-style VCF.
  *
- *   Accepted input FASTA header formats:
+ *   The sample name comes from the input filename (modules/shared/sample_id.nf); input
+ *   headers supply only the segment label. Accepted header formats:
  *     Underscore-delimited (legacy): >SAMPLE_ID_segmentN_SEGMENT
  *       e.g. >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
  *     Pipe-delimited (GISAID-style): >EPI_ISL_ACCESSION|subtype|SEGMENT|...|clade_SEGMENT
@@ -33,6 +34,7 @@ include { collect_provenance }                   from '../modules/shared/provena
 include { resolve_db }                           from '../modules/shared/database.nf'
 include { resolve_flumut_db }                    from '../modules/shared/database.nf'
 include { db_segments }                          from '../modules/shared/database.nf'
+include { consensus_fasta_channel }              from '../modules/shared/sample_id.nf'
 
 workflow NEXTCLADE {
 
@@ -81,26 +83,28 @@ workflow NEXTCLADE {
 
     // Discover consensus FASTA files in the input directory.
     // Each file is expected to contain 8 segments for a single sample.
-    ch_fasta_input = Channel.fromPath(
-        params.fasta_input + "/*.{fasta,fa,fna}",
-        checkIfExists: true
-    ).map { fasta ->
-        def sample_id = fasta.baseName.replaceAll(/[_\.]consensus$/, '').replaceAll(/_/,'-')
-        sample_id = sample_id.replaceFirst(/^\d{2}-\d+(?:-IP\d+)?-/, "")
-        return [sample_id, fasta]
-    }
+    ch_fasta_input = consensus_fasta_channel(params.fasta_input)
 
     main:
-
-        // Provenance channel starts with just the sample IDs; per-process YAMLs are joined
-        // on as they are produced, and concatenated at the end by collect_provenance.
-        ch_provenance = ch_fasta_input.map{ it -> it[0] }
 
         // Hash the input FASTA. One file per sample, so no list-wrapping here.
         hash_files(ch_fasta_input.combine(Channel.of("fasta_input")))
 
         // --- Step 1: Validate and clean input consensus FASTA ---
         prepare_consensus(ch_fasta_input)
+
+        // One run-level table of the per-segment consensus QC rows. The name carries the
+        // workflow because main.nf runs both FASTA branches into the same outdir, and two
+        // collectFile operations must not target one path.
+        prepare_consensus.out.qc
+            .map{ it -> it[1] }
+            .collectFile(
+                name: 'nextclade_consensus_qc_summary.tsv',
+                storeDir: "${params.outdir}/aggregate",
+                keepHeader: true,                   // keep header from first file only
+                skip: 1,                            // drop the header line from the rest
+                sort: false
+            )
 
         // Split once; reused by the identity QC and the nextclade batching below.
         ch_consensus_segments = split_fasta_consensus(prepare_consensus.out.cleaned)
@@ -160,13 +164,6 @@ workflow NEXTCLADE {
                 }
         }
 
-        // Per-sample provenance. post_process_vcf_batch is keyed by segment rather than by
-        // sample, so it has no per-sample record to join here.
-        ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it -> [it[0], [it[1]]] }
-        ch_provenance = ch_provenance.join(hash_files.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-
         // --- Step 6b: Scan the final VCF for a custom watchlist (optional) ---
         //   Independent of --merge_flumut_mutations: FLUMUT= is a curated annotation written
         //   into the VCF, this is a custom list scanned out of it into a separate TSV.
@@ -177,12 +174,6 @@ workflow NEXTCLADE {
                 params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
             )
             mutation_watch(ch_final_vcf.combine(ch_watchlists))
-
-            // One task per (sample, segment, watchlist), so group back to one entry per
-            // sample. remainder: true for the same reason as the merge join below.
-            ch_provenance = ch_provenance
-                .join(mutation_watch.out.provenance.groupTuple(), remainder: true)
-                .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }
         }
 
         // --- Steps 7-8: Coordinate conversion + flumut mutation merging (optional) ---
@@ -240,11 +231,27 @@ workflow NEXTCLADE {
                 // -> [sample_id, segment, vcf, coord_shard]
 
             merge_flumut_mutations(ch_merge_in)
+        }
 
-            // One merge task per (sample, segment), so group back to one entry per sample
-            // before joining; it[2] is a list of YAMLs here, hence '+' rather than '<<'.
-            // remainder: true keeps a sample whose segments all failed to merge, which an
-            // inner join would drop along with every record it had already accumulated.
+        // Per-sample provenance. post_process_vcf_batch is keyed by segment rather than by
+        // sample, so it has no per-sample record to join here.
+        ch_provenance = ch_fasta_input.map{ it -> it[0] }
+        ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it -> [it[0], [it[1]]] }
+        ch_provenance = ch_provenance.join(hash_files.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+
+        if (params.watchlist_dir != 'NO_FILE') {
+            // Group one task per (sample, segment, watchlist) back to one entry per sample.
+            // remainder: true keeps samples whose scans all failed.
+            ch_provenance = ch_provenance
+                .join(mutation_watch.out.provenance.groupTuple(), remainder: true)
+                .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }
+        }
+
+        if (params.merge_flumut_mutations) {
+            // Group one merge task per (sample, segment) back to one entry per sample.
+            // remainder: true keeps samples whose merges all failed.
             ch_provenance = ch_provenance
                 .join(merge_flumut_mutations.out.provenance.groupTuple(), remainder: true)
                 .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }

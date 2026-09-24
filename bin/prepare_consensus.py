@@ -2,50 +2,30 @@
 """
 prepare_consensus.py
 
-Validate and prepare influenza consensus FASTA files for the consensus workflow.
+Validate and prepare an influenza consensus FASTA for the consensus workflows.
 
-This is the upstream gatekeeper for the consensus workflows: it is the single
-authoritative source for the isolate name (derived from the header, NOT the
-filename, which is unreliable), it normalises headers to a canonical form, it
-optionally masks ambiguous/degenerate bases, and it writes a per-isolate QC
-report describing every expected segment.
+The sample name is supplied by the caller as --sample-id and is authoritative:
+input headers contribute the segment label and nothing else. Every output header
+becomes {sample_id}_{SEGMENT}, and the caller names both output files.
 
-Steps performed per file:
-  a) Derive the authoritative isolate name from the headers (all records must
-     agree; the script exits non-zero if they disagree or none can be parsed).
-  b) Enforce the canonical M label for the matrix segment (legacy MP -> M).
-  c) Uppercase sequences and, optionally, mask partially degenerate IUPAC
-     nucleotides (R,Y,S,W,K,M,B,D,H,V) with N.
-  d) Strip alignment gap characters (-, .) and coerce any other non-ACGTN
-     character to N so the emitted FASTA is always clean.
-  e) Rewrite headers to the canonical {isolate}_{SEGMENT} form.
-  f) Emit a QC report row for every expected segment (present or MISSING) with a
+Steps performed:
+  a) Read the segment label from each header (see below) and map it to a record.
+  b) Uppercase sequences, optionally mask partially degenerate IUPAC nucleotides
+     (R,Y,S,W,K,M,B,D,H,V) with N, drop alignment gaps (-, .), and coerce any
+     other non-ACGTN character to N, so the emitted FASTA is always clean.
+  c) Emit a QC row for every expected segment (present or MISSING) with a
      PASS/WARN/FAIL/MISSING status driven by segment length ranges and an
      ambiguity threshold.
 
-Accepted input header formats:
-  Underscore-delimited with _segmentN token (the wild west):
-    >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
-    >R3980461859-3370-A-D05_segment1_PB2
-    >WIN-AH-2022-FAV-1687-1_OS_2_segment1_PB2   (isolate carries a copy number)
-  Underscore-delimited, already canonical:
-    >WIN-AH-2024-FAV-0415-1-OS_PB2
-  Pipe-delimited (GISAID-style):
-    >EPI_ISL_20399898|A_/_H5N1|NA|6|EPI5261179|2.3.4.4b_NA
+Segment labels are read by splitting the header on | and _ and taking the
+rightmost token that names a segment, which covers every header form in use:
+  >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2      (underscore, wild west)
+  >WIN-AH-2024-FAV-0415-1-OS_PB2               (underscore, already canonical)
+  >EPI_ISL_20399898|A_/_H5N1|NA|6|EPI5261179|2.3.4.4b_NA   (GISAID-style pipes)
 
-Isolate derivation (underscores in the isolate are always replaced with dashes,
-since underscores are not allowed in isolate names):
-  - Pipe-delimited:               isolate = first pipe field.
-  - Underscore with _segmentN:    isolate = everything BEFORE the first _segmentN
-                                  (e.g. WIN-AH-2022-FAV-1687-1_OS_2_segment1_PB2
-                                   -> WIN-AH-2022-FAV-1687-1-OS-2).
-  - Underscore, already canonical: isolate = header with the trailing _SEGMENT
-                                  stripped.
-
-Outputs (written to --outdir):
-  {isolate}.fasta            Cleaned, canonically-headed consensus FASTA.
-  {isolate}_qc_report.tsv    One row per expected segment, with status.
-  isolate_id.txt             The derived isolate name, for the caller to capture.
+One file must hold one sample, and two things are fatal because they mean it does
+not: two records carrying the same segment label, and headers whose leading field
+names more than one sample.
 """
 
 from __future__ import annotations
@@ -55,7 +35,8 @@ import csv
 import logging
 import re
 import sys
-from dataclasses import dataclass, fields
+from collections import Counter
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 from Bio import SeqIO
@@ -68,8 +49,11 @@ from Bio.SeqRecord import SeqRecord
 
 EXPECTED_SEGMENTS = ['PB2', 'PB1', 'PA', 'HA', 'NP', 'NA', 'M', 'NS']
 
-# Legacy/alternate segment labels mapped to their canonical name.
-SEGMENT_ALIASES = {'MP': 'M'}
+# Every label accepted in a header, mapped to its canonical name (MP is legacy M).
+SEGMENT_LOOKUP = {segment: segment for segment in EXPECTED_SEGMENTS} | {'MP': 'M'}
+
+# Header fields are separated by pipes, tokens within them by underscores.
+TOKEN_SPLIT = re.compile(r'[|_]')
 
 # Partially degenerate IUPAC nucleotide codes (excluding N, which is already "any").
 DEGENERATE_BASES = set('RYSWKMBDHV')
@@ -80,9 +64,8 @@ VALID_BASES = set('ACGTN')
 # Alignment gap / pad characters that must never reach downstream tools.
 GAP_CHARS = set('-.')
 
-# Anchor for underscore-delimited "wild west" headers: everything before the
-# first _segmentN token is the isolate name.
-SEGMENT_TOKEN_RE = re.compile(r'_segment\d+', re.IGNORECASE)
+# Everything a sequence may contain before cleaning; the rest is coerced to N.
+KNOWN_CHARS = VALID_BASES | DEGENERATE_BASES | GAP_CHARS
 
 # Acceptable sequence length ranges (min_len, max_len) per segment.
 SEGMENT_LENGTH_RANGES = {
@@ -109,56 +92,106 @@ EXIT_INPUT_ERROR = 2
 log = logging.getLogger('prepare_consensus')
 
 
-# --------------------------------------------------------------------------- #
-# Data structures
-# --------------------------------------------------------------------------- #
-
-@dataclass
-class CleanResult:
-    """Outcome of cleaning a single raw sequence string."""
-    sequence: str
-    n_replaced: int      # degenerate IUPAC bases masked to N
-    n_gaps_removed: int  # gap/pad characters stripped
-    n_invalid: int       # other non-ACGTN characters coerced to N
-    n_prop_before: float
-    n_prop_after: float
-
-
 @dataclass
 class SegmentQC:
-    """One row of the per-isolate QC report."""
+    """One row of the QC report; the defaults describe an absent segment."""
     sample_id: str
     segment: str
-    seq_id: str
-    status: str
-    length: int
-    length_ok: bool
-    n_prop_before: float
-    n_replaced: int
-    n_gaps_removed: int
-    n_invalid: int
-    n_prop_after: float
+    seq_id: str = ''
+    status: str = STATUS_MISSING
+    length: int = 0
+    length_ok: bool = False
+    n_prop_before: float = 0.0
+    n_replaced: int = 0
+    n_gaps_removed: int = 0
+    n_invalid: int = 0
+    n_prop_after: float = 0.0
     notes: str = ''
 
-    @classmethod
-    def fieldnames(cls) -> list[str]:
-        return [f.name for f in fields(cls)]
 
-    def as_row(self) -> dict:
-        return {
-            'sample_id':      self.sample_id,
-            'segment':        self.segment,
-            'seq_id':         self.seq_id,
-            'status':         self.status,
-            'length':         self.length,
-            'length_ok':      self.length_ok,
-            'n_prop_before':  round(self.n_prop_before, 6),
-            'n_replaced':     self.n_replaced,
-            'n_gaps_removed': self.n_gaps_removed,
-            'n_invalid':      self.n_invalid,
-            'n_prop_after':   round(self.n_prop_after, 6),
-            'notes':          self.notes,
-        }
+# --------------------------------------------------------------------------- #
+# Parsing and cleaning
+# --------------------------------------------------------------------------- #
+
+def segment_of(header: str) -> str | None:
+    """Return the canonical segment label for a header, or None if it has none."""
+    for token in reversed(TOKEN_SPLIT.split(header)):
+        segment = SEGMENT_LOOKUP.get(token.upper())
+        if segment:
+            return segment
+    return None
+
+
+def sample_stem(header: str) -> str:
+    """Return the leading header field, which names the sample in every accepted form.
+
+    Only ever compared across the records of one file, never used to name anything.
+    """
+    return header.split('|')[0] if '|' in header else header.split('_')[0]
+
+
+def n_proportion(sequence: str) -> float:
+    """Return the proportion of N bases in the sequence (0.0 for empty)."""
+    return sequence.count('N') / len(sequence) if sequence else 0.0
+
+
+def process_segment(sample_id: str, segment: str, raw: str,
+                    *, mask_degenerate: bool, max_n_frac: float) -> tuple[SeqRecord, SegmentQC]:
+    """Clean one segment, returning its canonical record and its QC row."""
+    upper = raw.upper()
+    counts = Counter(upper)
+    keep = VALID_BASES if mask_degenerate else VALID_BASES | DEGENERATE_BASES
+    sequence = ''.join(b if b in keep else 'N' for b in upper if b not in GAP_CHARS)
+
+    n_gaps_removed = sum(counts[char] for char in GAP_CHARS)
+    n_replaced = sum(counts[base] for base in DEGENERATE_BASES) if mask_degenerate else 0
+    n_invalid = len(upper) - sum(counts[char] for char in KNOWN_CHARS)
+
+    length = len(sequence)
+    n_prop_after = n_proportion(sequence)
+    low, high = SEGMENT_LENGTH_RANGES[segment]
+    length_ok = low <= length <= high
+
+    notes: list[str] = []
+    if length == 0 or n_prop_after >= 1.0:
+        status = STATUS_FAIL
+        notes.append('empty or all-N sequence')
+    elif not length_ok:
+        status = STATUS_FAIL
+        notes.append(f'length {length} outside expected range [{low}, {high}]')
+    else:
+        status = STATUS_PASS
+        if n_prop_after > max_n_frac:
+            status = STATUS_WARN
+            notes.append(f'N fraction {n_prop_after:.3f} exceeds {max_n_frac:g}')
+        if n_invalid:
+            status = STATUS_WARN
+            notes.append(f'{n_invalid} invalid base(s) coerced to N')
+        if n_gaps_removed:
+            status = STATUS_WARN
+            notes.append(f'{n_gaps_removed} gap char(s) stripped')
+
+    if status != STATUS_PASS:
+        log.warning("[%s] Segment %s: %s", sample_id, segment, '; '.join(notes))
+
+    seq_id = f'{sample_id}_{segment}'
+    return (
+        SeqRecord(Seq(sequence), id=seq_id, description=''),
+        SegmentQC(
+            sample_id=sample_id,
+            segment=segment,
+            seq_id=seq_id,
+            status=status,
+            length=length,
+            length_ok=length_ok,
+            n_prop_before=round(n_proportion(upper), 6),
+            n_replaced=n_replaced,
+            n_gaps_removed=n_gaps_removed,
+            n_invalid=n_invalid,
+            n_prop_after=round(n_prop_after, 6),
+            notes='; '.join(notes),
+        ),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -167,370 +200,91 @@ class SegmentQC:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='Validate and clean influenza consensus FASTA for the consensus workflow.'
+        description='Validate and clean an influenza consensus FASTA for the consensus workflows.'
     )
     parser.add_argument('--input', required=True, type=Path,
                         help='Input consensus FASTA file')
-    parser.add_argument('--sample_id', '--sample-id', dest='sample_id', default=None,
-                        help='Provisional sample identifier, used only for log messages '
-                             '(the authoritative isolate is derived from the header)')
-    parser.add_argument('--outdir', default=Path('.'), type=Path,
-                        help='Output directory for {isolate}.fasta, {isolate}_qc_report.tsv '
-                             'and isolate_id.txt (default: current directory)')
+    parser.add_argument('--sample-id', required=True,
+                        help='Authoritative sample identifier; every output header becomes '
+                             '{sample_id}_{SEGMENT}')
+    parser.add_argument('--output-fasta', required=True, type=Path,
+                        help='Path to write the cleaned FASTA')
+    parser.add_argument('--output-qc', required=True, type=Path,
+                        help='Path to write the per-segment QC report TSV')
     parser.add_argument('--mask-degenerate', action=argparse.BooleanOptionalAction, default=True,
                         help='Mask partially degenerate IUPAC bases (R,Y,S,W,K,M,B,D,H,V) with N '
                              '(default: enabled; use --no-mask-degenerate to keep them)')
-    parser.add_argument('--strip-gaps', action=argparse.BooleanOptionalAction, default=True,
-                        help='Strip alignment gap characters (-, .) from sequences '
-                             '(default: enabled)')
     parser.add_argument('--max-n-frac', type=float, default=1.0,
                         help='WARN when the post-clean N fraction of a segment exceeds this value '
                              '(default: 1.0, i.e. never warns)')
-    parser.add_argument('--expected-segments', default=','.join(EXPECTED_SEGMENTS),
-                        help='Comma-separated ordered list of expected segment labels '
-                             f'(default: {",".join(EXPECTED_SEGMENTS)})')
     parser.add_argument('--log-level', default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         help='Logging verbosity (default: INFO)')
     return parser.parse_args(argv)
 
 
-def configure_logging(level: str) -> None:
-    logging.basicConfig(
-        level=getattr(logging, level),
-        format='%(levelname)s [prepare_consensus]: %(message)s',
-        stream=sys.stderr,
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Parsing / isolate resolution
-# --------------------------------------------------------------------------- #
-
-def load_records(path: Path) -> list[SeqRecord]:
-    """Parse a FASTA file into a list of records (may be empty)."""
-    return list(SeqIO.parse(str(path), 'fasta'))
-
-
-def detect_delimiter(records: list[SeqRecord]) -> str:
-    """Detect the header field delimiter: '|' if any header contains a pipe, else '_'."""
-    for rec in records:
-        if '|' in rec.id:
-            return '|'
-    return '_'
-
-
-def get_segment_label(record_id: str, delimiter: str = '_') -> str | None:
-    """Extract the canonical segment label (e.g. PB2, HA, M) from a sequence ID.
-
-    For pipe-delimited headers, each field is scanned for an underscore-separated
-    suffix that matches a known segment name (e.g. '2.3.4.4b_NA' -> 'NA').
-    For underscore-delimited headers, the last field is used directly.
-    Legacy aliases (e.g. MP) are normalised via SEGMENT_ALIASES.
-    Returns None if no recognised segment label can be found.
-    """
-    known = set(EXPECTED_SEGMENTS) | set(SEGMENT_ALIASES)
-    if delimiter == '|':
-        for field_str in record_id.split('|'):
-            if '_' in field_str:
-                candidate = field_str.split('_')[-1].upper()
-                if candidate in known:
-                    return SEGMENT_ALIASES.get(candidate, candidate)
-        return None
-    label = record_id.split(delimiter)[-1].upper()
-    return SEGMENT_ALIASES.get(label, label)
-
-
-def derive_isolate(record_id: str, delimiter: str, segment: str | None) -> str:
-    """Derive the isolate name from a single FASTA header.
-
-    Underscores are always replaced with dashes (underscores are not allowed in
-    isolate names). See the module docstring for the per-format rules.
-    """
-    if delimiter == '|':
-        isolate = record_id.split('|')[0]
-    else:
-        m = SEGMENT_TOKEN_RE.search(record_id)
-        if m:
-            isolate = record_id[:m.start()]
-        elif segment and record_id.upper().endswith(f"_{segment}"):
-            isolate = record_id[:-(len(segment) + 1)]
-        else:
-            isolate = record_id
-    return isolate.replace('_', '-')
-
-
-def resolve_isolate(records: list[SeqRecord], delimiter: str,
-                    expected_segments: list[str]) -> tuple[str, dict[str, SeqRecord]]:
-    """Map records to segments and derive the single authoritative isolate.
-
-    Raises ValueError on fatal input problems: no parseable segments, or records
-    that resolve to more than one isolate. Unlabelled records and duplicate
-    segments are warned about (the first occurrence of each segment wins).
-    """
-    seg_to_record: dict[str, SeqRecord] = {}
-    isolates: set[str] = set()
-
-    for rec in records:
-        segment = get_segment_label(rec.id, delimiter)
-        if segment is None:
-            log.warning("Could not determine segment for '%s'; skipping.", rec.id)
-            continue
-
-        isolate = derive_isolate(rec.id, delimiter, segment)
-        if not isolate:
-            raise ValueError(f"Could not derive an isolate name from header '{rec.id}'.")
-        isolates.add(isolate)
-
-        if segment in seg_to_record:
-            log.warning("Duplicate record for segment %s ('%s'); keeping the first "
-                        "occurrence ('%s') and ignoring this one.",
-                        segment, rec.id, seg_to_record[segment].id)
-            continue
-        seg_to_record[segment] = rec
-
-    if not seg_to_record:
-        raise ValueError(
-            "No valid influenza segments could be extracted. Check that headers "
-            f"contain a recognised segment label (one of: {', '.join(expected_segments)})."
-        )
-
-    if len(isolates) > 1:
-        raise ValueError(
-            f"Records resolved to multiple isolate names ({', '.join(sorted(isolates))}); "
-            "refusing to guess. Check the input headers."
-        )
-
-    return next(iter(isolates)), seg_to_record
-
-
-# --------------------------------------------------------------------------- #
-# Sequence cleaning / QC
-# --------------------------------------------------------------------------- #
-
-def n_proportion(sequence: str) -> float:
-    """Return the proportion of N bases in the sequence (0.0 for empty)."""
-    if not sequence:
-        return 0.0
-    return sequence.count('N') / len(sequence)
-
-
-def clean_sequence(sequence: str, *, mask_degenerate: bool, strip_gaps: bool) -> CleanResult:
-    """Uppercase and clean a raw sequence string.
-
-    Optionally strips gap characters, optionally masks degenerate IUPAC bases to
-    N, and always coerces any remaining non-ACGTN character to N so the emitted
-    FASTA is guaranteed clean. N proportions are reported before and after.
-    """
-    upper = sequence.upper()
-    n_prop_before = n_proportion(upper)
-
-    cleaned: list[str] = []
-    n_replaced = n_gaps_removed = n_invalid = 0
-
-    for base in upper:
-        if base in GAP_CHARS:
-            if strip_gaps:
-                n_gaps_removed += 1
-                continue
-            # Not stripping: an in-sequence gap is not a valid base -> mask.
-            cleaned.append('N')
-            n_invalid += 1
-        elif base in DEGENERATE_BASES:
-            if mask_degenerate:
-                cleaned.append('N')
-                n_replaced += 1
-            else:
-                cleaned.append(base)
-        elif base in VALID_BASES:
-            cleaned.append(base)
-        else:
-            cleaned.append('N')
-            n_invalid += 1
-
-    result_seq = ''.join(cleaned)
-    return CleanResult(
-        sequence=result_seq,
-        n_replaced=n_replaced,
-        n_gaps_removed=n_gaps_removed,
-        n_invalid=n_invalid,
-        n_prop_before=n_prop_before,
-        n_prop_after=n_proportion(result_seq),
-    )
-
-
-def evaluate_segment(isolate: str, segment: str, seq_id: str, clean: CleanResult,
-                     *, max_n_frac: float) -> SegmentQC:
-    """Build the QC row for one present segment, assigning a PASS/WARN/FAIL status."""
-    length = len(clean.sequence)
-
-    length_ok = True
-    lo = hi = None
-    if segment in SEGMENT_LENGTH_RANGES:
-        lo, hi = SEGMENT_LENGTH_RANGES[segment]
-        length_ok = lo <= length <= hi
-
-    notes: list[str] = []
-    status = STATUS_PASS
-
-    # FAIL conditions.
-    if length == 0 or clean.n_prop_after >= 1.0:
-        status = STATUS_FAIL
-        notes.append('empty or all-N sequence')
-    elif not length_ok:
-        status = STATUS_FAIL
-        notes.append(f'length {length} outside expected range [{lo}, {hi}]')
-
-    # WARN conditions (only downgrade from PASS, never override FAIL).
-    if status == STATUS_PASS:
-        if clean.n_prop_after > max_n_frac:
-            status = STATUS_WARN
-            notes.append(f'N fraction {clean.n_prop_after:.3f} exceeds {max_n_frac:g}')
-        if clean.n_invalid:
-            status = STATUS_WARN
-            notes.append(f'{clean.n_invalid} invalid base(s) coerced to N')
-        if clean.n_gaps_removed:
-            status = STATUS_WARN
-            notes.append(f'{clean.n_gaps_removed} gap char(s) stripped')
-
-    if status != STATUS_PASS:
-        log.warning("Segment %s [%s]: %s", segment, isolate, '; '.join(notes) or status)
-
-    return SegmentQC(
-        sample_id=isolate,
-        segment=segment,
-        seq_id=seq_id,
-        status=status,
-        length=length,
-        length_ok=length_ok,
-        n_prop_before=clean.n_prop_before,
-        n_replaced=clean.n_replaced,
-        n_gaps_removed=clean.n_gaps_removed,
-        n_invalid=clean.n_invalid,
-        n_prop_after=clean.n_prop_after,
-        notes='; '.join(notes),
-    )
-
-
-def missing_segment_qc(isolate: str, segment: str) -> SegmentQC:
-    """Build a placeholder QC row for an expected segment that is absent."""
-    return SegmentQC(
-        sample_id=isolate,
-        segment=segment,
-        seq_id='',
-        status=STATUS_MISSING,
-        length=0,
-        length_ok=False,
-        n_prop_before=0.0,
-        n_replaced=0,
-        n_gaps_removed=0,
-        n_invalid=0,
-        n_prop_after=0.0,
-        notes='segment not found in input',
-    )
-
-
-def build_cleaned_record(isolate: str, segment: str, sequence: str) -> SeqRecord:
-    """Build a SeqRecord with the canonical {isolate}_{SEGMENT} header."""
-    canonical_id = f"{isolate}_{segment}"
-    return SeqRecord(Seq(sequence), id=canonical_id, description='')
-
-
-# --------------------------------------------------------------------------- #
-# Output
-# --------------------------------------------------------------------------- #
-
-def write_fasta(records: list[SeqRecord], path: Path) -> None:
-    SeqIO.write(records, str(path), 'fasta')
-
-
-def write_qc_tsv(rows: list[SegmentQC], path: Path) -> None:
-    with open(path, 'w', newline='') as fh:
-        writer = csv.DictWriter(fh, fieldnames=SegmentQC.fieldnames(), delimiter='\t')
-        writer.writeheader()
-        writer.writerows(row.as_row() for row in rows)
-
-
-def write_isolate_id(isolate: str, path: Path) -> None:
-    with open(path, 'w') as fh:
-        fh.write(isolate + '\n')
-
-
-# --------------------------------------------------------------------------- #
-# Orchestration
-# --------------------------------------------------------------------------- #
-
 def run(args: argparse.Namespace) -> int:
-    tag = args.sample_id or args.input.name
-    expected_segments = [s.strip().upper() for s in args.expected_segments.split(',') if s.strip()]
+    sample_id = args.sample_id
 
-    args.outdir.mkdir(parents=True, exist_ok=True)
-
-    records = load_records(args.input)
-    if not records:
-        log.error("[%s] No sequences found in %s", tag, args.input)
-        return EXIT_INPUT_ERROR
-
-    delimiter = detect_delimiter(records)
-
-    try:
-        isolate, seg_to_record = resolve_isolate(records, delimiter, expected_segments)
-    except ValueError as exc:
-        log.error("[%s] %s", tag, exc)
-        return EXIT_INPUT_ERROR
-
-    # Authoritative isolate resolved: write the sidecar immediately so the caller
-    # can always capture it, even if later steps only produce warnings.
-    write_isolate_id(isolate, args.outdir / 'isolate_id.txt')
-
-    found = set(seg_to_record)
-    unexpected = sorted(found - set(expected_segments))
-    if unexpected:
-        log.warning("[%s] Unexpected segment labels found: %s", isolate, ', '.join(unexpected))
-
-    qc_rows: list[SegmentQC] = []
-    cleaned_records: list[SeqRecord] = []
-
-    for segment in expected_segments:
-        rec = seg_to_record.get(segment)
-        if rec is None:
-            log.warning("[%s] Missing expected segment: %s", isolate, segment)
-            qc_rows.append(missing_segment_qc(isolate, segment))
+    by_segment: dict[str, SeqRecord] = {}
+    stems: set[str] = set()
+    for record in SeqIO.parse(str(args.input), 'fasta'):
+        segment = segment_of(record.id)
+        if segment is None:
+            log.warning("[%s] Could not determine segment for '%s'; skipping.",
+                        sample_id, record.id)
             continue
+        if segment in by_segment:
+            log.error("[%s] Duplicate record for segment %s ('%s' and '%s'); one file must "
+                      "hold one sample.", sample_id, segment, by_segment[segment].id, record.id)
+            return EXIT_INPUT_ERROR
+        by_segment[segment] = record
+        stems.add(sample_stem(record.id))
 
-        clean = clean_sequence(str(rec.seq),
-                               mask_degenerate=args.mask_degenerate,
-                               strip_gaps=args.strip_gaps)
-        cleaned_rec = build_cleaned_record(isolate, segment, clean.sequence)
-        cleaned_records.append(cleaned_rec)
-        qc_rows.append(evaluate_segment(isolate, segment, cleaned_rec.id, clean,
-                                        max_n_frac=args.max_n_frac))
+    if not by_segment:
+        log.error("[%s] No recognised influenza segments in %s (expected a label from: %s).",
+                  sample_id, args.input, ', '.join(EXPECTED_SEGMENTS))
+        return EXIT_INPUT_ERROR
 
-    # Any unexpected-but-present segments are still cleaned and emitted so no data
-    # is silently dropped from the output FASTA.
-    for segment in unexpected:
-        rec = seg_to_record[segment]
-        clean = clean_sequence(str(rec.seq),
-                               mask_degenerate=args.mask_degenerate,
-                               strip_gaps=args.strip_gaps)
-        cleaned_rec = build_cleaned_record(isolate, segment, clean.sequence)
-        cleaned_records.append(cleaned_rec)
-        qc_rows.append(evaluate_segment(isolate, segment, cleaned_rec.id, clean,
-                                        max_n_frac=args.max_n_frac))
+    if len(stems) > 1:
+        log.error("[%s] Headers name more than one sample (%s); one file must hold one sample.",
+                  sample_id, ', '.join(sorted(stems)))
+        return EXIT_INPUT_ERROR
 
-    output_fasta = args.outdir / f"{isolate}.fasta"
-    output_qc = args.outdir / f"{isolate}_qc_report.tsv"
-    write_fasta(cleaned_records, output_fasta)
-    write_qc_tsv(qc_rows, output_qc)
+    records: list[SeqRecord] = []
+    qc_rows: list[SegmentQC] = []
+
+    for segment in EXPECTED_SEGMENTS:
+        record = by_segment.get(segment)
+        if record is None:
+            log.warning("[%s] Missing expected segment: %s", sample_id, segment)
+            qc_rows.append(SegmentQC(sample_id, segment, notes='segment not found in input'))
+            continue
+        cleaned, qc_row = process_segment(sample_id, segment, str(record.seq),
+                                          mask_degenerate=args.mask_degenerate,
+                                          max_n_frac=args.max_n_frac)
+        records.append(cleaned)
+        qc_rows.append(qc_row)
+
+    SeqIO.write(records, str(args.output_fasta), 'fasta')
+
+    with open(args.output_qc, 'w', newline='') as fh:
+        writer = csv.DictWriter(fh, fieldnames=[f.name for f in fields(SegmentQC)], delimiter='\t')
+        writer.writeheader()
+        writer.writerows(asdict(row) for row in qc_rows)
 
     log.info("[%s] Processed %d segment(s). Cleaned FASTA: %s. QC report: %s.",
-             isolate, len(cleaned_records), output_fasta, output_qc)
+             sample_id, len(records), args.output_fasta, args.output_qc)
     return EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    configure_logging(args.log_level)
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format='%(levelname)s [prepare_consensus]: %(message)s',
+        stream=sys.stderr,
+    )
     return run(args)
 
 

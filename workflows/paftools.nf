@@ -7,7 +7,8 @@
  *   subtype-aware reference selection via BLAST, minimap2/paftools variant
  *   calling, bcftools VCF sorting, SnpEff annotation, and summary extraction.
  *
- *   Accepted input FASTA header formats:
+ *   The sample name comes from the input filename (modules/shared/sample_id.nf); input
+ *   headers supply only the segment label. Accepted header formats:
  *     Underscore-delimited (legacy): >SAMPLE_ID_segmentN_SEGMENT
  *       e.g. >WIN-AH-2024-FAV-0415-1-OS_segment1_PB2
  *     Pipe-delimited (GISAID-style): >EPI_ISL_ACCESSION|subtype|SEGMENT|...|clade_SEGMENT
@@ -41,6 +42,7 @@ include { paftools_to_freebayes_vcf }                    from '../modules/paftoo
 include { post_process_vcf }                             from '../modules/shared/post_process.nf'
 include { mutation_watch }                               from '../modules/shared/mutation_watch.nf'
 include { resolve_db }                                   from '../modules/shared/database.nf'
+include { consensus_fasta_channel }                      from '../modules/shared/sample_id.nf'
 
 
 
@@ -49,18 +51,6 @@ workflow PAFTOOLS {
     // Reference selection is BLAST-driven and every called variant is SnpEff-annotated,
     // so both components are mandatory for this branch.
     def db = resolve_db(params.db, ['blastn', 'snpeff'])
-
-    def coverage_summary_header = [
-        'sample_id', 'segment', 'status', 'coverage_pct',
-        'reference_id', 'reference_length', 'aligned_ref_bases', 'first_pos',
-        'last_pos', 'n_alignments', 'mean_identity_pct',
-    ].join('\t')
-
-    def coverage_status_order = [
-        FAIL: 0,
-        WARN: 1,
-        PASS: 2,
-    ]
 
     ch_workflow_metadata = Channel.value([
         workflow.sessionId,
@@ -79,14 +69,7 @@ workflow PAFTOOLS {
 
     // Discover consensus FASTA files in the input directory.
     // Each file is expected to contain 8 segments for a single sample.
-    ch_fasta_input = Channel.fromPath(
-        params.fasta_input + "/*.{fasta,fa,fna}",
-        checkIfExists: true
-    ).map { fasta ->
-        def sample_id = fasta.baseName.replaceAll(/[_\.]consensus$/, '').replaceAll(/_/,'-')
-        sample_id = sample_id.replaceFirst(/^\d{2}-\d+(?:-IP\d+)?-/, "")
-        return [sample_id, fasta]
-    }
+    ch_fasta_input = consensus_fasta_channel(params.fasta_input)
 
     ch_blastn_db = Channel.fromPath(db.blastn)
 
@@ -96,14 +79,24 @@ workflow PAFTOOLS {
         // travel together; the process overrides data.dir with -dataDir.
         ch_snpeff_dir = Channel.fromPath(db.snpeff_dir, checkIfExists: true)
 
-        // Provenance channel
-        ch_provenance = ch_fasta_input.map{ it -> it[0] }
-
         // Hash the input FASTA. One file per sample, so no list-wrapping here.
         hash_files(ch_fasta_input.combine(Channel.of("fasta_input")))
 
         // --- Step 1: Validate and clean input consensus FASTA ---
         prepare_consensus(ch_fasta_input)
+
+        // One run-level table of the per-segment consensus QC rows. The name carries the
+        // workflow because main.nf runs both FASTA branches into the same outdir, and two
+        // collectFile operations must not target one path.
+        prepare_consensus.out.qc
+            .map{ it -> it[1] }
+            .collectFile(
+                name: 'paftools_consensus_qc_summary.tsv',
+                storeDir: "${params.outdir}/aggregate",
+                keepHeader: true,                   // keep header from first file only
+                skip: 1,                            // drop the header line from the rest
+                sort: false
+            )
 
         // --- Step 2: Build BLAST database (once, shared across all samples) ---
         makeblastdb(ch_blastn_db).first().set{ch_blastdb}
@@ -111,6 +104,7 @@ workflow PAFTOOLS {
         // --- Step 3: BLAST cleaned consensus against reference database ---
         blastn(prepare_consensus.out.cleaned, ch_blastdb)
 
+        // --- Step 3b: HPAI mutation screening (per sample, parallel branch) ---
         flumut(prepare_consensus.out.cleaned)
 
         ch_consensus_segments = split_fasta_consensus(prepare_consensus.out.cleaned)
@@ -123,7 +117,7 @@ workflow PAFTOOLS {
         // --- Step 4b: Check reference coverage of each alignment ---
         consensus_coverage_qc(paftools_align.out.paf)
 
-        ch_qc_summary = consensus_coverage_qc.out.coverage
+        consensus_coverage_qc.out.coverage
             .map{ it -> it[1] }
             .flatten()                              // one Path per emission -> avoids the [name, content...] branch
             .collectFile(
@@ -153,32 +147,49 @@ workflow PAFTOOLS {
         )
 
 
+        // [sample_id, [final VCFs]] -> [sample_id, segment, vcf], the segment read back off
+        // the {sample_id}__{ref}__{subtype}__{segment}_paf_final.vcf name post_process_vcf
+        // writes. baseName, not simpleName: reference accessions carry dots.
+        ch_final_vcf = post_process_vcf.out.vcf
+            .transpose()
+            .map { sample_id, vcf ->
+                def segment = vcf.baseName.split('__')[-1].replaceFirst(/_paf_final$/, '')
+                [sample_id, segment, vcf]
+            }
+
         // --- Step 9: Scan the final VCF for a custom watchlist (optional) ---
         if (params.watchlist_dir != 'NO_FILE') {
-            // checkIfExists so a mistyped --watchlist_dir fails loudly rather than yielding
-            // an empty channel and a scan that silently never runs.
+            // checkIfExists so a mistyped --watchlist_dir fails loudly rather than
+            // silently never scanning.
             ch_watchlists = Channel.fromPath(
                 params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
             )
-            // post_process_vcf emits [sample_id, [final VCFs]] for a whole sample here, so
-            // the segment label is left empty rather than invented; it is reported verbatim.
-            ch_watch_in = post_process_vcf.out.vcf
-                .transpose()
-                .map { sample_id, vcf -> [sample_id, '', vcf] }
-                .combine(ch_watchlists)
-            mutation_watch(ch_watch_in)
+            mutation_watch(ch_final_vcf.combine(ch_watchlists))
         }
 
-        // --- Provenance collection ---
-        // Inner joins: prepare_consensus and blastn run errorStrategy 'ignore', so a sample
-        // failing either one leaves the chain and publishes no provenance file at all.
-        ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it ->      [it[0], [it[1]]] }
+        // Per-sample provenance. Inner joins: prepare_consensus, blastn and paftools_align
+        // run errorStrategy 'ignore', so a sample failing any of them leaves the chain and
+        // publishes no provenance file at all.
+        ch_provenance = ch_fasta_input.map{ it -> it[0] }
+        ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it -> [it[0], [it[1]]] }
         ch_provenance = ch_provenance.join(hash_files.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(blastn.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(paftools_align.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(paftools_call.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(paftools_sort_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(paftools_snpeff_annotation.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(post_process_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+
+        if (params.watchlist_dir != 'NO_FILE') {
+            // Group one task per (sample, segment, watchlist) back to one entry per sample.
+            // remainder: true keeps samples whose scans all failed.
+            ch_provenance = ch_provenance
+                .join(mutation_watch.out.provenance.groupTuple(), remainder: true)
+                .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }
+        }
+
         collect_provenance(ch_provenance)
 
 }

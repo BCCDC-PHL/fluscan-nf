@@ -180,7 +180,9 @@ nextflow run BCCDC-PHL/fluscan-nf \
   --outdir /path/to/output_dir
 ```
 
-> **Note:** FASTA mode launches both branches, so the bundle must carry all three components: PAFTOOLS requires `blastn_db.fa` and `snpeff/`, NEXTCLADE requires `nextclade/` with all eight segment datasets.
+> **Note:** In FASTA mode the sample name comes from the input filename, and it names every output. The filename is taken without its extensions, a trailing `_consensus` is dropped, underscores become dashes, and a leading submitter prefix of the form `24-1234-` or `24-1234-IP7-` is stripped — so `24-1234-IP7-SAMPLE_A_consensus.fasta` is reported as `SAMPLE-A`. Input FASTA headers are read only for the segment label; they do not affect naming.
+>
+> FASTA mode launches both branches, so the bundle must carry all three components: PAFTOOLS requires `blastn_db.fa` and `snpeff/`, NEXTCLADE requires `nextclade/` with all eight segment datasets.
 >
 > In the short-read workflow only `blastn_db.fa` is required. SnpEff annotation — and the MNV correction and watchlist scan that read its output — runs when the bundle carries a `snpeff/` directory, and is skipped when it does not; consensus and FluMut complete either way.
 >
@@ -260,7 +262,9 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | File | Description |
 |------|-------------|
 | `${run_name}_fluscan-nf_multiqc_report.html` | MultiQC report summarising fastp, cutadapt, and FastQC results for all samples (short-read workflow only) |
-| `aggregate/run_coverage_summary.tsv` | Run-level tabular summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
+| `aggregate/paftools_qc_summary.tsv` | Run-level tabular summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
+| `aggregate/paftools_consensus_qc_summary.tsv` | Every `*_qc_report.tsv` row from consensus preparation, concatenated across the run (PAFTOOLS). A sample rejected at preparation — duplicate segment, or headers naming more than one sample — contributes no rows and is reported only in the Nextflow log |
+| `aggregate/nextclade_consensus_qc_summary.tsv` | The same rows collected by the NEXTCLADE branch; both branches prepare the same inputs, so the two files agree |
 | `aggregate/reference_remap/coordinate_map.json` | Primary machine-readable nucleotide/amino-acid coordinate map lifting flumut's reference (source) onto the selected Nextclade reference dataset (target) (NEXTCLADE workflow only) |
 | `aggregate/reference_remap/coordinate_map.nt.tsv` | Flat per-position nucleotide coordinate map (source/flumut position/base -> target/nextclade position/base, per segment) |
 | `aggregate/reference_remap/coordinate_map.aa.tsv` | Flat per-residue amino-acid coordinate map (source/flumut position/residue -> target/nextclade position/residue, per segment/gene) |
