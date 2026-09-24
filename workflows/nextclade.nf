@@ -87,10 +87,6 @@ workflow NEXTCLADE {
 
     main:
 
-        // Provenance channel starts with just the sample IDs; per-process YAMLs are joined
-        // on as they are produced, and concatenated at the end by collect_provenance.
-        ch_provenance = ch_fasta_input.map{ it -> it[0] }
-
         // Hash the input FASTA. One file per sample, so no list-wrapping here.
         hash_files(ch_fasta_input.combine(Channel.of("fasta_input")))
 
@@ -168,13 +164,6 @@ workflow NEXTCLADE {
                 }
         }
 
-        // Per-sample provenance. post_process_vcf_batch is keyed by segment rather than by
-        // sample, so it has no per-sample record to join here.
-        ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it -> [it[0], [it[1]]] }
-        ch_provenance = ch_provenance.join(hash_files.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-        ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
-
         // --- Step 6b: Scan the final VCF for a custom watchlist (optional) ---
         //   Independent of --merge_flumut_mutations: FLUMUT= is a curated annotation written
         //   into the VCF, this is a custom list scanned out of it into a separate TSV.
@@ -185,13 +174,6 @@ workflow NEXTCLADE {
                 params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
             )
             mutation_watch(ch_final_vcf.combine(ch_watchlists))
-
-            // One task per (sample, segment, watchlist), so group back to one entry per
-            // sample. remainder: true keeps a sample whose every scan failed, which an
-            // inner join would drop along with the records it had already accumulated.
-            ch_provenance = ch_provenance
-                .join(mutation_watch.out.provenance.groupTuple(), remainder: true)
-                .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }
         }
 
         // --- Steps 7-8: Coordinate conversion + flumut mutation merging (optional) ---
@@ -249,11 +231,27 @@ workflow NEXTCLADE {
                 // -> [sample_id, segment, vcf, coord_shard]
 
             merge_flumut_mutations(ch_merge_in)
+        }
 
-            // One merge task per (sample, segment), so group back to one entry per sample
-            // before joining; it[2] is a list of YAMLs here, hence '+' rather than '<<'.
-            // remainder: true keeps a sample whose segments all failed to merge, which an
-            // inner join would drop along with every record it had already accumulated.
+        // Per-sample provenance. post_process_vcf_batch is keyed by segment rather than by
+        // sample, so it has no per-sample record to join here.
+        ch_provenance = ch_fasta_input.map{ it -> it[0] }
+        ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it -> [it[0], [it[1]]] }
+        ch_provenance = ch_provenance.join(hash_files.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+        ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
+
+        if (params.watchlist_dir != 'NO_FILE') {
+            // Group one task per (sample, segment, watchlist) back to one entry per sample.
+            // remainder: true keeps samples whose scans all failed.
+            ch_provenance = ch_provenance
+                .join(mutation_watch.out.provenance.groupTuple(), remainder: true)
+                .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }
+        }
+
+        if (params.merge_flumut_mutations) {
+            // Group one merge task per (sample, segment) back to one entry per sample.
+            // remainder: true keeps samples whose merges all failed.
             ch_provenance = ch_provenance
                 .join(merge_flumut_mutations.out.provenance.groupTuple(), remainder: true)
                 .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }

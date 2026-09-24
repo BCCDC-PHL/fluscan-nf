@@ -79,10 +79,6 @@ workflow PAFTOOLS {
         // travel together; the process overrides data.dir with -dataDir.
         ch_snpeff_dir = Channel.fromPath(db.snpeff_dir, checkIfExists: true)
 
-        // Provenance channel starts with just the sample IDs; per-process YAMLs are joined
-        // on as they are produced, and concatenated at the end by collect_provenance.
-        ch_provenance = ch_fasta_input.map{ it -> it[0] }
-
         // Hash the input FASTA. One file per sample, so no list-wrapping here.
         hash_files(ch_fasta_input.combine(Channel.of("fasta_input")))
 
@@ -161,9 +157,20 @@ workflow PAFTOOLS {
                 [sample_id, segment, vcf]
             }
 
+        // --- Step 9: Scan the final VCF for a custom watchlist (optional) ---
+        if (params.watchlist_dir != 'NO_FILE') {
+            // checkIfExists so a mistyped --watchlist_dir fails loudly rather than
+            // silently never scanning.
+            ch_watchlists = Channel.fromPath(
+                params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
+            )
+            mutation_watch(ch_final_vcf.combine(ch_watchlists))
+        }
+
         // Per-sample provenance. Inner joins: prepare_consensus, blastn and paftools_align
         // run errorStrategy 'ignore', so a sample failing any of them leaves the chain and
         // publishes no provenance file at all.
+        ch_provenance = ch_fasta_input.map{ it -> it[0] }
         ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it -> [it[0], [it[1]]] }
         ch_provenance = ch_provenance.join(hash_files.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(prepare_consensus.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
@@ -175,18 +182,9 @@ workflow PAFTOOLS {
         ch_provenance = ch_provenance.join(paftools_snpeff_annotation.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(post_process_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
 
-        // --- Step 9: Scan the final VCF for a custom watchlist (optional) ---
         if (params.watchlist_dir != 'NO_FILE') {
-            // checkIfExists so a mistyped --watchlist_dir fails loudly rather than
-            // silently never scanning.
-            ch_watchlists = Channel.fromPath(
-                params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
-            )
-            mutation_watch(ch_final_vcf.combine(ch_watchlists))
-
-            // One task per (sample, segment, watchlist), so group back to one entry per
-            // sample. remainder: true keeps a sample whose every scan failed, which an
-            // inner join would drop along with the records it had already accumulated.
+            // Group one task per (sample, segment, watchlist) back to one entry per sample.
+            // remainder: true keeps samples whose scans all failed.
             ch_provenance = ch_provenance
                 .join(mutation_watch.out.provenance.groupTuple(), remainder: true)
                 .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }
