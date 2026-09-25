@@ -22,8 +22,6 @@
  *
  */
 
-nextflow.enable.dsl = 2
-
 include { hash_files }                                   from '../modules/shared/hash_files.nf'
 include { pipeline_provenance }                          from '../modules/shared/provenance.nf'
 include { collect_provenance }                           from '../modules/shared/provenance.nf'

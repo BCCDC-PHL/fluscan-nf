@@ -7,8 +7,6 @@
  *   reference-based mapping, variant calling, and consensus generation.
  */
 
-nextflow.enable.dsl = 2
-
 include { hash_files as short_read_hash_files } from '../modules/shared/hash_files.nf'
 include { pipeline_provenance }            from '../modules/shared/provenance.nf'
 include { collect_provenance }             from '../modules/shared/provenance.nf'
@@ -42,8 +40,7 @@ workflow SHORT_READ {
 
     // Only the BLAST reference is required here. SnpEff annotation (and the MNV
     // correction and watchlist scan that depend on its output) runs when the bundle
-    // carries a snpeff/ component, so whether it runs is now a property of the
-    // reference set rather than of a separate flag.
+    // carries a snpeff/ component.
     def db = resolve_db(params.db, ['blastn'])
 
     ch_workflow_metadata = Channel.value([
@@ -61,7 +58,7 @@ workflow SHORT_READ {
 
     ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
 
-    ch_primers = Channel.fromPath(params.primer_path)
+    ch_primers = Channel.fromPath(params.primers, checkIfExists: true)
 
     if (params.samplesheet_input != 'NO_FILE') {
         ch_fastq_input = samplesheet_channel(params.samplesheet_input, ['R1', 'R2'])

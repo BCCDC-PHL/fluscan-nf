@@ -21,10 +21,10 @@ process short_read_cutadapt {
 
     cutadapt \
       -j ${task.cpus} \
-      -a file:${params.primers} \
-      -A file:${params.primers} \
-      -g file:${params.primers} \
-      -G file:${params.primers} \
+      -a file:${primers} \
+      -A file:${primers} \
+      -g file:${primers} \
+      -G file:${primers} \
       -o ${sample_id}_R1.trim_p.fastq.gz \
       -p ${sample_id}_R2.trim_p.fastq.gz \
       ${sample_id}_R1.trim.fastq.gz \

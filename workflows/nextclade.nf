@@ -15,8 +15,6 @@
  *   Cleaned headers are normalised to {sample_id}_{SEGMENT} by prepare_consensus.
  */
 
-nextflow.enable.dsl = 2
-
 include { hash_files }                           from '../modules/shared/hash_files.nf'
 include { prepare_consensus }                    from '../modules/shared/consensus_qc.nf'
 include { split_fasta as split_fasta_consensus } from '../modules/shared/consensus_qc.nf'
