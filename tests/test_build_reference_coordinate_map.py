@@ -18,12 +18,14 @@ Three things are pinned here:
    consumed downstream and by hand; they are asserted here so a refactor cannot quietly
    drop one.
 
-Only Biopython is required; the datasets are synthesised in tmp_path.
+Only Biopython is required; the FluMutDB source and the target datasets are synthesised in
+tmp_path.
 """
 
 import importlib.util
 import json
 import math
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -83,7 +85,7 @@ def write_segment(seg_dir: Path, chrom: str, sequence: str, gff_lines: list[str]
 
 
 def ha_gff_split_cds(chrom: str) -> list[str]:
-    """HA1/HA2 as two genuine CDS features (the chicken2021 / flumut shape)."""
+    """HA1/HA2 as two genuine CDS features."""
     lines = []
     for gene, (start, end) in (("HA1", HA1_RANGE), ("HA2", HA2_RANGE)):
         lines.append(gff_line(chrom, "gene", start, end,
@@ -126,13 +128,31 @@ def write_dataset(root: Path, prefix: str, ha_gff, ha_sequence: str) -> Path:
     return root
 
 
+def write_flumut_db(path: Path, ha_sequence: str) -> Path:
+    """A FluMutDB holding only the two tables the builder reads, with M named `MP` as upstream."""
+    conn = sqlite3.connect(path)
+    conn.execute('CREATE TABLE "references" (name TEXT, segment_name TEXT, sequence TEXT)')
+    conn.execute('CREATE TABLE annotations (start INTEGER, "end" INTEGER, protein_name TEXT, reference_name TEXT)')
+    for segment in builder.SEGMENTS:
+        reference = "MP" if segment == "M" else segment
+        if segment == "HA":
+            sequence, proteins = ha_sequence, [("HA1", *HA1_RANGE), ("HA2", *HA2_RANGE)]
+        else:
+            sequence, proteins = synthetic_sequence(300, seed=hash(segment) % 9973 + 1), [(segment, 1, 300)]
+        conn.execute('INSERT INTO "references" VALUES (?, ?, ?)', (reference, reference, sequence))
+        conn.executemany("INSERT INTO annotations VALUES (?, ?, ?, ?)",
+                         [(start, end, protein, reference) for protein, start, end in proteins])
+    conn.commit()
+    conn.close()
+    return path
+
+
 def build(tmp_path: Path, source: Path, target: Path, name: str, **kwargs) -> dict:
     out_dir = tmp_path / name
     args = builder.parse_args([
-        "--source-ref-dir", str(source),
+        "--flumut-db", str(source),
         "--target-ref-dir", str(target),
         "--out-dir", str(out_dir),
-        "--source-name", "src",
         "--target-name", "tgt",
         *[a for a in kwargs.get("extra", [])],
     ])
@@ -142,13 +162,13 @@ def build(tmp_path: Path, source: Path, target: Path, name: str, **kwargs) -> di
 
 @pytest.fixture
 def datasets(tmp_path):
-    """A source dataset plus two targets that differ only in how HA is annotated."""
+    """A FluMutDB source plus two target datasets that differ only in how HA is annotated."""
     source_ha = synthetic_sequence(HA_LENGTH, seed=11)
     # A different strain: same structure, different residues, so the alignment is real work
     # rather than a self-map.
     target_ha = synthetic_sequence(HA_LENGTH, seed=11)[:900] + synthetic_sequence(HA_LENGTH, seed=29)[900:]
 
-    source = write_dataset(tmp_path / "source", "SRC", ha_gff_split_cds, source_ha)
+    source = write_flumut_db(tmp_path / "flumut_db.sqlite", source_ha)
     split = write_dataset(tmp_path / "target_split", "TGT", ha_gff_split_cds, target_ha)
     mature = write_dataset(tmp_path / "target_mature", "TGT", ha_gff_mature_peptides, target_ha)
     return source, split, mature
@@ -379,8 +399,8 @@ def test_qc_tsv_carries_the_co_optimal_alignment_count(tmp_path, datasets):
     source, split, _ = datasets
     out_dir = tmp_path / "qc"
     builder.build_map(builder.parse_args([
-        "--source-ref-dir", str(source), "--target-ref-dir", str(split),
-        "--out-dir", str(out_dir), "--source-name", "src", "--target-name", "tgt",
+        "--flumut-db", str(source), "--target-ref-dir", str(split),
+        "--out-dir", str(out_dir), "--target-name", "tgt",
     ]))
 
     header, *rows = (out_dir / "coordinate_map.qc.tsv").read_text().splitlines()
@@ -397,8 +417,8 @@ def test_a_questionable_map_warns_and_is_written_anyway(tmp_path, datasets, caps
     out_dir = tmp_path / "questionable"
 
     builder.build_map(builder.parse_args([
-        "--source-ref-dir", str(source), "--target-ref-dir", str(split),
-        "--out-dir", str(out_dir), "--source-name", "src", "--target-name", "tgt",
+        "--flumut-db", str(source), "--target-ref-dir", str(split),
+        "--out-dir", str(out_dir), "--target-name", "tgt",
     ]))
     err = capsys.readouterr().err
 
@@ -419,8 +439,8 @@ def test_per_position_status_follows_the_mapped_coordinate(tmp_path, datasets):
     source, split, _ = datasets
     out_dir = tmp_path / "status"
     builder.build_map(builder.parse_args([
-        "--source-ref-dir", str(source), "--target-ref-dir", str(split),
-        "--out-dir", str(out_dir), "--source-name", "src", "--target-name", "tgt",
+        "--flumut-db", str(source), "--target-ref-dir", str(split),
+        "--out-dir", str(out_dir), "--target-name", "tgt",
     ]))
 
     header, *rows = (out_dir / "coordinate_map.nt.tsv").read_text().splitlines()
@@ -471,8 +491,8 @@ def built(tmp_path, datasets):
     source, split, _ = datasets
     out_dir = tmp_path / "artifacts"
     builder.build_map(builder.parse_args([
-        "--source-ref-dir", str(source), "--target-ref-dir", str(split),
-        "--out-dir", str(out_dir), "--source-name", "src", "--target-name", "tgt",
+        "--flumut-db", str(source), "--target-ref-dir", str(split),
+        "--out-dir", str(out_dir), "--target-name", "tgt",
     ]))
     return out_dir
 
@@ -484,8 +504,8 @@ def test_every_documented_artifact_is_written(built):
         "coordinate_map.nt.tsv",
         "coordinate_map.aa.tsv",
         "coordinate_map.qc.tsv",
-        "src_alignment.fasta",
-        "src_aa_alignment.fasta",
+        "flumut_alignment.fasta",
+        "flumut_aa_alignment.fasta",
     }
 
     assert expected <= {path.name for path in built.iterdir()}
@@ -541,5 +561,28 @@ def test_config_json_is_not_consulted(tmp_path, datasets):
     doc = build(tmp_path, source, split, "no_config")
 
     assert sorted(doc["segments"]) == sorted(builder.SEGMENTS)
-    assert doc["source_reference"] == "src"
+    assert doc["source_reference"] == "flumut"
     assert doc["target_reference"] == "tgt"
+
+
+# ---------------------------------------------------------------------------
+# FluMutDB source
+# ---------------------------------------------------------------------------
+
+def test_flumut_source_renames_mp_and_keeps_spliced_proteins_whole(tmp_path):
+    """FluMutDB calls the M segment `MP` and stores a spliced protein as one row per exon;
+    both must come out keyed the way the target datasets are."""
+    db = write_flumut_db(tmp_path / "flumut_db.sqlite", synthetic_sequence(HA_LENGTH, seed=11))
+    conn = sqlite3.connect(db)
+    conn.executemany("INSERT INTO annotations VALUES (?, ?, ?, ?)",
+                     [(1, 30, "NS-2", "NS"), (503, 838, "NS-2", "NS")])
+    conn.commit()
+    conn.close()
+
+    source = builder.read_flumut_source(db)
+
+    assert sorted(source) == sorted(builder.SEGMENTS)
+    record, models = source["M"]
+    assert record.id == "FLUMUT_M"
+    assert models["M"].contig == "FLUMUT_M"
+    assert source["NS"][1]["NEP"].parts == ((1, 30), (503, 838))

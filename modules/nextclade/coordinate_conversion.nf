@@ -1,9 +1,10 @@
-// nextclade/coordinate_conversion.nf - Build a source->target reference coordinate map.
+// nextclade/coordinate_conversion.nf - Build a FluMut->Nextclade reference coordinate map.
 //
 // Runs once per pipeline invocation, not per sample. Translates nucleotide and amino-acid
-// indices from flumut's fixed reference (source) onto the selected Nextclade dataset
-// (target), so merge_flumut_mutations can place FluMutDB positions in Nextclade
-// coordinates. Idempotent: the same two reference directories always give the same map.
+// indices from flumut's fixed reference (source, read from the installed flumutdb package)
+// onto the selected Nextclade dataset (target), so merge_flumut_mutations can place FluMutDB
+// positions in Nextclade coordinates. Idempotent: the same flumutdb and dataset always give
+// the same map.
 
 process coordinate_conversion {
 
@@ -14,8 +15,7 @@ process coordinate_conversion {
     publishDir "${params.outdir}/aggregate", pattern: "reference_remap", mode: 'copy'
 
     input:
-    tuple val(source_name), path(source_dataset_dir, stageAs: 'source_dataset'),
-          val(target_name), path(target_dataset_dir, stageAs: 'target_dataset')
+    tuple val(target_name), path(target_dataset_dir, stageAs: 'target_dataset')
 
     output:
     path("reference_remap"),                                          emit: map_dir
@@ -32,15 +32,13 @@ process coordinate_conversion {
     printf -- "    - tool_name: python\\n      tool_version: \$(python3 --version 2>&1 | cut -d' ' -f2)\\n" >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "    - tool_name: biopython\\n      tool_version: \$(python3 -c 'import Bio; print(Bio.__version__)')\\n" >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "    - tool_name: build_reference_coordinate_map.py\\n      tool_version: \$(build_reference_coordinate_map.py --version | awk '{print \$NF}')\\n" >> reference_remap/coordinate_conversion_provenance.yml
+    printf -- "    - tool_name: flumutdb\\n      tool_version: \$(python3 -c 'from flumut.DbReader import get_db_version; print("%s.%s" % get_db_version()[:2])')\\n" >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "  parameters:\\n"                                                                     >> reference_remap/coordinate_conversion_provenance.yml
-    printf -- "    - parameter: source_reference\\n      value: ${source_name}\\n"                   >> reference_remap/coordinate_conversion_provenance.yml
     printf -- "    - parameter: target_reference\\n      value: ${target_name}\\n"                   >> reference_remap/coordinate_conversion_provenance.yml
 
     build_reference_coordinate_map.py \\
-        --source-ref-dir source_dataset \\
         --target-ref-dir target_dataset \\
         --out-dir reference_remap \\
-        --source-name ${source_name} \\
         --target-name ${target_name}
     """
 
@@ -54,8 +52,8 @@ process coordinate_conversion {
     touch reference_remap/coordinate_map.nt.tsv
     touch reference_remap/coordinate_map.aa.tsv
     touch reference_remap/coordinate_map.qc.tsv
-    touch reference_remap/${source_name}_alignment.fasta
-    touch reference_remap/${source_name}_aa_alignment.fasta
+    touch reference_remap/flumut_alignment.fasta
+    touch reference_remap/flumut_aa_alignment.fasta
     touch reference_remap/coordinate_conversion_provenance.yml
     """
 }

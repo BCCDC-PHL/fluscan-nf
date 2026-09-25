@@ -34,10 +34,12 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
     splits per-sample results, converts JSON to the common VCF shape, and
     corrects MNV codons.
 - `--merge_flumut_mutations` is off by default. When enabled in the Nextclade
-  branch, a run-level map lifts coordinates from the FluMut bundle
-  (`--flumut_db`, source) onto the selected bundle's Nextclade datasets
-  (`--db`, target), then `bin/merge_flumut_mutations.py`
-  adds `FLUMUT=` annotations to matching existing VCF rows.
+  branch, a run-level map lifts coordinates from FluMut's own reference
+  (source, the `references`/`annotations` tables of the installed `flumutdb`
+  sqlite) onto the selected bundle's Nextclade datasets (`--db`, target), then
+  `bin/merge_flumut_mutations.py` adds `FLUMUT=` annotations to matching
+  existing VCF rows. The markers and the source coordinates come from the same
+  package, so they cannot drift apart.
 - `mutation_watch` scans each final VCF against the custom watchlists in
   `--watchlist_dir` (default `assets/watchlists/`) and publishes exactly one
   file, `*_watchlist_hits.tsv` (header-only when nothing matches). It runs in all
@@ -60,7 +62,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 | `docs/watchlists.md` | Custom watchlist schema, matching rules, and the HA1/HA numbering trap |
 | `assets/watchlists/` | The shipped `*watchlist.csv` files; `--watchlist_dir` defaults here |
 | `modules/shared/sample_id.nf` | The only place a consensus or sample sheet `sample_id` is derived; holds the FASTA discovery channel both FASTA branches call and `samplesheet_channel`, which all three workflows call for `--samplesheet_input`. Changing `clean_sample_id` renames every output |
-| `modules/shared/database.nf` | The only place that knows the `--db` bundle layout; `resolve_db`/`resolve_flumut_db` validate it up front. Also holds the canonical segment list — `@Field DB_SEGMENTS` is not importable across an `include`, so workflows reach it through the `db_segments()` accessor rather than repeating the literal |
+| `modules/shared/database.nf` | The only place that knows the `--db` bundle layout; `resolve_db` validates it up front. Also holds the canonical segment list — `@Field DB_SEGMENTS` is not importable across an `include`, so workflows reach it through the `db_segments()` accessor rather than repeating the literal |
 | `scripts/validate_db.py` | Deeper, contents-level bundle check; run after building or moving a bundle |
 | `docs/database_bundles.md` | Bundle layout, `db.yml` schema, how to build and validate one |
 | `README.md` | User-facing inputs, commands, outputs, and architecture |
@@ -118,11 +120,11 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 - Bundles may be partial and each workflow declares what it requires:
   SHORT_READ `blastn` (SnpEff and everything downstream of it runs only when
   `db.has_snpeff`), PAFTOOLS `blastn` + `snpeff`, NEXTCLADE `nextclade`. FASTA
-  dispatch launches both branches, so it needs all three. `--flumut_db` is a
-  second, independent bundle required only for the optional merge.
+  dispatch launches both branches, so it needs all three. The optional FluMut
+  merge needs nothing beyond `nextclade`.
 - Most unset path parameters use the literal `NO_FILE`. Do not treat that
-  string as a real path. `nextflow.config` leaves `db` and `flumut_db` unset, so
-  pass them explicitly unless a local config supplies them.
+  string as a real path. `nextflow.config` leaves `db` unset, so pass it
+  explicitly unless a local config supplies it.
 - `--samplesheet_input` is parsed eagerly by `samplesheet_channel`, so column,
   blank-cell, ID and file-existence errors all fail before any task is submitted.
   Both FASTA branches choose between it and `consensus_fasta_channel` with the same

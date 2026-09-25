@@ -17,8 +17,7 @@
 //
 // The filenames are fixed on purpose. A bundle is identified by its layout, so this
 // file is the only place that knows where anything inside one lives; --db is the only
-// path the caller supplies. --flumut_db points at a second, independent bundle whose
-// nextclade/ datasets are the source coordinate system for the optional flumut merge.
+// path the caller supplies.
 //
 // Bundles may be partial. Each workflow declares the components it consumes and only
 // those are validated: SHORT_READ requires 'blastn' (and picks up snpeff annotation
@@ -124,18 +123,18 @@ def built_snpeff_genomes(snpeff_dir) {
 
 // Resolve a bundle root into the paths and metadata the workflows consume, validating
 // the components named in `required` (a subset of ['blastn', 'nextclade', 'snpeff']).
-def resolve_db(String path, List required, String param_name = '--db') {
+def resolve_db(String path, List required) {
 
     if (!path || path == 'NO_FILE') {
-        error "ERROR: ${param_name} must be set to a reference database bundle.\n" + db_layout_help()
+        error "ERROR: --db must be set to a reference database bundle.\n" + db_layout_help()
     }
 
     def root = file(path)
     if (!root.exists()) {
-        error "ERROR: ${param_name} ${path} does not exist."
+        error "ERROR: --db ${path} does not exist."
     }
     if (!root.isDirectory()) {
-        error "ERROR: ${param_name} ${path} is not a directory; it must be a bundle root.\n" + db_layout_help()
+        error "ERROR: --db ${path} is not a directory; it must be a bundle root.\n" + db_layout_help()
     }
 
     def blastn        = root.resolve('blastn_db.fa')
@@ -165,7 +164,7 @@ def resolve_db(String path, List required, String param_name = '--db') {
                 if (root.resolve('HA').isDirectory()) {
                     problems << "  missing ${nextclade} -- ${path} looks like a Nextclade dataset\n" +
                                 "  directory rather than a bundle root (it contains HA/). Pass its parent instead:\n" +
-                                "    ${param_name} ${root.parent}"
+                                "    --db ${root.parent}"
                 }
                 else {
                     problems << "  missing Nextclade dataset directory: ${nextclade}"
@@ -220,17 +219,6 @@ def resolve_db(String path, List required, String param_name = '--db') {
         has_snpeff:         present.snpeff,
         meta:               meta,
     ]
-}
-
-
-// The flumut bundle is resolved independently of --db: it changes far less often, and
-// only the optional merge step reads it. Only its nextclade/ datasets are consumed.
-def resolve_flumut_db(String path) {
-    if (!path || path == 'NO_FILE') {
-        error "ERROR: --flumut_db must be set to the FluMut reference bundle when " +
-              "--merge_flumut_mutations is enabled.\n" + db_layout_help()
-    }
-    return resolve_db(path, ['nextclade'], '--flumut_db')
 }
 
 

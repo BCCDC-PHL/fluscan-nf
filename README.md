@@ -106,7 +106,7 @@ flowchart TD
         split_results --> nc2vcf
         nc2vcf --> fixmnv_nc
         fixmnv_nc --> nc_final
-        dispatch -.->|"flumut_db + db nextclade datasets, sample-independent (if merge_flumut_mutations)"| coord_map
+        dispatch -.->|"flumutdb reference + db nextclade datasets, sample-independent (if merge_flumut_mutations)"| coord_map
         coord_map --> coord_final
         coord_map -.->|"per-segment shard (if merge_flumut_mutations)"| flumut_merge
         nc_final -.-> flumut_merge
@@ -202,7 +202,6 @@ nextflow run BCCDC-PHL/fluscan-nf \
   --cache ~/.conda/envs \
   --fasta_input /path/to/consensus_fastas \
   --db /path/to/refs/gsgd \
-  --flumut_db /path/to/refs/flumut \
   --merge_flumut_mutations \
   --outdir /path/to/output_dir
 ```
@@ -213,7 +212,7 @@ nextflow run BCCDC-PHL/fluscan-nf \
 >
 > In the short-read workflow only `blastn_db.fa` is required. SnpEff annotation — and the MNV correction and watchlist scan that read its output — runs when the bundle carries a `snpeff/` directory, and is skipped when it does not; consensus and FluMut complete either way.
 >
-> `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and FluMutDB annotation of the VCF (`*_flumut_annotated.vcf`). When set to `true`, `--flumut_db` becomes mandatory: FluMut's own bundle, whose `nextclade/` datasets are the fixed *source* reference lifted onto the `--db` datasets by the `coordinate_conversion` step. Point it at the bundle root, not at its `nextclade/` subdirectory. The marker set comes from the `flumutdb` conda package, so the annotation step does not consume the per-sample `flumut` output.
+> `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and FluMutDB annotation of the VCF (`*_flumut_annotated.vcf`). The `coordinate_conversion` step lifts FluMut's own reference, read from the `flumutdb` conda package, onto the `--db` datasets. The marker set comes from the same package, so the two always match and the annotation step does not consume the per-sample `flumut` output.
 >
 > `--emit_no_mature_vcf` (boolean, default `false`) additionally writes each NEXTCLADE VCF a second time with no mature-peptide `ANN=` entries, for consumers that require HA annotated as HA0 only. The two files carry the same records, alleles and order; only the `ANN=` sub-field differs, and segments without mature peptides in their annotation come out identical. The published copy lands in `nextclade/no_mature_peptide/` and gets the same MNV codon correction as the standard VCF. Nothing downstream in the pipeline reads it: `mutation_watch` and `merge_flumut_mutations` resolve HA markers through the HA1/HA2 `Feature_ID` and stay on the standard VCF.
 
@@ -298,8 +297,8 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 | `aggregate/reference_remap/coordinate_map.nt.tsv` | Flat per-position nucleotide coordinate map (source/flumut position/base -> target/nextclade position/base, per segment) |
 | `aggregate/reference_remap/coordinate_map.aa.tsv` | Flat per-residue amino-acid coordinate map (source/flumut position/residue -> target/nextclade position/residue, per segment/gene) |
 | `aggregate/reference_remap/coordinate_map.qc.tsv` | Per-segment/per-gene alignment QC: identity, coverage, the number of co-optimal alignments the map's gap placement was chosen from, and status (`ok`/`warning`/`missing_in_source`/`extra_in_source`/`stale_annotation`) |
-| `aggregate/reference_remap/<source>_alignment.fasta` (`<source>` is the flumut bundle's reference label: `nextclade_ref_name` from its `db.yml`, else `name`, else the bundle directory name) | Target/source (nextclade/flumut) nucleotide alignment blocks, one per segment |
-| `aggregate/reference_remap/<source>_aa_alignment.fasta` | Target/source (nextclade/flumut) amino-acid alignment blocks, one per gene |
+| `aggregate/reference_remap/flumut_alignment.fasta` | Target/source (nextclade/flumut) nucleotide alignment blocks, one per segment |
+| `aggregate/reference_remap/flumut_aa_alignment.fasta` | Target/source (nextclade/flumut) amino-acid alignment blocks, one per gene |
 | `${run_name}_fluscan-nf_nextflow_report.html` | Nextflow execution report |
 | `${run_name}_fluscan-nf_nextflow_timeline.html` | Nextflow execution timeline |
 | `${run_name}_fluscan-nf_nextflow_trace.txt` | Nextflow task trace |
