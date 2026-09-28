@@ -28,7 +28,8 @@ process paftools_align {
         segment="\${consensus_core%_raw}"
         reference_fa="ref_input/${sample_id}_ref_\${segment}.s.fasta"
         output_prefix="${sample_id}_\${segment}"
-        minimap2 -cx asm20 --cs "\$reference_fa" "\$consensus_fa" > "\${output_prefix}_raw.paf" || { echo "WARN: minimap2 failed for \$segment" >&2; continue; }
+        [ -s "\$reference_fa" ] || { echo "WARN: no reference for \$segment, skipping" >&2; continue; }
+        minimap2 -cx asm20 --cs "\$reference_fa" "\$consensus_fa" > "\${output_prefix}_raw.paf" || { echo "WARN: minimap2 failed for \$segment" >&2; rm -f "\${output_prefix}_raw.paf"; continue; }
         sort -k6,6 -k8,8n "\${output_prefix}_raw.paf" > "\${output_prefix}.paf"
         rm "\${output_prefix}_raw.paf"
     done
@@ -55,8 +56,7 @@ process consensus_coverage_qc {
     """
     for paf_file in pafs/*.paf; do
         paf_basename=\$(basename "\$paf_file" .paf)
-        paf_core="\${paf_basename#${sample_id}_}"
-        segment="\${paf_core%_raw}"
+        segment="\${paf_basename#${sample_id}_}"
         reference_fa="ref_input/${sample_id}_ref_\${segment}.s.fasta"
         consensus_coverage_qc.py \\
           --paf "\$paf_file" \\
