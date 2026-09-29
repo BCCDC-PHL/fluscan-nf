@@ -237,10 +237,13 @@ deliberately does not constrain. `Mutation_Name` and both effect fields union ov
 ### CLI
 
 ```
-merge_flumut_mutations.py --vcf <final.vcf> --coord-map <coordinate_map.SEG.json>
-                          --segment <HA|M|…> --sample <id> -o <merged.vcf>
+merge_flumut_mutations.py --vcf <final.vcf> [<final.vcf> …]
+                          --coord-map <coordinate_map.SEG.json> --segment <HA|M|…>
                           [--flumut-db <path>] [--no-effects]
 ```
+
+Each `--vcf` is written to `<stem>_flumut_annotated.vcf` in the working directory, where
+`<stem>` is its filename less `.vcf` and a trailing `_final`.
 
 ### Inputs and where they come from
 
@@ -250,23 +253,25 @@ merge_flumut_mutations.py --vcf <final.vcf> --coord-map <coordinate_map.SEG.json
 | `--coord-map` (`coordinate_map.<SEG>.json`) | `coordinate_conversion` | flumut→Nextclade **AA position** mapping, per gene |
 | FluMutDB sqlite | `flumutdb` conda package | the marker catalogue; located via `flumut.DbReader.get_db_file()`, overridable with `--flumut-db` |
 
-Wired in `workflows/nextclade.nf` per `(sample, segment)`: the per-segment VCF batches are
-flattened and combined with the matching coordinate-map shard. The per-sample `flumut` TSV is
+Wired in `workflows/nextclade.nf` once per segment: each segment's VCFs from
+`nextclade_run_batch` are combined with the matching coordinate-map shard. The per-sample `flumut` TSV is
 **not** an input — the marker set comes from the database, so the `flumut` process and this
 one are independent.
 
 ### How it runs (`main`)
 
-1. **Read the VCF** with `tools.read_vcf` → DataFrame + header lines.
-2. **Load this segment's block** from the coordinate map (`load_segment_map`), warning if it
+Steps 1 and 2 run once per call; `annotate_vcf` repeats steps 3 to 6 for each `--vcf`.
+
+1. **Load this segment's block** from the coordinate map (`load_segment_map`), warning if it
    carries `stale_annotation`.
-3. **Pair genes with FluMutDB proteins** (`build_gene_protein_maps`): query the distinct
+2. **Pair genes with FluMutDB proteins** (`build_gene_protein_maps`): query the distinct
    `protein_name`s the database maps onto this segment's reference, resolve each to a
    coordinate-map gene key (`resolve_gene`, see below), and **invert** that gene's
    `aa_source_to_target` once into `{target_pos: source_pos}`. Inverting is what lets the
    main loop start from a VCF row and query the database directly. Alignment-derived maps
    pair columns 1:1, so the inverse is well defined; a collision would be warned about and
    resolved to the lowest source position.
+3. **Read the VCF** with `tools.read_vcf` → DataFrame + header lines.
 4. **Skip rows flagged `MNV_UNRESOLVED`** (`has_info_flag`). `fix_mnv_codons.py` sets that
    flag on PAFTOOLS and SHORT_READ VCFs when it identified a multi-SNV codon but could not
    compute the combined change (the Nextclade converter always has the reference codon and

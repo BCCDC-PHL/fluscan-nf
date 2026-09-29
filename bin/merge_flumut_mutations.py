@@ -16,8 +16,8 @@ FluMutDB positions are in flumut's reference coordinates and are translated onto
 Nextclade dataset through the coordinate_conversion map. FluMutDB numbers HA by its
 HA1/HA2 subunits, so HA markers match only where the dataset exposes that split.
 
-Pipeline position: after post_process_vcf_batch (nextclade workflow), consuming
-coordinate_conversion output. See docs/vcf_annotation_and_flumut_insertion.md.
+Pipeline position: after nextclade_run_batch, once per segment over every sample's VCF,
+consuming coordinate_conversion output. See docs/vcf_annotation_and_flumut_insertion.md.
 """
 
 import argparse
@@ -362,71 +362,53 @@ def get_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     # The process's provenance block reads this, so tool_version cannot drift.
     p.add_argument("--version", action="version", version=f"%(prog)s {SCRIPT_VERSION}")
-    p.add_argument("--vcf", required=True, help="Existing per-sample/per-segment VCF to annotate")
+    p.add_argument("--vcf", required=True, nargs="+",
+                   help="Per-sample VCFs for this segment; each is written to "
+                        "<stem>_flumut_annotated.vcf in the working directory, the stem being "
+                        "its filename without .vcf and a trailing _final")
     p.add_argument("--coord-map", required=True, help="coordinate_map.<SEG>.json (flumut -> Nextclade)")
     p.add_argument("--segment", required=True, help="Segment label, e.g. HA, M, NS")
-    p.add_argument("--sample", required=True, help="Sample id (used for logging only)")
     p.add_argument("--flumut-db", help="Path to flumut_db.sqlite (default: the installed flumutdb)")
     p.add_argument("--no-effects", action="store_true",
                    help="Omit both effect fields, emitting only Protein|AA_Pos|Alt_AA|Mutation_Name")
-    p.add_argument("-o", "--output", required=True, help="Output VCF path")
     return p.parse_args()
 
 
-def main() -> None:
-    args = get_args()
-    segment = args.segment.upper()
-    want_effects = not args.no_effects
+def annotate_vcf(vcf_path: str, segment: str, seg_map: dict, gene_maps: dict, lookup,
+                 want_effects: bool, alias_index: dict, subunit_parent_genes: set,
+                 version: str) -> None:
+    """Write <stem>_flumut_annotated.vcf for one VCF, logging what it matched and skipped."""
+    df, header_lines = read_vcf(vcf_path)
+    stem = os.path.basename(vcf_path).removesuffix(".vcf").removesuffix("_final")
+    output = f"{stem}_flumut_annotated.vcf"
 
-    df, header_lines = read_vcf(args.vcf)
-
-    seg_map = load_segment_map(args.coord_map, segment)
-    genes_map = seg_map.get("genes", {})
-    alias_index = build_alias_index(genes_map)
-    subunit_parent_genes = set(seg_map.get("subunit_parent_genes", []))
-    if seg_map.get("stale_annotation"):
-        log.warning("Coordinate map flags segment %s as stale (the Nextclade dataset does not "
-                    "expose the HA1/HA2 split FluMutDB requires); HA markers cannot be annotated",
-                    segment)
-
-    db_path = locate_db(args.flumut_db)
-    # The packaged DB never changes; immutable skips the file locking that fails on network mounts.
-    conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
-    try:
-        version = db_version(conn)
-        db_ref = SEGMENT_TO_DB_REFERENCE.get(segment, segment)
-        gene_maps = build_gene_protein_maps(conn, db_ref, genes_map)
-        lookup = make_marker_lookup(conn, db_ref)
-
-        # Annotate in place: rows, order, POS, REF/ALT and ANN are all preserved; only INFO
-        # grows, and only on rows that matched.
-        info_out: list[str] = []
-        annotated = 0
-        markers: set = set()
-        unmapped_genes: set = set()
-        unparsed_hgvs_p: list[str] = []
-        mnv_unresolved = 0
-        for info in df["INFO"].astype(str):
-            if has_info_flag(info, "MNV_UNRESOLVED"):
-                # fix_mnv_codons.py left this row's HGVS.p at a value already determined to
-                # be wrong; matching a curated marker against it would be a false positive.
-                mnv_unresolved += 1
-                info_out.append(info)
-                continue
-            field = row_flumut_field(info, gene_maps, lookup, want_effects,
-                                     alias_index=alias_index,
-                                     subunit_parent_genes=subunit_parent_genes,
-                                     unmapped_genes=unmapped_genes,
-                                     unparsed_hgvs_p=unparsed_hgvs_p)
-            if field:
-                annotated += 1
-                for entry in field[len("FLUMUT="):].split(","):
-                    markers.update(entry.split("|")[3].split("&"))
-                info_out.append(f"{info};{field}")
-            else:
-                info_out.append(info)
-    finally:
-        conn.close()
+    # Annotate in place: rows, order, POS, REF/ALT and ANN are all preserved; only INFO
+    # grows, and only on rows that matched.
+    info_out: list[str] = []
+    annotated = 0
+    markers: set = set()
+    unmapped_genes: set = set()
+    unparsed_hgvs_p: list[str] = []
+    mnv_unresolved = 0
+    for info in df["INFO"].astype(str):
+        if has_info_flag(info, "MNV_UNRESOLVED"):
+            # fix_mnv_codons.py left this row's HGVS.p at a value already determined to
+            # be wrong; matching a curated marker against it would be a false positive.
+            mnv_unresolved += 1
+            info_out.append(info)
+            continue
+        field = row_flumut_field(info, gene_maps, lookup, want_effects,
+                                 alias_index=alias_index,
+                                 subunit_parent_genes=subunit_parent_genes,
+                                 unmapped_genes=unmapped_genes,
+                                 unparsed_hgvs_p=unparsed_hgvs_p)
+        if field:
+            annotated += 1
+            for entry in field[len("FLUMUT="):].split(","):
+                markers.update(entry.split("|")[3].split("&"))
+            info_out.append(f"{info};{field}")
+        else:
+            info_out.append(info)
 
     if mnv_unresolved:
         log.warning("%d row(s) carry the MNV_UNRESOLVED flag; their HGVS.p is known to be "
@@ -457,14 +439,43 @@ def main() -> None:
     out_df = df.copy()
     out_df["INFO"] = info_out
     out_header = header_lines[:-1] + [FLUMUT_HEADER, header_lines[-1]]
-    write_vcf(out_df, out_header, args.output)
+    write_vcf(out_df, out_header, output)
 
     log.info(
         "Wrote %s: %d row(s) scanned, %d annotated, %d distinct FluMutDB marker(s) matched "
         "across gene(s) %s for %s/%s (v%s, FluMutDB %s)",
-        args.output, len(df), annotated, len(markers),
-        ", ".join(sorted(gene_maps)) or "none", args.sample, segment, SCRIPT_VERSION, version,
+        output, len(df), annotated, len(markers),
+        ", ".join(sorted(gene_maps)) or "none", stem.split("__")[0], segment, SCRIPT_VERSION, version,
     )
+
+
+def main() -> None:
+    args = get_args()
+    segment = args.segment.upper()
+
+    seg_map = load_segment_map(args.coord_map, segment)
+    genes_map = seg_map.get("genes", {})
+    alias_index = build_alias_index(genes_map)
+    subunit_parent_genes = set(seg_map.get("subunit_parent_genes", []))
+    if seg_map.get("stale_annotation"):
+        log.warning("Coordinate map flags segment %s as stale (the Nextclade dataset does not "
+                    "expose the HA1/HA2 split FluMutDB requires); HA markers cannot be annotated",
+                    segment)
+
+    db_path = locate_db(args.flumut_db)
+    # The packaged DB never changes; immutable skips the file locking that fails on network mounts.
+    conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
+    try:
+        version = db_version(conn)
+        db_ref = SEGMENT_TO_DB_REFERENCE.get(segment, segment)
+        gene_maps = build_gene_protein_maps(conn, db_ref, genes_map)
+        # Queries conn lazily and caches, so one lookup serves every VCF in the batch.
+        lookup = make_marker_lookup(conn, db_ref)
+        for vcf_path in args.vcf:
+            annotate_vcf(vcf_path, segment, seg_map, gene_maps, lookup, not args.no_effects,
+                         alias_index, subunit_parent_genes, version)
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

@@ -148,24 +148,24 @@ workflow PAFTOOLS {
         )
 
 
-        // [sample_id, [final VCFs]] -> [sample_id, segment, vcf], the segment read back off
-        // the {sample_id}__{ref}__{subtype}__{segment}_paf_final.vcf name post_process_vcf
+        // [sample_id, [final VCFs]] -> [sample_id, [segments], [vcfs]], each segment read back
+        // off the {sample_id}__{ref}__{subtype}__{segment}_paf_final.vcf name post_process_vcf
         // writes. baseName, not simpleName: reference accessions carry dots.
-        ch_final_vcf = post_process_vcf.out.vcf
-            .transpose()
-            .map { sample_id, vcf ->
-                def segment = vcf.baseName.split('__')[-1].replaceFirst(/_paf_final$/, '')
-                [sample_id, segment, vcf]
+        ch_final_vcfs = post_process_vcf.out.vcf
+            .map { sample_id, vcfs ->
+                vcfs = [vcfs].flatten()
+                def segments = vcfs.collect { it.baseName.split('__')[-1].replaceFirst(/_paf_final$/, '') }
+                [sample_id, segments, vcfs]
             }
 
-        // --- Step 9: Scan the final VCF for a custom watchlist (optional) ---
+        // --- Step 9: Scan the final VCFs for custom watchlists (optional) ---
         if (params.watchlist_dir != 'NO_FILE') {
             // checkIfExists so a mistyped --watchlist_dir fails loudly rather than
             // silently never scanning.
             ch_watchlists = Channel.fromPath(
                 params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
             )
-            mutation_watch(ch_final_vcf.combine(ch_watchlists))
+            mutation_watch(ch_final_vcfs, ch_watchlists.collect())
         }
 
         // Per-sample provenance. Inner joins: prepare_consensus, blastn and paftools_align
@@ -184,11 +184,10 @@ workflow PAFTOOLS {
         ch_provenance = ch_provenance.join(post_process_vcf.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
 
         if (params.watchlist_dir != 'NO_FILE') {
-            // Group one task per (sample, segment, watchlist) back to one entry per sample.
-            // remainder: true keeps samples whose scans all failed.
+            // One scan task per sample. remainder: true keeps samples whose scan failed.
             ch_provenance = ch_provenance
-                .join(mutation_watch.out.provenance.groupTuple(), remainder: true)
-                .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }
+                .join(mutation_watch.out.provenance, remainder: true)
+                .map{ sample_id, records, watch -> [sample_id, (records ?: []) + (watch ? [watch] : [])] }
         }
 
         collect_provenance(ch_provenance)

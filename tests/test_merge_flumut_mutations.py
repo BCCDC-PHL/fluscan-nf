@@ -147,12 +147,11 @@ def identity_map(n: int = 800) -> dict:
 
 def run_script(tmp_path: Path, vcf: Path, coord_map: Path, segment: str,
                extra: list[str] | None = None) -> tuple[subprocess.CompletedProcess, Path]:
-    out = tmp_path / "out.vcf"
+    out = tmp_path / f"{vcf.stem}_flumut_annotated.vcf"
     proc = subprocess.run(
         [sys.executable, str(SCRIPT_PATH), "--vcf", str(vcf), "--coord-map", str(coord_map),
-         "--segment", segment, "--sample", "SAMPLE_1", "-o", str(out),
-         "--flumut-db", FLUMUT_DB] + (extra or []),
-        capture_output=True, text=True,
+         "--segment", segment, "--flumut-db", FLUMUT_DB] + (extra or []),
+        capture_output=True, text=True, cwd=tmp_path,
     )
     return proc, out
 
@@ -185,6 +184,23 @@ def test_matching_marker_is_annotated_with_name_and_effects(tmp_path):
     assert (protein, pos, alt, names) == ("PB2", "627", "K", "PB2:E627K")
     assert "H5N1:Increased_virulence_in_mice" in direct.split("&")
     assert " " not in field and "," not in field  # legal in a VCF INFO value
+
+
+def test_each_vcf_in_a_batch_gets_its_own_output(tmp_path):
+    s1 = write_vcf(tmp_path / "S1__REF__H5N1__PB2_nc_final.vcf", [vcf_row(1881, [ann("PB2", "p.E627K")])])
+    s2 = write_vcf(tmp_path / "S2__REF__H5N1__PB2_nc_final.vcf", [vcf_row(2159, [ann("PB2", "p.S715N")])])
+    cmap = write_coord_map(tmp_path / "map.json", "PB2", {"PB2": identity_map()})
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--vcf", str(s1), str(s2), "--coord-map", str(cmap),
+         "--segment", "PB2", "--flumut-db", FLUMUT_DB],
+        capture_output=True, text=True, cwd=tmp_path,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    for sample, name in [("S1", "PB2:E627K"), ("S2", "PB2:S715N")]:
+        (field,) = flumut_fields(tmp_path / f"{sample}__REF__H5N1__PB2_nc_flumut_annotated.vcf")
+        assert field.split("|")[3] == name
 
 
 def test_effects_are_split_into_direct_and_associated(tmp_path):

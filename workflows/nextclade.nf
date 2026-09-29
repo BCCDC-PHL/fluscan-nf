@@ -25,14 +25,10 @@ include { mutation_watch }                       from '../modules/shared/mutatio
 include { pipeline_provenance }                  from '../modules/shared/provenance.nf'
 include { collect_provenance }                   from '../modules/shared/provenance.nf'
 include { resolve_db }                           from '../modules/shared/database.nf'
-include { db_segments }                          from '../modules/shared/database.nf'
 include { consensus_fasta_channel }              from '../modules/shared/sample_id.nf'
 include { samplesheet_channel }                  from '../modules/shared/sample_id.nf'
 
 workflow NEXTCLADE {
-
-    // The canonical segment set, and the only labels coordinate_conversion shards the map by.
-    def SEGMENTS = db_segments()
 
     // Only the Nextclade datasets are read here; this branch never BLASTs or runs SnpEff.
     def db = resolve_db(params.db, ['nextclade'])
@@ -101,16 +97,7 @@ workflow NEXTCLADE {
         //   merge_flumut_mutations resolve HA markers through the HA1/HA2 Feature_ID.
         nextclade_run_batch(ch_segment_batches)
 
-        // [segment, [vcfs]] -> [sample_id, segment, vcf]. Shared by the watchlist scan below
-        // and, when enabled, by the flumut merge further down.
-        ch_final_vcf = nextclade_run_batch.out.vcf
-            .transpose()
-            .map { segment, vcf ->
-                def sample_id = vcf.name.split('__')[0]
-                [sample_id, segment, vcf]
-            }
-
-        // --- Step 5: Scan the final VCF for a custom watchlist (optional) ---
+        // --- Step 5: Scan the final VCFs for custom watchlists (optional) ---
         //   Independent of --merge_flumut_mutations: FLUMUT= is a curated annotation written
         //   into the VCF, this is a custom list scanned out of it into a separate TSV.
         if (params.watchlist_dir != 'NO_FILE') {
@@ -119,7 +106,12 @@ workflow NEXTCLADE {
             ch_watchlists = Channel.fromPath(
                 params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
             )
-            mutation_watch(ch_final_vcf.combine(ch_watchlists))
+            // [segment, [vcfs]] -> [sample_id, [segments], [vcfs]]: one scan task per sample.
+            ch_sample_vcfs = nextclade_run_batch.out.vcf
+                .transpose()
+                .map { segment, vcf -> [vcf.name.split('__')[0], segment, vcf] }
+                .groupTuple()
+            mutation_watch(ch_sample_vcfs, ch_watchlists.collect())
         }
 
         // --- Steps 6-7: Coordinate conversion + flumut mutation merging (optional) ---
@@ -133,24 +125,9 @@ workflow NEXTCLADE {
             //   published map names the reference rather than where the bundle sits.
             coordinate_conversion(Channel.value([db.nextclade_ref_name, db.nextclade]))
 
-            // --- Step 7: Annotate each per-sample/per-segment VCF with FluMutDB markers ---
+            // --- Step 7: Annotate every sample's VCFs with FluMutDB markers, one task per segment ---
             //   Additive: writes a separate *_flumut_annotated.vcf and leaves *_final.vcf
-            //   untouched. Run per (sample, segment) so each task stages only its own shard.
-            ch_vcf_flat = ch_final_vcf                         // [sample_id, segment, vcf]
-
-            // The combine below matches on the segment label and ch_shards only carries the
-            // eight canonical ones. Split first so a VCF labelled anything else is reported
-            // rather than vanishing with no merged counterpart and no explanation.
-            ch_vcf_by_segment = ch_vcf_flat.branch { sample_id, segment, vcf ->
-                known:   SEGMENTS.contains(segment)
-                unknown: true
-            }
-
-            ch_vcf_by_segment.unknown.subscribe { sample_id, segment, vcf ->
-                log.warn "merge_flumut_mutations: ${sample_id} has no coordinate map for segment " +
-                         "'${segment}' (not one of ${SEGMENTS.join(', ')}); ${vcf.name} is left " +
-                         "unannotated and produces no *_flumut_annotated.vcf"
-            }
+            //   untouched. Each task stages only its own segment's shard.
 
             // Key each per-segment shard by its segment label parsed from the filename.
             ch_shards = coordinate_conversion.out.json_shards
@@ -164,13 +141,8 @@ workflow NEXTCLADE {
                     [matcher[0][1], f]
                 }
 
-            ch_merge_in = ch_vcf_by_segment.known
-                .map { sample_id, segment, vcf -> [segment, sample_id, vcf] }
-                .combine(ch_shards, by: 0)                     // + coord shard (by segment)
-                .map { segment, sample_id, vcf, shard -> [sample_id, segment, vcf, shard] }
-                // -> [sample_id, segment, vcf, coord_shard]
-
-            merge_flumut_mutations(ch_merge_in)
+            // [segment, [vcfs]] + shard -> [segment, [vcfs], coord_shard]
+            merge_flumut_mutations(nextclade_run_batch.out.vcf.combine(ch_shards, by: 0))
         }
 
         // Per-sample provenance. The Nextclade steps are keyed by segment rather than by
@@ -182,19 +154,23 @@ workflow NEXTCLADE {
         ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it -> [it[0], it[1] << it[2]] }
 
         if (params.watchlist_dir != 'NO_FILE') {
-            // Group one task per (sample, segment, watchlist) back to one entry per sample.
-            // remainder: true keeps samples whose scans all failed.
+            // One scan task per sample. remainder: true keeps samples whose scan failed.
             ch_provenance = ch_provenance
-                .join(mutation_watch.out.provenance.groupTuple(), remainder: true)
-                .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }
+                .join(mutation_watch.out.provenance, remainder: true)
+                .map{ sample_id, records, watch -> [sample_id, (records ?: []) + (watch ? [watch] : [])] }
         }
 
         if (params.merge_flumut_mutations) {
-            // Group one merge task per (sample, segment) back to one entry per sample.
-            // remainder: true keeps samples whose merges all failed.
+            // One merge task per segment, so every segment's record is combined onto every
+            // sample. ifEmpty keeps the chain alive when no segment produced a VCF.
+            ch_merge_provenance = merge_flumut_mutations.out.provenance
+                .map { segment, record -> record }
+                .collect()
+                .ifEmpty([])
+                .map { records -> [records] }
             ch_provenance = ch_provenance
-                .join(merge_flumut_mutations.out.provenance.groupTuple(), remainder: true)
-                .map{ it -> [it[0], (it[1] ?: []) + (it[2] ?: [])] }
+                .combine(ch_merge_provenance)
+                .map{ sample_id, records, merge -> [sample_id, records + merge] }
 
             // coordinate_conversion runs once per pipeline invocation, not per sample, so
             // its single provenance file is combined onto every sample rather than joined.

@@ -62,7 +62,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 | `docs/watchlists.md` | Custom watchlist schema, matching rules, and the HA1/HA numbering trap |
 | `assets/watchlists/` | The shipped `*watchlist.csv` files; `--watchlist_dir` defaults here |
 | `modules/shared/sample_id.nf` | The only place a consensus or sample sheet `sample_id` is derived; holds the FASTA discovery channel both FASTA branches call and `samplesheet_channel`, which all three workflows call for `--samplesheet_input`. Changing `clean_sample_id` renames every output |
-| `modules/shared/database.nf` | The only place that knows the `--db` bundle layout; `resolve_db` validates it up front. Also holds the canonical segment list — `@Field DB_SEGMENTS` is not importable across an `include`, so workflows reach it through the `db_segments()` accessor rather than repeating the literal |
+| `modules/shared/database.nf` | The only place that knows the `--db` bundle layout; `resolve_db` validates it up front. Also holds the canonical segment list, `@Field DB_SEGMENTS`, which it uses to check each segment's dataset |
 | `scripts/validate_db.py` | Deeper, contents-level bundle check; run after building or moving a bundle |
 | `docs/database_bundles.md` | Bundle layout, `db.yml` schema, how to build and validate one |
 | `README.md` | User-facing inputs, commands, outputs, and architecture |
@@ -284,9 +284,10 @@ published filenames/content. Use `-profile conda`; `conda.useMamba` is enabled.
   without the label one branch silently overwrites the other. Any new workflow
   needs a `withName: '<NAME>:.*' { ext.workflow = … }` block or its records fall
   back to the unlabelled, collision-prone name.
-- `mutation_watch` emits a provenance YAML that SHORT_READ does not join in, so
-  its watchlist scan is absent from the collected record. Both FASTA branches
-  join it, with `groupTuple()` and `remainder: true`.
+- `mutation_watch` runs once per sample over all of its final VCFs and every
+  watchlist, and emits one provenance YAML per sample. SHORT_READ does not join
+  it in, so its watchlist scan is absent from the collected record. Both FASTA
+  branches join it with `remainder: true`.
 - The two FASTA branches are deliberate mirrors from input discovery through
   `prepare_consensus`, `flumut`, the consensus QC aggregate, and the shape of
   the provenance chain and watchlist block. Only the analysis between those
