@@ -272,7 +272,8 @@ published filenames/content. Use `-profile conda`; `conda.useMamba` is enabled.
   complete without those annotated final VCF steps.
 - Sample-level provenance collection is wired in all three workflows, and each
   starts with `hash_files` (`modules/shared/hash_files.nf`, aliased to
-  `short_read_hash_files` in SHORT_READ). The collection chains are inner joins,
+  `short_read_hash_files` in SHORT_READ, run by `FASTA_PREP` for the FASTA
+  branches). The collection chains are inner joins,
   and `prepare_consensus`, `blastn` and `paftools_align` all run
   `errorStrategy 'ignore'` — so a sample failing any of them publishes no
   provenance file, losing its input hash along with everything else. Use
@@ -282,8 +283,8 @@ published filenames/content. Use `-profile conda`; `conda.useMamba` is enabled.
   FASTA dispatch runs PAFTOOLS and NEXTCLADE over the same samples into the same
   `${outdir}/${sample_id}/`, and their timestamps collide at second resolution;
   without the label one branch silently overwrites the other. Any new workflow
-  that collects provenance needs a `withName: '<NAME>:.*' { ext.workflow = … }` block or its records fall
-  back to the unlabelled, collision-prone name.
+  that collects provenance needs a `withName: '<NAME>:.*' { ext.workflow = … }`
+  block or its records fall back to the unlabelled, collision-prone name.
 - `mutation_watch` runs once per sample over all of its final VCFs and every
   watchlist, and emits one provenance YAML per sample. SHORT_READ does not join
   it in, so its watchlist scan is absent from the collected record. Both FASTA
@@ -291,7 +292,9 @@ published filenames/content. Use `-profile conda`; `conda.useMamba` is enabled.
 - The two FASTA branches share their input through `FASTA_PREP`, and each
   opens its provenance chain with its own `pipeline_provenance` record ahead of
   the prep records. Their watchlist blocks and provenance joins are still
-  mirrored; a change to one belongs in both.
+  mirrored; a change to one belongs in both. NEXTCLADE also combines each
+  per-segment record (`nextclade_run_batch`, `merge_flumut_mutations`) onto
+  every sample.
 - `tests/conftest.py` puts `bin/` on `sys.path` so the entry points can resolve
   their `from lib.…` imports under pytest. Fix an import failure there, not by
   adding path manipulation to a production script.

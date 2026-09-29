@@ -51,6 +51,7 @@ process nextclade_run_batch {
     tuple val(segment), path("*_identity_qc.tsv"),                           emit: identity_qc
     tuple val(segment), path("nc_output"),                                   emit: all
     tuple val(segment), path("${segment}_nextclade_status.tsv"),             emit: status
+    tuple val(segment), path("${segment}_nextclade_provenance.yml"),         emit: provenance
 
     script:
     def threads = task.cpus ?: 1
@@ -79,6 +80,15 @@ process nextclade_run_batch {
     REFERENCE_NAME=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/>(\\S+).*/\\1/g')
     SUBTYPE=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/.+\\(\\S+\\((\\S+)\\)\\S*\\).+/\\1/g')
     if echo "\$SUBTYPE" | grep -q '^>'; then SUBTYPE="unknown"; fi
+
+    printf -- "- process_name: nextclade_run_batch\\n"                                           > ${segment}_nextclade_provenance.yml
+    printf -- "  tools:\\n"                                                                       >> ${segment}_nextclade_provenance.yml
+    printf -- "    - tool_name: python\\n      tool_version: \$(python3 --version 2>&1 | cut -d' ' -f2)\\n" >> ${segment}_nextclade_provenance.yml
+    printf -- "    - tool_name: nextclade\\n      tool_version: \$(nextclade --version | awk '{print \$NF}')\\n" >> ${segment}_nextclade_provenance.yml
+    printf -- "  parameters:\\n"                                                                  >> ${segment}_nextclade_provenance.yml
+    printf -- "    - parameter: segment\\n      value: ${segment}\\n"                             >> ${segment}_nextclade_provenance.yml
+    printf -- "    - parameter: reference\\n      value: \$REFERENCE_NAME\\n"                     >> ${segment}_nextclade_provenance.yml
+    printf -- "    - parameter: alignment_preset\\n      value: ${params.nextclade_alignment_preset}\\n" >> ${segment}_nextclade_provenance.yml
 
     nextclade_to_freebayes_vcf.py \\
         -i nc_output/batch.json \\

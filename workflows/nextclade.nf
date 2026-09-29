@@ -109,11 +109,16 @@ workflow NEXTCLADE {
             merge_flumut_mutations(nextclade_run_batch.out.vcf.combine(ch_shards, by: 0))
         }
 
-        // Per-sample provenance. The Nextclade steps are keyed by segment rather than by
-        // sample, so they have no per-sample record to join here.
+        // Per-sample provenance. Nextclade runs once per segment, so every segment's record
+        // is combined onto every sample.
+        ch_nextclade_provenance = nextclade_run_batch.out.provenance
+            .map { segment, record -> record }
+            .collect()
+            .map { records -> [records] }
         ch_provenance = ch_prep_provenance
             .combine(ch_pipeline_provenance)
-            .map{ sample_id, records, pipeline -> [sample_id, [pipeline] + records] }
+            .combine(ch_nextclade_provenance)
+            .map{ sample_id, records, pipeline, nextclade -> [sample_id, [pipeline] + records + nextclade] }
 
         if (params.watchlist_dir != 'NO_FILE') {
             // One scan task per sample. remainder: true keeps samples whose scan failed.
