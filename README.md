@@ -1,7 +1,7 @@
 # fluscan-nf
 
 This is a Nextflow pipeline for Influenza A mutation analysis from either short-read FASTQ data or pre-built consensus FASTA files.
-The short-read workflow performs trimming, assembly, mapping, LoFreq variant calling, SnpEff annotation, and consensus generation. In FASTA mode (`--fasta_input`), the pipeline currently launches both a PAFTOOLS branch and a NEXTCLADE branch: PAFTOOLS validates the supplied FASTA, selects a subtype-matched reference with BLAST, aligns per segment with `minimap2`, calls differences with `paftools.js`, sorts with `bcftools`, annotates with SnpEff, and fixes multi-nucleotide variant codons; NEXTCLADE validates the same input, batches sequences by segment for `nextclade run`, converts the results to VCF, and applies the same MNV codon correction step.
+The short-read workflow performs trimming, assembly, mapping, LoFreq variant calling, SnpEff annotation, and consensus generation. In FASTA mode (`--fasta_input`), the pipeline currently launches both a PAFTOOLS branch and a NEXTCLADE branch: PAFTOOLS validates the supplied FASTA, selects a subtype-matched reference with BLAST, aligns per segment with `minimap2`, calls differences with `paftools.js`, sorts with `bcftools`, annotates with SnpEff, and fixes multi-nucleotide variant codons; NEXTCLADE validates the same input, batches sequences by segment for `nextclade run`, and converts the results to VCF, annotating substitutions that share a codon with their combined codon change.
 
 ## Analyses
 
@@ -36,8 +36,7 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - Per-segment batching across samples
 - Per-segment `nextclade run` against built-in datasets
 - Per-sample JSON/TSV splitting from the batch results
-- Conversion to freebayes-style VCF
-- MNV codon correction
+- Conversion to freebayes-style VCF, with substitutions that share a codon annotated as one codon change
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
 - *Optional* (`--merge_flumut_mutations`, default off): reference coordinate conversion — builds a run-level, idempotent nucleotide/amino-acid coordinate map lifting flumut's fixed reference onto the selected Nextclade reference dataset coordinate system (`bin/build_reference_coordinate_map.py`) — followed by FluMutDB annotation of the VCF, which tags each fluscan amino-acid call that matches a curated FluMutDB marker with a `FLUMUT=` INFO field carrying the mutation name and its published effects, split into those directly attributable to that mutation and those associated with it through a multi-mutation marker, each qualified by the subtype it was observed in. No rows are added or removed, so a marker is only reported where fluscan called a difference from the Nextclade reference. Because FluMutDB numbers HA by its HA1/HA2 subunits, HA markers are only annotated when the Nextclade dataset also exposes that split — either as two dedicated `HA1`/`HA2` CDS features, or as `mature_protein_region_of_CDS` children of a single HA CDS (the NCBI/RefSeq model, which the GsGD dataset uses). A dataset offering only a bare `HA` CDS is flagged `stale_annotation` and passes through with its HA rows unannotated
 
@@ -91,7 +90,6 @@ flowchart TD
         nc_run[nextclade run batch]
         split_results[split per-sample JSON and TSV]
         nc2vcf[nextclade_to_freebayes_vcf.py]
-        fixmnv_nc[fix_mnv_codons.py]
         nc_final[Final NEXTCLADE VCFs]
         coord_map[coordinate_conversion: build_reference_coordinate_map.py]
         coord_final[aggregate/reference_remap]
@@ -104,8 +102,7 @@ flowchart TD
         groupseg --> nc_run
         nc_run --> split_results
         split_results --> nc2vcf
-        nc2vcf --> fixmnv_nc
-        fixmnv_nc --> nc_final
+        nc2vcf --> nc_final
         dispatch -.->|"flumutdb reference + db nextclade datasets, sample-independent (if merge_flumut_mutations)"| coord_map
         coord_map --> coord_final
         coord_map -.->|"per-segment shard (if merge_flumut_mutations)"| flumut_merge
@@ -214,7 +211,7 @@ nextflow run BCCDC-PHL/fluscan-nf \
 >
 > `--merge_flumut_mutations` (boolean, default `false`) gates the two final NEXTCLADE steps — coordinate conversion and FluMutDB annotation of the VCF (`*_flumut_annotated.vcf`). The `coordinate_conversion` step lifts FluMut's own reference, read from the `flumutdb` conda package, onto the `--db` datasets. The marker set comes from the same package, so the two always match and the annotation step does not consume the per-sample `flumut` output.
 >
-> `--emit_no_mature_vcf` (boolean, default `false`) additionally writes each NEXTCLADE VCF a second time with no mature-peptide `ANN=` entries, for consumers that require HA annotated as HA0 only. The two files carry the same records, alleles and order; only the `ANN=` sub-field differs, and segments without mature peptides in their annotation come out identical. The published copy lands in `nextclade/no_mature_peptide/` and gets the same MNV codon correction as the standard VCF. Nothing downstream in the pipeline reads it: `mutation_watch` and `merge_flumut_mutations` resolve HA markers through the HA1/HA2 `Feature_ID` and stay on the standard VCF.
+> `--emit_no_mature_vcf` (boolean, default `false`) additionally writes each NEXTCLADE VCF a second time with no mature-peptide `ANN=` entries, for consumers that require HA annotated as HA0 only. The two files carry the same records, alleles and order; only the `ANN=` sub-field differs, and segments without mature peptides in their annotation come out identical. The published copy lands in `nextclade/no_mature_peptide/`. Nothing downstream in the pipeline reads it: `mutation_watch` and `merge_flumut_mutations` resolve HA markers through the HA1/HA2 `Feature_ID` and stay on the standard VCF.
 
 **Package management:**
 - Conda is used for dependency management. The `-profile conda` flag and `--cache` parameter are required on BCCDC systems.
@@ -275,7 +272,7 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 |------|-------------|
 | `nextclade/json/*_nextclade.json` | Per-segment Nextclade JSON split out from the cross-sample batch result |
 | `nextclade/tsv/*_nextclade.tsv` | Per-segment Nextclade TSV split out from the cross-sample batch result |
-| `nextclade/*_final.vcf` | Per-segment final VCF after Nextclade-to-VCF conversion and MNV codon correction |
+| `nextclade/*_final.vcf` | Per-segment final VCF from the Nextclade-to-VCF conversion. Rows in a codon holding more than one substitution carry the combined change, plus `MNV_CORRECTED` and `MNV_ORIGINAL_HGVS_P` where it differs from the single-base call |
 | `nextclade/no_mature_peptide/*_nc_nomat_final.vcf` | *Optional* (`--emit_no_mature_vcf`): the same records annotated without mature peptides, so HA carries only its HA0 `ANN=` entry and no HA1/HA2 ones |
 | `nextclade/flumut_annotated/*_flumut_annotated.vcf` | *Optional* (`--merge_flumut_mutations`): the same VCF with a `FLUMUT=` INFO field (`Protein\|AA_Pos\|Alt_AA\|Mutation_Name\|DirectEffect\|AssociatedEffect`) on rows whose amino-acid change matches a curated FluMutDB marker |
 | `nextclade/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF. Independent of `--merge_flumut_mutations`: `FLUMUT=` is a curated annotation written *into* the VCF, this is a custom list scanned *out* of it |

@@ -21,9 +21,7 @@ which round-trip a VCF byte-for-byte. `bin/` holds only entry points — Nextflo
 > sequences and protein coordinates from it, and the merge takes the marker catalogue.
 
 ```
-consensus.fasta ─► nextclade_run_batch ─► nextclade_to_freebayes_vcf.py ─► *_nc.vcf
-                                                                             │
-                                              fix_mnv_codons.py (post_process) ─► *_final.vcf
+consensus.fasta ─► nextclade_run_batch ─► nextclade_to_freebayes_vcf.py ─► *_final.vcf
                                                                              │
       coordinate_conversion (flumut→Nextclade map) ─┐                        │
       FluMutDB (flumutdb conda package) ────────────┼─► merge_flumut_mutations.py ─► *_flumut_annotated.vcf
@@ -120,13 +118,13 @@ For each substitution the script walks every transcript and appends an `ANN` ent
 feature it touches (so a base in an overlap region yields several entries):
 
 1. **Inside a main CDS** — take the AA change from `nucToAaMuts` when present, otherwise
-   recompute it by translating the reference codon (`_synonymous_aa_change`). Classify the
+   translate the codon with every substitution in it applied (`_codon_aa_change`). Classify the
    consequence (`_classify_aa_consequence`: `synonymous_variant` / `missense_variant` /
    `stop_gained` / `stop_lost` / `start_lost`, with LOW/MODERATE/HIGH impact) and format
    `HGVS.c` (`c.<n><ref>><alt>`) and `HGVS.p`. `Rank` = exon/exon-count.
 2. **Intronic** (a gap between the exons of a spliced transcript) — `intron_variant`,
    MODIFIER, `HGVS.c` in `c.<cds_end>+<offset><ref>><alt>` form.
-3. **Mature-peptide region** — same AA logic, tagged with
+3. **Mature-peptide region** — AA change from `_codon_aa_change`, tagged with
    `WARNING_TRANSCRIPT_NO_START_CODON`; positions 5′ of the region become
    `upstream_gene_variant` with a `Distance`.
 4. **Upstream of a main CDS** (`pos < CDS start`) — `upstream_gene_variant`, MODIFIER,
@@ -141,14 +139,16 @@ that distinguish in-frame indels (`conservative_inframe_deletion/insertion`) fro
 
 `##fileformat=VCFv4.2`, `PASS` + `AmbiguousInsert` filters, `fileDate`, `source`,
 `reference`, a single `##contig`, the complete freebayes `##INFO`/`##FORMAT` definitions,
-and the `##INFO=<ID=ANN…>` definition.
+and the `ANN`, `MNV_CORRECTED` and `MNV_ORIGINAL_HGVS_P` `##INFO` definitions.
 
-### Known caveat — multi-nucleotide codons
+### Substitutions sharing a codon
 
-Each SNV is annotated independently, assuming the rest of its codon matches the reference.
-When two consensus SNVs fall in the same codon, their individual `HGVS.p` values can be
-wrong. This is corrected downstream by `fix_mnv_codons.py` (the `post_process_vcf*`
-processes), which recomputes the real codon before the `*_final.vcf` is produced.
+`nucToAaMuts` and `_codon_aa_change` both translate the whole query codon, so every
+substitution in a codon carries the combined change. Where an entry differs from the change
+its substitution would make alone, the row also carries `MNV_CORRECTED` and
+`MNV_ORIGINAL_HGVS_P` (`featureID:HGVS.p` for every feature whose codon holds more than one
+substitution, pipe-separated): the same fields `fix_mnv_codons.py` writes on the PAFTOOLS
+and SHORT_READ VCFs.
 
 ---
 
@@ -245,7 +245,7 @@ merge_flumut_mutations.py --vcf <final.vcf> --coord-map <coordinate_map.SEG.json
 
 | Input | Producer | Used for |
 | --- | --- | --- |
-| `--vcf` (`*_final.vcf`) | `post_process_vcf_batch` | the AA changes to look up, and the rows to annotate |
+| `--vcf` (`*_final.vcf`) | `nextclade_to_vcf_batch` | the AA changes to look up, and the rows to annotate |
 | `--coord-map` (`coordinate_map.<SEG>.json`) | `coordinate_conversion` | flumut→Nextclade **AA position** mapping, per gene |
 | FluMutDB sqlite | `flumutdb` conda package | the marker catalogue; located via `flumut.DbReader.get_db_file()`, overridable with `--flumut-db` |
 
@@ -267,8 +267,9 @@ one are independent.
    pair columns 1:1, so the inverse is well defined; a collision would be warned about and
    resolved to the lowest source position.
 4. **Skip rows flagged `MNV_UNRESOLVED`** (`has_info_flag`). `fix_mnv_codons.py` sets that
-   flag when it identified a multi-SNV codon but could not compute the combined change,
-   leaving the row's `HGVS.p` at a value the pipeline has already determined to be wrong;
+   flag on PAFTOOLS and SHORT_READ VCFs when it identified a multi-SNV codon but could not
+   compute the combined change (the Nextclade converter always has the reference codon and
+   never sets it), leaving the row's `HGVS.p` at a value the pipeline has already determined to be wrong;
    matching a curated marker against it would manufacture a false positive.
 5. **Per row, per `ANN` entry** (`row_flumut_field` → `aa_changes_from_info`): take
    `Gene_Name` and `Feature_ID` — resolved as described under *Gene names* below — and the
@@ -369,8 +370,8 @@ flag rows that were in fact annotated correctly.
   FluMutDB 6.6's mapped mutations are in this state (`PB2:M535I`, `NA-1:V149A`).
 - FluMutDB holds **substitutions only** (`mutations.type` is `SNP` throughout), so indel and
   non-coding rows never match.
-- **Resolved MNV groups repeat an entry** — every member row of a corrected multi-SNV codon
-  carries the same corrected `HGVS.p`, so the same `FLUMUT=` entry is emitted on each of them.
+- **Shared codons repeat an entry** — every row of a codon holding more than one substitution
+  carries the same combined `HGVS.p`, so the same `FLUMUT=` entry is emitted on each of them.
   Any downstream count of "markers found" must de-duplicate.
 
 ### The retired insertion-based implementation

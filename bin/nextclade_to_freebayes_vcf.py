@@ -17,7 +17,8 @@ Requires:
 --output-no-mature writes a second VCF alongside the first, carrying the same records but
 no mature-peptide ANN entries: HA is annotated as HA0 only, with no HA1/HA2 entries.
 
-Pipeline position: after nextclade run, before fix_mnv_codons.py.
+Substitutions sharing a codon are annotated with the combined codon change; rows whose
+annotation differs from the single-base one carry MNV_CORRECTED and MNV_ORIGINAL_HGVS_P.
 """
 
 import argparse
@@ -332,10 +333,11 @@ def _cds_to_genomic(cds_pos_0: int, segments: list, strand: str) -> Optional[int
     return None
 
 
-def _synonymous_aa_change(ref_seq: str, tx: dict, pos_0: int, ref_nt: str, alt_nt: str) -> tuple[str, str, int]:
-    """Return (refAa, altAa, aa_pos_1) by direct codon translation from the reference.
+def _codon_aa_change(ref_seq: str, tx: dict, pos_0: int, qry_subs: dict[int, str]) -> tuple[str, str, int, int]:
+    """Return (refAa, altAa, aa_pos_1, n_subs) for the codon holding pos_0, translated with
+    every substitution in qry_subs applied; n_subs counts the substitutions inside that codon.
 
-    Falls back to ('X','X',0) when the codon cannot be determined (e.g. minus strand,
+    Falls back to ('X','X',0,1) when the codon cannot be determined (e.g. minus strand,
     segment-boundary ambiguity, or out-of-range position).
     """
     segs   = tx["segments"]
@@ -350,25 +352,21 @@ def _synonymous_aa_change(ref_seq: str, tx: dict, pos_0: int, ref_nt: str, alt_n
             break
         running += (e - b)
     if cds_local_0 is None:
-        return "X", "X", 0
+        return "X", "X", 0, 1
 
-    codon_idx    = cds_local_0 // 3
-    codon_offset = cds_local_0 % 3
-    aa_pos_1     = codon_idx + 1
+    codon_idx = cds_local_0 // 3
+    aa_pos_1  = codon_idx + 1
 
     # Genomic positions for all 3 codon bases
     gpos = [_cds_to_genomic(codon_idx * 3 + i, segs, strand) for i in range(3)]
-    if None in gpos:
-        return "X", "X", aa_pos_1
+    if None in gpos or strand != "+":
+        # minus strand reads the codon reversed; just fall back
+        return "X", "X", aa_pos_1, 1
 
-    if strand == "+":
-        ref_codon = "".join(ref_seq[g] for g in gpos)
-        alt_codon = ref_codon[:codon_offset] + alt_nt + ref_codon[codon_offset + 1:]
-    else:
-        # minus strand: reading direction is reversed; just fall back
-        return "X", "X", aa_pos_1
-
-    return _translate_codon(ref_codon), _translate_codon(alt_codon), aa_pos_1
+    ref_codon = "".join(ref_seq[g] for g in gpos)
+    alt_codon = "".join(qry_subs.get(g, ref_seq[g]) for g in gpos)
+    n_subs    = sum(g in qry_subs for g in gpos)
+    return _translate_codon(ref_codon), _translate_codon(alt_codon), aa_pos_1, n_subs
 
 # ---------------------------------------------------------------------------
 # HGVS formatters  (1-letter amino-acid codes, matching paftools/snpEff output)
@@ -546,6 +544,15 @@ def build_header(chrom: str, ref_len: int, ref_path: str, sample: str) -> str:
         " cDNA.length | CDS.pos / CDS.length | AA.pos / AA.length | Distance |"
         " ERRORS / WARNINGS / INFO'\">"
     )
+    lines.append(
+        '##INFO=<ID=MNV_CORRECTED,Number=0,Type=Flag,Description="Variant shares a codon with '
+        'another substitution; ANN HGVS.p, annotation and impact describe the combined codon">'
+    )
+    lines.append(
+        '##INFO=<ID=MNV_ORIGINAL_HGVS_P,Number=1,Type=String,Description="HGVS.p each '
+        'multi-substitution codon feature would carry for this variant alone '
+        '(featureID:hgvs_p pipe-separated)">'
+    )
     for fid, number, typ, desc in _FREEBAYES_FORMAT:
         lines.append(f'##FORMAT=<ID={fid},Number={number},Type={typ},Description="{desc}">')
     lines.append(f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample}")
@@ -555,6 +562,29 @@ def build_header(chrom: str, ref_len: int, ref_path: str, sample: str) -> str:
 # Per-variant ANN field builders
 # ---------------------------------------------------------------------------
 
+def _coding_entry(
+    tx: dict, ref_nt: str, alt_nt: str, cds_local_1: int, rank_str: str, aa_change: tuple,
+) -> tuple[str, str]:
+    """Return (ANN entry, HGVS.p) for a substitution inside a coding transcript."""
+    ref_aa, alt_aa, aa_pos_1 = aa_change[:3]
+    annotation, impact = _classify_aa_consequence(ref_aa, alt_aa, aa_pos_1)
+    hgvs_p = (_format_hgvs_p_syn(ref_aa, aa_pos_1)
+              if annotation == "synonymous_variant"
+              else _format_hgvs_p_sub(ref_aa, aa_pos_1, alt_aa))
+    entry = _build_ann_entry(
+        allele=alt_nt, annotation=annotation, impact=impact,
+        gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+        feature_id=tx["feature_id"],
+        transcript_biotype="protein_coding",
+        hgvs_c=_format_hgvs_c_snp(cds_local_1, ref_nt, alt_nt), hgvs_p=hgvs_p,
+        cds_pos=cds_local_1, cds_len=tx["cds_length"],
+        aa_pos=aa_pos_1, aa_len=tx["aa_length"],
+        rank_str=rank_str,
+        warnings=tx["warnings"],
+    )
+    return entry, hgvs_p
+
+
 def _ann_field_for_sub(
     pos_0:      int,
     ref_nt:     str,
@@ -563,9 +593,20 @@ def _ann_field_for_sub(
     genes:      list,
     transcripts: list,
     ref_seq:    str,
+    qry_subs:   dict[int, str],
 ) -> str:
-    """Return 'ANN=...' INFO sub-field for a nucleotide substitution."""
+    """Return the 'ANN=...' INFO sub-field for a nucleotide substitution, followed by
+    MNV_CORRECTED/MNV_ORIGINAL_HGVS_P when a shared codon changes its annotation."""
     entries: list[str] = []
+    # (entry, single-base entry, single-base HGVS.p, feature) for codons holding 2+ substitutions
+    mnv: list[tuple[str, str, str, str]] = []
+
+    def add_coding(tx, cds_local_1, rank_str, aa_change, single_base):
+        entry, _ = _coding_entry(tx, ref_nt, alt_nt, cds_local_1, rank_str, aa_change)
+        entries.append(entry)
+        if aa_change[3] > 1:
+            mnv.append((entry, *_coding_entry(tx, ref_nt, alt_nt, cds_local_1, rank_str, single_base),
+                        tx["feature_id"]))
 
     # --- 1. Main CDS transcripts: in-CDS or intronic ---
     for tx in transcripts:
@@ -574,32 +615,17 @@ def _ann_field_for_sub(
         cds_local_1, exon_rank, exon_count = _cds_pos_from_genomic(tx, pos_0)
         if cds_local_1 is not None:
             rank_str = f"{exon_rank}/{exon_count}"
+            codon = _codon_aa_change(ref_seq, tx, pos_0, qry_subs)
+            # Nextclade's own call translates the query codon, so it needs no correction.
             aa_changes = [c for c in nuc_to_aa.get(str(pos_0), [])
                           if c["cdsName"] == tx["protein_id"]]
             if aa_changes:
-                ch      = aa_changes[0]
-                ref_aa  = ch["refAa"]
-                alt_aa  = ch["qryAa"]
-                aa_pos_1 = ch["pos"] + 1
+                ch = aa_changes[0]
+                codon = (ch["refAa"], ch["qryAa"], ch["pos"] + 1, codon[3])
+                single_base = codon
             else:
-                ref_aa, alt_aa, aa_pos_1 = _synonymous_aa_change(ref_seq, tx, pos_0, ref_nt, alt_nt)
-
-            annotation, impact = _classify_aa_consequence(ref_aa, alt_aa, aa_pos_1)
-            hgvs_c = _format_hgvs_c_snp(cds_local_1, ref_nt, alt_nt)
-            hgvs_p = (_format_hgvs_p_syn(ref_aa, aa_pos_1)
-                      if annotation == "synonymous_variant"
-                      else _format_hgvs_p_sub(ref_aa, aa_pos_1, alt_aa))
-
-            entries.append(_build_ann_entry(
-                allele=alt_nt, annotation=annotation, impact=impact,
-                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
-                feature_id=tx["feature_id"],
-                transcript_biotype="protein_coding",
-                hgvs_c=hgvs_c, hgvs_p=hgvs_p,
-                cds_pos=cds_local_1, cds_len=tx["cds_length"],
-                aa_pos=aa_pos_1, aa_len=tx["aa_length"],
-                rank_str=rank_str,
-            ))
+                single_base = _codon_aa_change(ref_seq, tx, pos_0, {pos_0: alt_nt})
+            add_coding(tx, cds_local_1, rank_str, codon, single_base)
             continue
 
         # Check for intron position in spliced transcripts
@@ -630,23 +656,9 @@ def _ann_field_for_sub(
             if cds_local_1 is None:
                 continue
             rank_str = f"{exon_rank}/{exon_count}"
-            ref_aa, alt_aa, aa_pos_1 = _synonymous_aa_change(ref_seq, tx, pos_0, ref_nt, alt_nt)
-            annotation, impact = _classify_aa_consequence(ref_aa, alt_aa, aa_pos_1)
-            hgvs_c = _format_hgvs_c_snp(cds_local_1, ref_nt, alt_nt)
-            hgvs_p = (_format_hgvs_p_syn(ref_aa, aa_pos_1)
-                      if annotation == "synonymous_variant"
-                      else _format_hgvs_p_sub(ref_aa, aa_pos_1, alt_aa))
-            entries.append(_build_ann_entry(
-                allele=alt_nt, annotation=annotation, impact=impact,
-                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
-                feature_id=tx["feature_id"],
-                transcript_biotype="protein_coding",
-                hgvs_c=hgvs_c, hgvs_p=hgvs_p,
-                cds_pos=cds_local_1, cds_len=tx["cds_length"],
-                aa_pos=aa_pos_1, aa_len=tx["aa_length"],
-                rank_str=rank_str,
-                warnings=tx["warnings"],
-            ))
+            add_coding(tx, cds_local_1, rank_str,
+                       _codon_aa_change(ref_seq, tx, pos_0, qry_subs),
+                       _codon_aa_change(ref_seq, tx, pos_0, {pos_0: alt_nt}))
         elif pos_0 < seg_begin:
             distance = seg_begin - pos_0
             hgvs_c   = f"c.-{distance}{ref_nt}>{alt_nt}"
@@ -692,7 +704,11 @@ def _ann_field_for_sub(
 
     if not entries:
         return ""
-    return "ANN=" + ",".join(entries)
+    ann = "ANN=" + ",".join(entries)
+    if any(entry != single for entry, single, _, _ in mnv):
+        original = "|".join(f"{feature}:{hgvs_p}" for _, _, hgvs_p, feature in mnv)
+        ann += f";MNV_CORRECTED;MNV_ORIGINAL_HGVS_P={original}"
+    return ann
 
 
 def _ann_field_for_del(
@@ -895,12 +911,13 @@ def variants_from_json_result(
         for i in result.get("aaInsertions", [])
     ]
     frame_shifts = result.get("frameShifts", [])
+    qry_subs     = {sub["pos"]: sub["qryNuc"] for sub in result.get("substitutions", [])}
 
     for sub in result.get("substitutions", []):
         vcf_pos = sub["pos"] + 1
         ann     = _ann_field_for_sub(
             sub["pos"], sub["refNuc"], sub["qryNuc"],
-            nuc_to_aa, genes, transcripts, ref_seq,
+            nuc_to_aa, genes, transcripts, ref_seq, qry_subs,
         )
         rows.append((vcf_pos, variant_row(chrom, vcf_pos, sub["refNuc"], sub["qryNuc"], qual, ann=ann)))
 

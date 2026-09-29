@@ -22,8 +22,6 @@ include { consensus_identity_qc }                from '../modules/nextclade/cons
 include { flumut }                               from '../modules/shared/flumut.nf'
 include { nextclade_run_batch }                  from '../modules/nextclade/nextclade.nf'
 include { nextclade_to_vcf_batch }               from '../modules/nextclade/nextclade.nf'
-include { post_process_vcf_batch }               from '../modules/shared/post_process.nf'
-include { post_process_vcf_batch as post_process_vcf_batch_no_mature } from '../modules/shared/post_process.nf'
 include { coordinate_conversion }                from '../modules/nextclade/coordinate_conversion.nf'
 include { merge_flumut_mutations }               from '../modules/nextclade/merge_flumut_mutations.nf'
 include { mutation_watch }                       from '../modules/shared/mutation_watch.nf'
@@ -120,37 +118,22 @@ workflow NEXTCLADE {
         // --- Step 4: Run nextclade once per segment for all samples ---
         nextclade_run_batch(ch_segment_batches)
 
-        // --- Step 5: Convert per-sample nextclade JSON to freebayes-style VCF ---
+        // --- Step 5: Convert per-sample nextclade JSON to the final freebayes-style VCF ---
+        //   With --emit_no_mature_vcf it also publishes each VCF without mature-peptide
+        //   (HA1/HA2) annotations. Nothing downstream reads that copy: mutation_watch and
+        //   merge_flumut_mutations resolve HA markers through the HA1/HA2 Feature_ID.
         nextclade_to_vcf_batch(nextclade_run_batch.out.json_with_ref)
-
-        // --- Step 6: Post-process VCFs (fix MNV codons); one task per segment ---
-        post_process_vcf_batch(nextclade_to_vcf_batch.out.vcf)
 
         // [segment, [vcfs]] -> [sample_id, segment, vcf]. Shared by the watchlist scan below
         // and, when enabled, by the flumut merge further down.
-        ch_final_vcf = post_process_vcf_batch.out.vcf
+        ch_final_vcf = nextclade_to_vcf_batch.out.vcf
             .transpose()
             .map { segment, vcf ->
                 def sample_id = vcf.name.split('__')[0]
                 [sample_id, segment, vcf]
             }
 
-        // --- Step 6a: The same VCFs without mature-peptide (HA1/HA2) annotations (optional) ---
-        //   A parallel output for consumers that require HA annotated as HA0 only. Nothing
-        //   downstream in this workflow reads it: mutation_watch and merge_flumut_mutations
-        //   resolve HA markers through the HA1/HA2 Feature_ID and stay on ch_final_vcf.
-        if (params.emit_no_mature_vcf) {
-            post_process_vcf_batch_no_mature(nextclade_to_vcf_batch.out.vcf_no_mature)
-
-            ch_final_vcf_no_mature = post_process_vcf_batch_no_mature.out.vcf
-                .transpose()
-                .map { segment, vcf ->
-                    def sample_id = vcf.name.split('__')[0]
-                    [sample_id, segment, vcf]
-                }
-        }
-
-        // --- Step 6b: Scan the final VCF for a custom watchlist (optional) ---
+        // --- Step 6: Scan the final VCF for a custom watchlist (optional) ---
         //   Independent of --merge_flumut_mutations: FLUMUT= is a curated annotation written
         //   into the VCF, this is a custom list scanned out of it into a separate TSV.
         if (params.watchlist_dir != 'NO_FILE') {
@@ -213,8 +196,8 @@ workflow NEXTCLADE {
             merge_flumut_mutations(ch_merge_in)
         }
 
-        // Per-sample provenance. post_process_vcf_batch is keyed by segment rather than by
-        // sample, so it has no per-sample record to join here.
+        // Per-sample provenance. The Nextclade steps are keyed by segment rather than by
+        // sample, so they have no per-sample record to join here.
         ch_provenance = ch_fasta_input.map{ it -> it[0] }
         ch_provenance = ch_provenance.combine(ch_pipeline_provenance).map{ it -> [it[0], [it[1]]] }
         ch_provenance = ch_provenance.join(hash_files.out.provenance).map{ it -> [it[0], it[1] << it[2]] }

@@ -69,7 +69,7 @@ process nextclade_run_batch {
 }
 
 
-// Converts per-sample nextclade JSON files (produced by nextclade_run_batch) into
+// Converts per-sample nextclade JSON files (produced by nextclade_run_batch) into the final
 // freebayes-style VCFs, one per sample, for the given segment.
 process nextclade_to_vcf_batch {
 
@@ -77,17 +77,27 @@ process nextclade_to_vcf_batch {
 
     tag { segment }
 
+    publishDir "${params.outdir}", mode: 'copy',
+        saveAs: { filename ->
+            def workflow  = task.ext.workflow ?: 'unknown_workflow'
+            def sample_id = filename.split('__')[0]
+            if (filename.endsWith('_nc_nomat_final.vcf')) {
+                return "${sample_id}/${workflow}/no_mature_peptide/${filename}"
+            }
+            return "${sample_id}/${workflow}/${filename}"
+        }
+
     input:
     tuple val(segment), val(sample_ids),
           path(json_files, stageAs: 'json/*'),
           path(dataset_dir)
 
     output:
-    tuple val(segment), path('*_nc.vcf'), path(dataset_dir), emit: vcf
-    tuple val(segment), path('*_nc_nomat.vcf'), path(dataset_dir), optional: true, emit: vcf_no_mature
+    tuple val(segment), path('*_nc_final.vcf'), emit: vcf
+    tuple val(segment), path('*_nc_nomat_final.vcf'), optional: true, emit: vcf_no_mature
 
     script:
-    def no_mature_arg = params.emit_no_mature_vcf ? "--output-no-mature \"\${sample_id}__\${REFERENCE_NAME}__\${SUBTYPE}__\${SEGMENT}_nc_nomat.vcf\"" : ""
+    def no_mature_arg = params.emit_no_mature_vcf ? "--output-no-mature \"\${sample_id}__\${REFERENCE_NAME}__\${SUBTYPE}__\${SEGMENT}_nc_nomat_final.vcf\"" : ""
     """
     REFERENCE_NAME=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/>(\\S+).*/\\1/g')
     SUBTYPE=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/.+\\(\\S+\\((\\S+)\\)\\S*\\).+/\\1/g')
@@ -100,7 +110,7 @@ process nextclade_to_vcf_batch {
         nextclade_to_freebayes_vcf.py \\
             -i "\$json_file" \\
             -d ${dataset_dir} \\
-            -o "\${sample_id}__\${REFERENCE_NAME}__\${SUBTYPE}__\${SEGMENT}_nc.vcf" \\
+            -o "\${sample_id}__\${REFERENCE_NAME}__\${SUBTYPE}__\${SEGMENT}_nc_final.vcf" \\
             ${no_mature_arg} \\
             --sample "\$sample_id"
     done

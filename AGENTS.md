@@ -31,8 +31,8 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
     minimap2, calls differences with `paftools.js`, sorts and annotates VCFs,
     converts them to the common VCF shape, and corrects MNV codons.
   - `NEXTCLADE` batches samples by segment, runs Nextclade once per segment,
-    splits per-sample results, converts JSON to the common VCF shape, and
-    corrects MNV codons.
+    splits per-sample results, and converts JSON to the common VCF shape,
+    annotating substitutions that share a codon with the combined change.
 - `--merge_flumut_mutations` is off by default. When enabled in the Nextclade
   branch, a run-level map lifts coordinates from FluMut's own reference
   (source, the `references`/`annotations` tables of the installed `flumutdb`
@@ -145,8 +145,12 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 - Consensus-derived Nextclade VCFs are deliberately “freebayes-shaped.”
   Depth, quality, and genotype fields are placeholders; biological meaning is
   carried by coordinates, alleles, and the 16-field SnpEff-compatible `ANN=`.
-- Individual SNVs in one codon can have incorrect amino-acid annotations until
-  `bin/fix_mnv_codons.py` runs. Final VCFs must remain downstream of that step.
+- In the SnpEff-annotated PAFTOOLS and SHORT_READ VCFs, individual SNVs in one
+  codon can have incorrect amino-acid annotations until `bin/fix_mnv_codons.py`
+  runs; their final VCFs must remain downstream of that step. The Nextclade
+  converter translates each codon with all its substitutions applied (and keeps
+  Nextclade's own call where `nucToAaMuts` has one), writing the same
+  `MNV_CORRECTED`/`MNV_ORIGINAL_HGVS_P` fields itself.
 - `bin/merge_flumut_mutations.py` is the only implementation. It may add
   `FLUMUT=` to matching rows, but must not add, remove, reorder, or otherwise
   rewrite variant rows. The earlier implementation that inserted synthetic rows
@@ -156,9 +160,9 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   gone too.
 - Rows flagged `MNV_UNRESOLVED` by `bin/fix_mnv_codons.py` are skipped, not
   matched: their HGVS.p is known to be wrong, so a marker hit there would be a
-  false positive. Every member row of a *resolved* MNV group carries the same
-  corrected HGVS.p and so the same `FLUMUT=` entry — downstream marker counts
-  must de-duplicate.
+  false positive. Every row of a codon holding more than one substitution
+  carries the same combined HGVS.p and so the same `FLUMUT=` entry — downstream
+  marker counts must de-duplicate.
 - **Watchlist hits never enter the VCF.** `FLUMUT=` comes from a versioned
   database, so the same consensus always yields the same annotation; a watchlist
   is a CSV we edit, and merging its hits in would make the same consensus

@@ -1,4 +1,4 @@
-"""Unit tests for bin/nextclade_to_freebayes_vcf.py, covering the two-output split.
+"""Unit tests for bin/nextclade_to_freebayes_vcf.py: the two-output split and shared codons.
 
 Run with:  pytest tests/test_nextclade_to_freebayes_vcf.py
 
@@ -66,10 +66,13 @@ def _write_dataset(directory: Path, gff3: str) -> Path:
     return directory
 
 
-def _write_json(path: Path, positions=SUB_POSITIONS, sample: str = "SAMPLE01") -> Path:
-    """A minimal nextclade v3 result carrying one substitution per position."""
+def _write_json(path: Path, positions=SUB_POSITIONS, sample: str = "SAMPLE01",
+                qry: dict[int, str] | None = None) -> Path:
+    """A minimal nextclade v3 result carrying one substitution per position (qry sets the base)."""
+    qry = qry or {}
     substitutions = [
-        {"pos": pos, "refNuc": REF_SEQ[pos], "qryNuc": "A" if REF_SEQ[pos] != "A" else "C"}
+        {"pos": pos, "refNuc": REF_SEQ[pos],
+         "qryNuc": qry.get(pos, "A" if REF_SEQ[pos] != "A" else "C")}
         for pos in positions
     ]
     path.write_text(json.dumps({
@@ -193,6 +196,58 @@ def test_no_mature_output_matches_a_dataset_without_mature_peptides(tmp_path, ne
     _run(without, nextclade_json, from_gff)
 
     assert _records(from_flag) == _records(from_gff)
+
+
+# ---------------------------------------------------------------------------
+# Substitutions sharing a codon
+# ---------------------------------------------------------------------------
+
+# 0-based 107-109 is a TAC (Tyr) codon: CDS codon 30, HA1 codon 29. T>G alone gives GAC (Asp),
+# A>C alone gives TCC (Ser), together GCC (Ala).
+MNV_POSITIONS = [107, 108, 400]
+MNV_QRY = {107: "G", 108: "C"}
+
+
+def _info(record: str) -> dict[str, str]:
+    return dict(token.partition("=")[::2] for token in record.split("\t")[7].split(";"))
+
+
+def _hgvs_p(record: str) -> dict[str, str]:
+    return {fields[6]: fields[10] for fields in _ann_entries(record) if fields[10]}
+
+
+@pytest.fixture
+def mnv_records(tmp_path, dataset):
+    json_path = _write_json(tmp_path / "mnv.json", positions=MNV_POSITIONS, qry=MNV_QRY)
+    out = tmp_path / "mnv.vcf"
+    _run(dataset, json_path, out)
+    return _records(out)
+
+
+def test_shared_codon_is_annotated_with_the_combined_change(mnv_records):
+    for record in mnv_records[:2]:
+        assert _hgvs_p(record) == {"TESTLOCUS": "p.Y30A", "HA1": "p.Y29A"}
+        assert "missense_variant" in record
+
+
+def test_shared_codon_records_the_single_base_calls(mnv_records):
+    first, second, _ = mnv_records
+    assert "MNV_CORRECTED" in _info(first)
+    assert _info(first)["MNV_ORIGINAL_HGVS_P"] == "TESTLOCUS:p.Y30D|HA1:p.Y29D"
+    assert _info(second)["MNV_ORIGINAL_HGVS_P"] == "TESTLOCUS:p.Y30S|HA1:p.Y29S"
+
+
+def test_lone_substitution_carries_no_mnv_fields(mnv_records):
+    info = _info(mnv_records[2])
+    assert "MNV_CORRECTED" not in info and "MNV_ORIGINAL_HGVS_P" not in info
+
+
+def test_mnv_fields_are_declared(tmp_path, dataset, nextclade_json):
+    out = tmp_path / "out.vcf"
+    _run(dataset, nextclade_json, out)
+    header = out.read_text()
+    assert "##INFO=<ID=MNV_CORRECTED,Number=0,Type=Flag," in header
+    assert "##INFO=<ID=MNV_ORIGINAL_HGVS_P,Number=1,Type=String," in header
 
 
 # ---------------------------------------------------------------------------
