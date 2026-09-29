@@ -41,9 +41,7 @@ process nextclade_run_batch {
         }
 
     input:
-    tuple val(segment), val(sample_ids),
-          path(consensus_fastas, stageAs: 'inputs/*'),
-          path(dataset_dir)
+    tuple val(segment), path(batch_fasta, stageAs: 'batch.fasta'), path(dataset_dir)
 
     output:
     tuple val(segment), path("*_nc_final.vcf"),              optional: true, emit: vcf
@@ -59,15 +57,6 @@ process nextclade_run_batch {
     def stem = "__\${REFERENCE_NAME}__\${SUBTYPE}__${segment}"
     def no_mature_arg = params.emit_no_mature_vcf ? "--no-mature-suffix \"${stem}_nc_nomat_final.vcf\"" : ""
     """
-    # Rewrite each segment FASTA header to exactly the sample_id so nextclade
-    # seqName matches sample_id in the result JSON (enables per-sample demux).
-    mkdir -p prepared
-    for fasta_file in inputs/*.s.fasta; do
-        sample_id=\$(basename "\$fasta_file" .s.fasta | sed -E 's/_[^_]+\$//')
-        awk -v sample_id="\$sample_id" '/^>/{print ">"sample_id; next}{print}' "\$fasta_file" > "prepared/\${sample_id}.fasta"
-    done
-    cat prepared/*.fasta > batch.fasta
-
     nextclade run \\
         --input-dataset ${dataset_dir} \\
         --output-all nc_output \\

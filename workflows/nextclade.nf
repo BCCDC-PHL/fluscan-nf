@@ -17,7 +17,6 @@
 
 include { hash_files }                           from '../modules/shared/hash_files.nf'
 include { prepare_consensus }                    from '../modules/shared/consensus_qc.nf'
-include { split_fasta as split_fasta_consensus } from '../modules/shared/consensus_qc.nf'
 include { flumut }                               from '../modules/shared/flumut.nf'
 include { nextclade_run_batch }                  from '../modules/nextclade/nextclade.nf'
 include { coordinate_conversion }                from '../modules/nextclade/coordinate_conversion.nf'
@@ -53,14 +52,6 @@ workflow NEXTCLADE {
 
     ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
 
-    // A name that does not match yields 'unknown_segment' rather than throwing, so the
-    // unknown-segment branch below can report it.
-    def extract_segment = { sample_id, fasta ->
-        def matcher = fasta.name =~ /.*_([A-Za-z0-9-]+)\.s.*/
-        def segment = matcher ? matcher[0][1] : "unknown_segment"
-        return [sample_id, segment, fasta]
-    }
-
     // Consensus FASTAs from the sample sheet or the input directory.
     // Each file is expected to contain 8 segments for a single sample.
     ch_fasta_input = params.samplesheet_input != 'NO_FILE'
@@ -88,22 +79,20 @@ workflow NEXTCLADE {
                 sort: false
             )
 
-        // Split into per-segment FASTAs for the nextclade batching below.
-        ch_consensus_segments = split_fasta_consensus(prepare_consensus.out.cleaned)
-            .transpose()
-            .map(extract_segment)                          // [sample_id, segment, fa]
-
         // --- Step 2: HPAI mutation screening (per sample, parallel branch) ---
         flumut(prepare_consensus.out.cleaned)
 
-        // --- Step 3: Group per-segment FASTAs across all samples for batching ---
-        ch_segment_batches = ch_consensus_segments
-            .map { sample_id, segment, fa -> [segment, sample_id, fa] }
-            .groupTuple()                                  // [segment, [sample_ids], [fastas]]
-            .map { segment, sample_ids, fastas ->
-                def dataset_dir = db.nextclade.resolve(segment)
-                return [segment, sample_ids, fastas, dataset_dir]
+        // --- Step 3: Collect each segment across all samples into one FASTA ---
+        //   Cleaned headers are {sample_id}_{SEGMENT} with a canonical SEGMENT; the batch
+        //   header is the bare sample_id, which nextclade reports back as seqName.
+        ch_segment_batches = prepare_consensus.out.cleaned
+            .splitFasta(elem: 1, record: [id: true, seqString: true])     // [sample_id, record]
+            .collectFile { item ->
+                def (sample_id, record) = item
+                ["${record.id - "${sample_id}_"}.fasta", ">${sample_id}\n${record.seqString}\n"]
             }
+            .map { fasta -> [fasta.baseName, fasta, db.nextclade.resolve(fasta.baseName)] }
+            // -> [segment, batch.fasta, dataset_dir]
 
         // --- Step 4: Run nextclade once per segment for all samples, and convert to VCF ---
         //   Also writes each sample's report-only consensus/reference identity QC.

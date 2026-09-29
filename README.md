@@ -86,8 +86,7 @@ flowchart TD
         direction TB
         nextclade_prepare[prepare_consensus]
         nextclade_flumut[flumut]
-        split_consensus[split_fasta]
-        groupseg[group by segment across samples]
+        groupseg[collect each segment across samples: splitFasta + collectFile]
         nc_run[nextclade run batch]
         split_results[split per-sample JSON and TSV]
         nc2vcf[nextclade_to_freebayes_vcf.py]
@@ -98,8 +97,7 @@ flowchart TD
         flumut_annotated[FluMutDB-annotated VCFs]
 
         nextclade_prepare --> nextclade_flumut
-        nextclade_prepare --> split_consensus
-        split_consensus --> groupseg
+        nextclade_prepare --> groupseg
         groupseg --> nc_run
         nc_run --> split_results
         nc_run --> nc2vcf
