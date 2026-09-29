@@ -5,7 +5,7 @@ freebayes-style VCF and tag the curated FluMutDB markers among them:
 
 | Script | Role |
 | --- | --- |
-| [`bin/nextclade_to_freebayes_vcf.py`](../bin/nextclade_to_freebayes_vcf.py) | Convert a Nextclade JSON into a freebayes-format VCF with snpEff-style `ANN=` annotations. |
+| [`bin/nextclade_to_freebayes_vcf.py`](../bin/nextclade_to_freebayes_vcf.py) | Convert a Nextclade JSON into one freebayes-format VCF per sample with snpEff-style `ANN=` annotations. |
 | [`bin/merge_flumut_mutations.py`](../bin/merge_flumut_mutations.py) | Add a `FLUMUT=` INFO field to rows whose AA change matches a FluMutDB marker. Run by the `merge_flumut_mutations` process. |
 | [`bin/lib/flu_gene_names.py`](../bin/lib/flu_gene_names.py) | The canonical gene-key aliases (`NS-1`→`NS1`, `NS2`/`NS-2`→`NEP`), shared by the coordinate map builder and the merge so the two cannot drift. |
 | [`bin/lib/aa_markers.py`](../bin/lib/aa_markers.py) | `ANN=` extraction, both HGVS.p spellings, and the `MNV_UNRESOLVED` flag test, shared by the merge and the watchlist scanner for the same reason. |
@@ -75,12 +75,13 @@ VCFs. It resolves CDS structure directly from the dataset's GFF3, handling overl
 ### CLI
 
 ```
-nextclade_to_freebayes_vcf.py -i <nextclade.json> -d <dataset_dir> -o <out.vcf>
-                              [--sample NAME] [--qual 60]
+nextclade_to_freebayes_vcf.py -i <batch.json> -d <dataset_dir> --suffix <suffix>
+                              [--no-mature-suffix <suffix>] [--qual 60]
 ```
 
 `-d` must contain `reference.fasta` and `genome_annotation.gff3` (the same files Nextclade
-aligned against). `-o` is used as a filename prefix when the JSON holds multiple sequences.
+aligned against). Each sample's VCF is written to `<seqName><suffix>` in the working
+directory; `nextclade_run_batch` passes `__<ref>__<subtype>__<SEGMENT>_nc_final.vcf`.
 
 ### How it runs (`main`)
 
@@ -95,9 +96,9 @@ aligned against). `-o` is used as a filename prefix when the JSON holds multiple
      and any `warnings`.
 3. **Iterate JSON `results`** — one sequence at a time. Sequences whose result carries
    `errors`, or that appear under the top-level `errors` array (e.g. *"Unable to align"*),
-   produce an **empty VCF** (header only) with a warning rather than failing the run.
-4. **Emit variants** (`variants_from_json_result`) and **write** (`write_vcf`). One output
-   file per sequence; single-sequence input writes directly to `-o`.
+   get **no VCF** and a warning; the segment's `*_nextclade_status.tsv` records them.
+4. **Emit variants** (`variants_from_json_result`) and **write** (`write_vcf`), one file
+   per sequence.
 
 ### Turning JSON deltas into rows (`variants_from_json_result`)
 
@@ -245,7 +246,7 @@ merge_flumut_mutations.py --vcf <final.vcf> --coord-map <coordinate_map.SEG.json
 
 | Input | Producer | Used for |
 | --- | --- | --- |
-| `--vcf` (`*_final.vcf`) | `nextclade_to_vcf_batch` | the AA changes to look up, and the rows to annotate |
+| `--vcf` (`*_final.vcf`) | `nextclade_run_batch` | the AA changes to look up, and the rows to annotate |
 | `--coord-map` (`coordinate_map.<SEG>.json`) | `coordinate_conversion` | flumut→Nextclade **AA position** mapping, per gene |
 | FluMutDB sqlite | `flumutdb` conda package | the marker catalogue; located via `flumut.DbReader.get_db_file()`, overridable with `--flumut-db` |
 

@@ -2,8 +2,8 @@
 
 Run with:  pytest tests/test_nextclade_to_freebayes_vcf.py
 
-The script writes the VCF the rest of the workflow consumes and, when
---output-no-mature is given, a second VCF annotated without mature peptides -- HA as HA0
+The script writes one VCF per sample, the file the rest of the workflow consumes, and, when
+--no-mature-suffix is given, a second VCF annotated without mature peptides -- HA as HA0
 only, no HA1/HA2 entries. The contract the downstream consumer relies on is that the two
 files differ *only* in their ANN sub-field: same records, same order, same alleles. That is
 what is asserted here, alongside the guarantee that the standard output is byte-identical
@@ -90,12 +90,15 @@ def _write_json(path: Path, positions=SUB_POSITIONS, sample: str = "SAMPLE01",
     return path
 
 
-def _run(dataset: Path, json_path: Path, output: Path, no_mature: Path | None = None) -> None:
+def _run(dataset: Path, json_path: Path, workdir: Path, no_mature: bool = False) -> tuple[Path, Path]:
+    """Convert json_path inside workdir; return SAMPLE01's standard and no-mature VCF paths."""
+    workdir.mkdir(parents=True, exist_ok=True)
     cmd = [sys.executable, str(SCRIPT_PATH), "-i", str(json_path),
-           "-d", str(dataset), "-o", str(output), "--sample", "SAMPLE01"]
-    if no_mature is not None:
-        cmd += ["--output-no-mature", str(no_mature)]
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+           "-d", str(dataset), "--suffix", ".vcf"]
+    if no_mature:
+        cmd += ["--no-mature-suffix", "_nomat.vcf"]
+    subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=workdir)
+    return workdir / "SAMPLE01.vcf", workdir / "SAMPLE01_nomat.vcf"
 
 
 def _records(vcf: Path) -> list[str]:
@@ -126,10 +129,7 @@ def nextclade_json(tmp_path):
 
 @pytest.fixture
 def both_outputs(tmp_path, dataset, nextclade_json):
-    standard  = tmp_path / "out.vcf"
-    no_mature = tmp_path / "out_nomat.vcf"
-    _run(dataset, nextclade_json, standard, no_mature)
-    return standard, no_mature
+    return _run(dataset, nextclade_json, tmp_path / "out", no_mature=True)
 
 
 # ---------------------------------------------------------------------------
@@ -189,11 +189,8 @@ def test_no_mature_output_matches_a_dataset_without_mature_peptides(tmp_path, ne
     with_mature = _write_dataset(tmp_path / "with", GFF3_WITH_MATURE)
     without     = _write_dataset(tmp_path / "without", GFF3_NO_MATURE)
 
-    from_flag = tmp_path / "from_flag.vcf"
-    _run(with_mature, nextclade_json, tmp_path / "ignored.vcf", from_flag)
-
-    from_gff = tmp_path / "from_gff.vcf"
-    _run(without, nextclade_json, from_gff)
+    _, from_flag = _run(with_mature, nextclade_json, tmp_path / "flag", no_mature=True)
+    from_gff, _ = _run(without, nextclade_json, tmp_path / "gff")
 
     assert _records(from_flag) == _records(from_gff)
 
@@ -219,8 +216,7 @@ def _hgvs_p(record: str) -> dict[str, str]:
 @pytest.fixture
 def mnv_records(tmp_path, dataset):
     json_path = _write_json(tmp_path / "mnv.json", positions=MNV_POSITIONS, qry=MNV_QRY)
-    out = tmp_path / "mnv.vcf"
-    _run(dataset, json_path, out)
+    out, _ = _run(dataset, json_path, tmp_path / "mnv")
     return _records(out)
 
 
@@ -243,66 +239,61 @@ def test_lone_substitution_carries_no_mnv_fields(mnv_records):
 
 
 def test_mnv_fields_are_declared(tmp_path, dataset, nextclade_json):
-    out = tmp_path / "out.vcf"
-    _run(dataset, nextclade_json, out)
+    out, _ = _run(dataset, nextclade_json, tmp_path / "out")
     header = out.read_text()
     assert "##INFO=<ID=MNV_CORRECTED,Number=0,Type=Flag," in header
     assert "##INFO=<ID=MNV_ORIGINAL_HGVS_P,Number=1,Type=String," in header
 
 
 # ---------------------------------------------------------------------------
-# The existing single-output behaviour
+# Batch input
 # ---------------------------------------------------------------------------
 
-def test_standard_output_is_unchanged_by_the_new_argument(tmp_path, dataset, nextclade_json):
-    with_flag = tmp_path / "with_flag.vcf"
-    _run(dataset, nextclade_json, with_flag, tmp_path / "nomat.vcf")
-
-    without_flag = tmp_path / "without_flag.vcf"
-    _run(dataset, nextclade_json, without_flag)
-
+def test_standard_output_is_unchanged_by_the_no_mature_suffix(tmp_path, dataset, nextclade_json):
+    with_flag, _ = _run(dataset, nextclade_json, tmp_path / "with", no_mature=True)
+    without_flag, _ = _run(dataset, nextclade_json, tmp_path / "without")
     assert with_flag.read_text() == without_flag.read_text()
 
 
-def test_no_second_file_without_the_argument(tmp_path, dataset, nextclade_json):
-    standard = tmp_path / "out.vcf"
-    _run(dataset, nextclade_json, standard)
-    assert standard.exists()
-    assert [p.name for p in tmp_path.glob("*.vcf")] == ["out.vcf"]
+def test_no_second_file_without_the_suffix(tmp_path, dataset, nextclade_json):
+    standard, _ = _run(dataset, nextclade_json, tmp_path / "out")
+    assert [p.name for p in standard.parent.glob("*.vcf")] == ["SAMPLE01.vcf"]
 
 
-def test_multi_sample_input_splits_both_outputs(tmp_path, dataset):
-    json_path = tmp_path / "multi.json"
-    json_path.write_text(json.dumps({
-        "results": [
-            {"seqName": name, "substitutions": [
-                {"pos": 100, "refNuc": REF_SEQ[100], "qryNuc": "A"}],
-             "deletions": [], "insertions": [], "nucToAaMuts": {},
-             "aaDeletions": [], "aaInsertions": [], "frameShifts": []}
-            for name in ("SAMPLE01", "SAMPLE02")
-        ],
-    }))
+def _result(name: str) -> dict:
+    return {"seqName": name, "substitutions": [{"pos": 100, "refNuc": REF_SEQ[100], "qryNuc": "A"}],
+            "deletions": [], "insertions": [], "nucToAaMuts": {},
+            "aaDeletions": [], "aaInsertions": [], "frameShifts": []}
+
+
+def test_batch_input_writes_one_named_vcf_per_sample(tmp_path, dataset):
+    json_path = tmp_path / "batch.json"
+    json_path.write_text(json.dumps({"results": [_result("SAMPLE01"), _result("SAMPLE02")]}))
     subprocess.run(
         [sys.executable, str(SCRIPT_PATH), "-i", str(json_path), "-d", str(dataset),
-         "-o", str(tmp_path / "out.vcf"),
-         "--output-no-mature", str(tmp_path / "out_nomat.vcf")],
-        check=True, capture_output=True, text=True,
+         "--suffix", "__REF__HA_nc_final.vcf", "--no-mature-suffix", "__REF__HA_nc_nomat_final.vcf"],
+        check=True, capture_output=True, text=True, cwd=tmp_path,
     )
     for sample in ("SAMPLE01", "SAMPLE02"):
-        assert (tmp_path / f"out_{sample}.vcf").exists()
-        assert (tmp_path / f"out_nomat_{sample}.vcf").exists()
-        assert not _feature_ids(tmp_path / f"out_nomat_{sample}.vcf") & {"HA1", "HA2"}
+        standard = tmp_path / f"{sample}__REF__HA_nc_final.vcf"
+        assert len(_records(standard)) == 1
+        assert f"FORMAT\t{sample}" in standard.read_text()
+        assert not _feature_ids(tmp_path / f"{sample}__REF__HA_nc_nomat_final.vcf") & {"HA1", "HA2"}
 
 
-def test_unalignable_sample_writes_both_empty_vcfs(tmp_path, dataset):
-    json_path = tmp_path / "errors.json"
+def test_unalignable_sample_gets_no_vcf(tmp_path, dataset):
+    json_path = tmp_path / "batch.json"
     json_path.write_text(json.dumps({
-        "results": [],
+        "results": [_result("SAMPLE02")],
         "errors":  [{"seqName": "SAMPLE01",
                      "errors": ["Unable to align: seed alignment covers 3.0% of the query"]}],
     }))
-    standard  = tmp_path / "out.vcf"
-    no_mature = tmp_path / "out_nomat.vcf"
-    _run(dataset, json_path, standard, no_mature)
-    assert _records(standard) == []
-    assert _records(no_mature) == []
+    _run(dataset, json_path, tmp_path / "out", no_mature=True)
+    assert sorted(p.name for p in (tmp_path / "out").glob("*.vcf")) == ["SAMPLE02.vcf", "SAMPLE02_nomat.vcf"]
+
+
+def test_batch_where_nothing_aligned_writes_nothing(tmp_path, dataset):
+    json_path = tmp_path / "batch.json"
+    json_path.write_text(json.dumps({"results": [], "errors": [{"seqName": "SAMPLE01", "errors": ["x"]}]}))
+    _run(dataset, json_path, tmp_path / "out")
+    assert list((tmp_path / "out").glob("*.vcf")) == []

@@ -101,7 +101,7 @@ flowchart TD
         split_consensus --> groupseg
         groupseg --> nc_run
         nc_run --> split_results
-        split_results --> nc2vcf
+        nc_run --> nc2vcf
         nc2vcf --> nc_final
         dispatch -.->|"flumutdb reference + db nextclade datasets, sample-independent (if merge_flumut_mutations)"| coord_map
         coord_map --> coord_final

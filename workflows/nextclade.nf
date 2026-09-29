@@ -21,7 +21,6 @@ include { split_fasta as split_fasta_consensus } from '../modules/shared/consens
 include { consensus_identity_qc }                from '../modules/nextclade/consensus_qc.nf'
 include { flumut }                               from '../modules/shared/flumut.nf'
 include { nextclade_run_batch }                  from '../modules/nextclade/nextclade.nf'
-include { nextclade_to_vcf_batch }               from '../modules/nextclade/nextclade.nf'
 include { coordinate_conversion }                from '../modules/nextclade/coordinate_conversion.nf'
 include { merge_flumut_mutations }               from '../modules/nextclade/merge_flumut_mutations.nf'
 include { mutation_watch }                       from '../modules/shared/mutation_watch.nf'
@@ -115,25 +114,22 @@ workflow NEXTCLADE {
                 return [segment, sample_ids, fastas, dataset_dir]
             }
 
-        // --- Step 4: Run nextclade once per segment for all samples ---
-        nextclade_run_batch(ch_segment_batches)
-
-        // --- Step 5: Convert per-sample nextclade JSON to the final freebayes-style VCF ---
+        // --- Step 4: Run nextclade once per segment for all samples, and convert to VCF ---
         //   With --emit_no_mature_vcf it also publishes each VCF without mature-peptide
         //   (HA1/HA2) annotations. Nothing downstream reads that copy: mutation_watch and
         //   merge_flumut_mutations resolve HA markers through the HA1/HA2 Feature_ID.
-        nextclade_to_vcf_batch(nextclade_run_batch.out.json_with_ref)
+        nextclade_run_batch(ch_segment_batches)
 
         // [segment, [vcfs]] -> [sample_id, segment, vcf]. Shared by the watchlist scan below
         // and, when enabled, by the flumut merge further down.
-        ch_final_vcf = nextclade_to_vcf_batch.out.vcf
+        ch_final_vcf = nextclade_run_batch.out.vcf
             .transpose()
             .map { segment, vcf ->
                 def sample_id = vcf.name.split('__')[0]
                 [sample_id, segment, vcf]
             }
 
-        // --- Step 6: Scan the final VCF for a custom watchlist (optional) ---
+        // --- Step 5: Scan the final VCF for a custom watchlist (optional) ---
         //   Independent of --merge_flumut_mutations: FLUMUT= is a curated annotation written
         //   into the VCF, this is a custom list scanned out of it into a separate TSV.
         if (params.watchlist_dir != 'NO_FILE') {
@@ -145,18 +141,18 @@ workflow NEXTCLADE {
             mutation_watch(ch_final_vcf.combine(ch_watchlists))
         }
 
-        // --- Steps 7-8: Coordinate conversion + flumut mutation merging (optional) ---
+        // --- Steps 6-7: Coordinate conversion + flumut mutation merging (optional) ---
         //   Gated behind --merge_flumut_mutations (default false); otherwise the workflow
         //   stops at the *_final.vcf produced above.
         if (params.merge_flumut_mutations) {
 
-            // --- Step 7: Build the flumut-to-Nextclade coordinate map ---
+            // --- Step 6: Build the flumut-to-Nextclade coordinate map ---
             //   source = the flumutdb package's reference (lift FROM), target = the --db
             //   datasets (lift ONTO). The target label comes from the bundle's db.yml, so the
             //   published map names the reference rather than where the bundle sits.
             coordinate_conversion(Channel.value([db.nextclade_ref_name, db.nextclade]))
 
-            // --- Step 8: Annotate each per-sample/per-segment VCF with FluMutDB markers ---
+            // --- Step 7: Annotate each per-sample/per-segment VCF with FluMutDB markers ---
             //   Additive: writes a separate *_flumut_annotated.vcf and leaves *_final.vcf
             //   untouched. Run per (sample, segment) so each task stages only its own shard.
             ch_vcf_flat = ch_final_vcf                         // [sample_id, segment, vcf]
