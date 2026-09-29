@@ -25,8 +25,9 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 - `SHORT_READ` performs read QC/primer trimming, downsampling, assembly,
   BLAST-based reference selection, mapping, LoFreq calling, SnpEff annotation,
   MNV correction, consensus generation, and FluMut screening.
-- In FASTA mode, both branches independently prepare the same consensus input
-  and run FluMut.
+- In FASTA mode, `FASTA_PREP` (`workflows/fasta-prep.nf`) hashes, cleans and
+  QC-aggregates the consensus input and runs FluMut once, then hands the cleaned
+  FASTAs and their provenance records to both branches.
   - `PAFTOOLS` selects references with BLAST, aligns each segment with
     minimap2, calls differences with `paftools.js`, sorts and annotates VCFs,
     converts them to the common VCF shape, and corrects MNV codons.
@@ -51,7 +52,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 | --- | --- |
 | `main.nf` | Entry point and workflow dispatch |
 | `nextflow.config` | Parameters, Conda profile, resources, reports |
-| `workflows/` | Channel wiring for the three top-level workflows |
+| `workflows/` | Channel wiring for the three top-level workflows and the `FASTA_PREP` subworkflow both FASTA branches take their input from |
 | `modules/shared/` | Reused BLAST, consensus, FluMut, post-processing, and provenance processes |
 | `modules/{short_read,paftools,nextclade}/` | Branch-specific processes |
 | `bin/` | Python CLI entry points *only* — Nextflow puts this directory on `PATH` for every task, so nothing that is merely importable belongs here |
@@ -61,7 +62,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 | `docs/vcf_annotation_and_flumut_insertion.md` | Detailed Nextclade VCF and FluMutDB semantics |
 | `docs/watchlists.md` | Custom watchlist schema, matching rules, and the HA1/HA numbering trap |
 | `assets/watchlists/` | The shipped `*watchlist.csv` files; `--watchlist_dir` defaults here |
-| `modules/shared/sample_id.nf` | The only place a consensus or sample sheet `sample_id` is derived; holds the FASTA discovery channel both FASTA branches call and `samplesheet_channel`, which all three workflows call for `--samplesheet_input`. Changing `clean_sample_id` renames every output |
+| `modules/shared/sample_id.nf` | The only place a consensus or sample sheet `sample_id` is derived; holds the FASTA discovery channel `FASTA_PREP` calls and `samplesheet_channel`, which all three workflows call for `--samplesheet_input`. Changing `clean_sample_id` renames every output |
 | `modules/shared/database.nf` | The only place that knows the `--db` bundle layout; `resolve_db` validates it up front. Also holds the canonical segment list, `@Field DB_SEGMENTS`, which it uses to check each segment's dataset |
 | `scripts/validate_db.py` | Deeper, contents-level bundle check; run after building or moving a bundle |
 | `docs/database_bundles.md` | Bundle layout, `db.yml` schema, how to build and validate one |
@@ -127,8 +128,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   explicitly unless a local config supplies it.
 - `--samplesheet_input` is parsed eagerly by `samplesheet_channel`, so column,
   blank-cell, ID and file-existence errors all fail before any task is submitted.
-  Both FASTA branches choose between it and `consensus_fasta_channel` with the same
-  ternary; keep them mirrored. `run_name` is the sheet's filename without `.csv`.
+  `FASTA_PREP` chooses between it and `consensus_fasta_channel`. `run_name` is the sheet's filename without `.csv`.
 - Channel tuple keys are part of the design. Preserve `sample_id` and `segment`
   through `join`, `combine`, `transpose`, and batching operations, and comment
   non-obvious tuple shapes next to the transformation.
@@ -282,16 +282,16 @@ published filenames/content. Use `-profile conda`; `conda.useMamba` is enabled.
   FASTA dispatch runs PAFTOOLS and NEXTCLADE over the same samples into the same
   `${outdir}/${sample_id}/`, and their timestamps collide at second resolution;
   without the label one branch silently overwrites the other. Any new workflow
-  needs a `withName: '<NAME>:.*' { ext.workflow = … }` block or its records fall
+  that collects provenance needs a `withName: '<NAME>:.*' { ext.workflow = … }` block or its records fall
   back to the unlabelled, collision-prone name.
 - `mutation_watch` runs once per sample over all of its final VCFs and every
   watchlist, and emits one provenance YAML per sample. SHORT_READ does not join
   it in, so its watchlist scan is absent from the collected record. Both FASTA
   branches join it with `remainder: true`.
-- The two FASTA branches are deliberate mirrors from input discovery through
-  `prepare_consensus`, `flumut`, the consensus QC aggregate, and the shape of
-  the provenance chain and watchlist block. Only the analysis between those
-  differs. A change to one of the mirrored parts belongs in both.
+- The two FASTA branches share their input through `FASTA_PREP`, and each
+  opens its provenance chain with its own `pipeline_provenance` record ahead of
+  the prep records. Their watchlist blocks and provenance joins are still
+  mirrored; a change to one belongs in both.
 - `tests/conftest.py` puts `bin/` on `sys.path` so the entry points can resolve
   their `from lib.…` imports under pytest. Fix an import failure there, not by
   adding path manipulation to a production script.

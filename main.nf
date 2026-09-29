@@ -6,6 +6,7 @@
  */
 
 include { SHORT_READ } from './workflows/short-read.nf'
+include { FASTA_PREP } from './workflows/fasta-prep.nf'
 include { PAFTOOLS }   from './workflows/paftools.nf'
 include { NEXTCLADE }  from './workflows/nextclade.nf'
 include { resolve_db } from './modules/shared/database.nf'
@@ -44,22 +45,19 @@ workflow {
         error "ERROR: Provide only one of --fastq_input, --fasta_input or --samplesheet_input."
     }
 
-    if (params.samplesheet_input != 'NO_FILE') {
-        // The header row picks the workflow; samplesheet_channel validates the rest.
-        def header = file(params.samplesheet_input, checkIfExists: true).splitCsv(strip: true)[0] ?: []
-        if ('R1' in header) {
-            SHORT_READ()
-        } else if ('FASTA' in header) {
-            PAFTOOLS()
-            NEXTCLADE()
-        } else {
-            error "ERROR: --samplesheet_input needs an ID,R1,R2 header (short-read workflow) or an ID,FASTA header (PAFTOOLS/NEXTCLADE workflow)."
-        }
-    } else if (params.fastq_input != 'NO_FILE') {
+    // A sample sheet's header row picks the workflow; samplesheet_channel validates the rest.
+    def header = params.samplesheet_input != 'NO_FILE'
+        ? (file(params.samplesheet_input, checkIfExists: true).splitCsv(strip: true)[0] ?: [])
+        : []
+
+    if (params.fastq_input != 'NO_FILE' || 'R1' in header) {
         SHORT_READ()
-    } else if (params.fasta_input != 'NO_FILE') {
-        PAFTOOLS()
-        NEXTCLADE()
+    } else if (params.fasta_input != 'NO_FILE' || 'FASTA' in header) {
+        FASTA_PREP()
+        PAFTOOLS(FASTA_PREP.out.cleaned, FASTA_PREP.out.provenance)
+        NEXTCLADE(FASTA_PREP.out.cleaned, FASTA_PREP.out.provenance)
+    } else if (params.samplesheet_input != 'NO_FILE') {
+        error "ERROR: --samplesheet_input needs an ID,R1,R2 header (short-read workflow) or an ID,FASTA header (PAFTOOLS/NEXTCLADE workflow)."
     } else {
         error "ERROR: Please provide --fastq_input (short-read workflow), --fasta_input (PAFTOOLS/NEXTCLADE workflow) or --samplesheet_input (either)."
     }

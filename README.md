@@ -47,13 +47,18 @@ flowchart TD
     dispatch[main.nf FASTA dispatch]
 
     input --> dispatch
-    dispatch --> paftools_prepare
-    dispatch --> nextclade_prepare
+    dispatch --> prepare
+
+    subgraph FASTA_PREP[FASTA_PREP workflow]
+        direction TB
+        prepare[prepare_consensus]
+        prep_flumut[flumut]
+
+        prepare --> prep_flumut
+    end
 
     subgraph PAFTOOLS[PAFTOOLS workflow]
         direction TB
-        paftools_prepare[prepare_consensus]
-        paftools_flumut[flumut]
         blastn[blastn reference selection]
         split_ref[split_fasta]
         minimap[minimap2 asm20]
@@ -66,9 +71,8 @@ flowchart TD
         fixmnv_paf[fix_mnv_codons.py]
         paf_final[Final PAFTOOLS VCFs]
 
-        paftools_prepare --> blastn
-        paftools_prepare --> paftools_flumut
-        paftools_prepare --> split_ref
+        prepare --> blastn
+        prepare --> split_ref
         blastn --> split_ref
         split_ref --> minimap
         minimap --> covqc
@@ -84,8 +88,6 @@ flowchart TD
 
     subgraph NEXTCLADE[NEXTCLADE workflow]
         direction TB
-        nextclade_prepare[prepare_consensus]
-        nextclade_flumut[flumut]
         groupseg[collect each segment across samples: splitFasta + collectFile]
         nc_run[nextclade run batch]
         split_results[split per-sample JSON and TSV]
@@ -96,8 +98,7 @@ flowchart TD
         flumut_merge[merge_flumut_mutations: merge_flumut_mutations.py]
         flumut_annotated[FluMutDB-annotated VCFs]
 
-        nextclade_prepare --> nextclade_flumut
-        nextclade_prepare --> groupseg
+        prepare --> groupseg
         groupseg --> nc_run
         nc_run --> split_results
         nc_run --> nc2vcf
@@ -288,8 +289,7 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 |------|-------------|
 | `${run_name}_fluscan-nf_multiqc_report.html` | MultiQC report summarising fastp, cutadapt, and FastQC results for all samples (short-read workflow only) |
 | `aggregate/paftools_qc_summary.tsv` | Run-level tabular summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
-| `aggregate/paftools_consensus_qc_summary.tsv` | Every `*_qc_report.tsv` row from consensus preparation, concatenated across the run (PAFTOOLS). A sample rejected at preparation — duplicate segment, or headers naming more than one sample — contributes no rows and is reported only in the Nextflow log |
-| `aggregate/nextclade_consensus_qc_summary.tsv` | The same rows collected by the NEXTCLADE branch; both branches prepare the same inputs, so the two files agree |
+| `aggregate/consensus_qc_summary.tsv` | Every `*_qc_report.tsv` row from consensus preparation, concatenated across the run. A sample rejected at preparation — duplicate segment, or headers naming more than one sample — contributes no rows and is reported only in the Nextflow log |
 | `aggregate/reference_remap/coordinate_map.json` | Primary machine-readable nucleotide/amino-acid coordinate map lifting flumut's reference (source) onto the selected Nextclade reference dataset (target) (NEXTCLADE workflow only) |
 | `aggregate/reference_remap/coordinate_map.nt.tsv` | Flat per-position nucleotide coordinate map (source/flumut position/base -> target/nextclade position/base, per segment) |
 | `aggregate/reference_remap/coordinate_map.aa.tsv` | Flat per-residue amino-acid coordinate map (source/flumut position/residue -> target/nextclade position/residue, per segment/gene) |
