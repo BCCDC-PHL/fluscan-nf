@@ -1,8 +1,9 @@
 // nextclade/nextclade.nf - Per-segment Nextclade alignment and VCF conversion processes
 
 // Cross-sample per-segment batch: runs nextclade once for all samples' sequences for a
-// given segment, splits the output into per-sample JSON and TSV files, and converts it to
-// one final VCF per sample. A sample Nextclade cannot align gets no JSON and no VCF.
+// given segment, splits the output into per-sample JSON, TSV and identity QC files, and
+// converts it to one final VCF per sample. A sample Nextclade cannot align gets no JSON and
+// no VCF, and an identity QC row of FAIL.
 process nextclade_run_batch {
 
     conda "${projectDir}/environments/nextclade.yml"
@@ -16,6 +17,10 @@ process nextclade_run_batch {
                 def sample_id = filename.split('__')[0]
                 def subdir    = filename.endsWith('_nc_nomat_final.vcf') ? 'no_mature_peptide/' : ''
                 return "${sample_id}/${workflow}/${subdir}${filename}"
+            }
+            if (filename.endsWith('_identity_qc.tsv')) {
+                def sample_id = (filename =~ /^[^_]+/)[0]
+                return "${sample_id}/qc/${filename}"
             }
             if (filename =~ /.*_nextclade_status\.tsv$/) {
                 def workflow = task.ext.workflow ?: 'unknown_workflow'
@@ -45,6 +50,7 @@ process nextclade_run_batch {
     tuple val(segment), path("*_nc_nomat_final.vcf"),        optional: true, emit: vcf_no_mature
     tuple val(segment), path("*_nextclade.json"),            optional: true, emit: json
     tuple val(segment), path("*_nextclade.tsv"),                             emit: tsv
+    tuple val(segment), path("*_identity_qc.tsv"),                           emit: identity_qc
     tuple val(segment), path("nc_output"),                                   emit: all
     tuple val(segment), path("${segment}_nextclade_status.tsv"),             emit: status
 
@@ -75,6 +81,10 @@ process nextclade_run_batch {
         --json    nc_output/batch.json \\
         --tsv     nc_output/batch.tsv \\
         --segment ${segment} \\
+        --fasta batch.fasta \\
+        --reference ${dataset_dir}/reference.fasta \\
+        --pass-pct ${params.consensus_identity_pass_pct} \\
+        --warn-pct ${params.consensus_identity_warn_pct} \\
         --status-summary ${segment}_nextclade_status.tsv
 
     REFERENCE_NAME=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/>(\\S+).*/\\1/g')

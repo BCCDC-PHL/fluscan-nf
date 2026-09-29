@@ -18,7 +18,6 @@
 include { hash_files }                           from '../modules/shared/hash_files.nf'
 include { prepare_consensus }                    from '../modules/shared/consensus_qc.nf'
 include { split_fasta as split_fasta_consensus } from '../modules/shared/consensus_qc.nf'
-include { consensus_identity_qc }                from '../modules/nextclade/consensus_qc.nf'
 include { flumut }                               from '../modules/shared/flumut.nf'
 include { nextclade_run_batch }                  from '../modules/nextclade/nextclade.nf'
 include { coordinate_conversion }                from '../modules/nextclade/coordinate_conversion.nf'
@@ -89,18 +88,10 @@ workflow NEXTCLADE {
                 sort: false
             )
 
-        // Split once; reused by the identity QC and the nextclade batching below.
+        // Split into per-segment FASTAs for the nextclade batching below.
         ch_consensus_segments = split_fasta_consensus(prepare_consensus.out.cleaned)
             .transpose()
             .map(extract_segment)                          // [sample_id, segment, fa]
-
-        // --- Step 1b: Report-only consensus/reference identity QC ---
-        ch_identity_qc = ch_consensus_segments
-            .map { sample_id, segment, consensus ->
-                def ref_fasta = db.nextclade.resolve("${segment}/reference.fasta")
-                return [sample_id, segment, consensus, ref_fasta]
-            }
-        consensus_identity_qc(ch_identity_qc)
 
         // --- Step 2: HPAI mutation screening (per sample, parallel branch) ---
         flumut(prepare_consensus.out.cleaned)
@@ -115,6 +106,7 @@ workflow NEXTCLADE {
             }
 
         // --- Step 4: Run nextclade once per segment for all samples, and convert to VCF ---
+        //   Also writes each sample's report-only consensus/reference identity QC.
         //   With --emit_no_mature_vcf it also publishes each VCF without mature-peptide
         //   (HA1/HA2) annotations. Nothing downstream reads that copy: mutation_watch and
         //   merge_flumut_mutations resolve HA markers through the HA1/HA2 Feature_ID.
