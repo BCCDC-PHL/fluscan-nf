@@ -5,8 +5,6 @@
  *   -----------------------------------------
  */
 
-nextflow.enable.dsl = 2
-
 include { SHORT_READ } from './workflows/short-read.nf'
 include { PAFTOOLS }   from './workflows/paftools.nf'
 include { NEXTCLADE }  from './workflows/nextclade.nf'

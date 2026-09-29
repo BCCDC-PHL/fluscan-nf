@@ -15,8 +15,6 @@
  *   Cleaned headers are normalised to {sample_id}_{SEGMENT} by prepare_consensus.
  */
 
-nextflow.enable.dsl = 2
-
 include { hash_files }                           from '../modules/shared/hash_files.nf'
 include { prepare_consensus }                    from '../modules/shared/consensus_qc.nf'
 include { split_fasta as split_fasta_consensus } from '../modules/shared/consensus_qc.nf'
@@ -32,7 +30,6 @@ include { mutation_watch }                       from '../modules/shared/mutatio
 include { pipeline_provenance }                  from '../modules/shared/provenance.nf'
 include { collect_provenance }                   from '../modules/shared/provenance.nf'
 include { resolve_db }                           from '../modules/shared/database.nf'
-include { resolve_flumut_db }                    from '../modules/shared/database.nf'
 include { db_segments }                          from '../modules/shared/database.nf'
 include { consensus_fasta_channel }              from '../modules/shared/sample_id.nf'
 include { samplesheet_channel }                  from '../modules/shared/sample_id.nf'
@@ -45,31 +42,17 @@ workflow NEXTCLADE {
     // Only the Nextclade datasets are read here; this branch never BLASTs or runs SnpEff.
     def db = resolve_db(params.db, ['nextclade'])
 
-    // Resolved up front so a missing or mistyped --flumut_db fails before any sample runs.
-    def flumut_db = params.merge_flumut_mutations ? resolve_flumut_db(params.flumut_db) : null
-
-    // Recorded only when the merge ran, so provenance never implies a conversion that
-    // did not happen.
-    def db_provenance = [
-        database_name:    db.name,
-        database_version: db.version,
-        database_path:    db.root,
-    ]
-    if (flumut_db) {
-        db_provenance += [
-            flumut_database_name:    flumut_db.name,
-            flumut_database_version: flumut_db.version,
-            flumut_database_path:    flumut_db.root,
-        ]
-    }
-
     ch_workflow_metadata = Channel.value([
         workflow.sessionId,
         workflow.runName,
         workflow.manifest.name,
         workflow.manifest.version,
         workflow.start,
-        db_provenance,
+        [
+            database_name:    db.name,
+            database_version: db.version,
+            database_path:    db.root,
+        ],
     ])
 
     ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
@@ -185,16 +168,10 @@ workflow NEXTCLADE {
         if (params.merge_flumut_mutations) {
 
             // --- Step 7: Build the flumut-to-Nextclade coordinate map ---
-            //   source = flumut (lift FROM), target = nextclade (lift ONTO). The reference
-            //   labels come from each bundle's db.yml and are written into the published
-            //   map, so they identify the reference rather than where the bundle sits.
-            ch_source_reference = Channel.value(
-                [flumut_db.nextclade_ref_name, flumut_db.nextclade]
-            )
-            ch_target_reference = Channel.value(
-                [db.nextclade_ref_name, db.nextclade]
-            )
-            coordinate_conversion(ch_source_reference.combine(ch_target_reference))
+            //   source = the flumutdb package's reference (lift FROM), target = the --db
+            //   datasets (lift ONTO). The target label comes from the bundle's db.yml, so the
+            //   published map names the reference rather than where the bundle sits.
+            coordinate_conversion(Channel.value([db.nextclade_ref_name, db.nextclade]))
 
             // --- Step 8: Annotate each per-sample/per-segment VCF with FluMutDB markers ---
             //   Additive: writes a separate *_flumut_annotated.vcf and leaves *_final.vcf

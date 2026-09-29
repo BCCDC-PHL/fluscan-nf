@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Map nucleotide and protein coordinates between two influenza references.
+"""Map nucleotide and protein coordinates from FluMut's reference onto a Nextclade dataset.
 
-Each reference contains uppercase segment directories with one
-``reference.fasta`` and ``genome_annotation.gff3`` per segment.
+The source is FluMutDB's own reference sequences and protein coordinates. The target
+contains uppercase segment directories with one ``reference.fasta`` and
+``genome_annotation.gff3`` per segment.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import argparse
 import csv
 import json
 import math
+import sqlite3
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,13 +22,17 @@ from urllib.parse import unquote
 from Bio import SeqIO
 from Bio.Align import PairwiseAligner, substitution_matrices
 from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
 
 from lib.flu_gene_names import canonical_gene  # noqa: E402,F401  (re-exported for callers)
 
-SCRIPT_VERSION = "3.0.0"
+SCRIPT_VERSION = "3.1.0"
 SCHEMA_VERSION = "2.2"
 
 SEGMENTS = ("PB2", "PB1", "PA", "HA", "NP", "NA", "M", "NS")
+
+# Written into every output as source_reference and used as the alignment FASTA prefix.
+SOURCE_NAME = "flumut"
 
 NT_ALIGNMENT_PARAMS = {
     "mode": "global",
@@ -148,11 +154,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--source-ref-dir",
-        required=True,
+        "--flumut-db",
         type=Path,
-        help="Source reference directory to lift FROM (flumut's Nextclade dataset: "
-        "per-segment reference.fasta + genome_annotation.gff3).",
+        help="FluMutDB sqlite whose reference is lifted FROM (default: the installed flumutdb).",
     )
     parser.add_argument(
         "--target-ref-dir",
@@ -162,11 +166,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "per-segment reference.fasta + genome_annotation.gff3).",
     )
     parser.add_argument("--out-dir", required=True, type=Path)
-    parser.add_argument(
-        "--source-name",
-        required=True,
-        help="Source reference name written to output metadata and filenames.",
-    )
     parser.add_argument(
         "--target-name",
         required=True,
@@ -185,35 +184,43 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def build_map(args: argparse.Namespace) -> None:
-    source_ref_dir = args.source_ref_dir
+    db_path = args.flumut_db
+    if db_path is None:
+        from flumut.DbReader import get_db_file  # deferred so tests passing --flumut-db need no flumut
+        db_path = Path(get_db_file())
+    source = read_flumut_source(db_path)
+    missing = [segment for segment in SEGMENTS if segment not in source]
+    if missing:
+        sys.exit(f"ERROR: {db_path} has no FluMut reference for {', '.join(missing)}")
+
     target_ref_dir = args.target_ref_dir
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     builds: dict[str, SegmentBuild] = {}
     for segment in SEGMENTS:
-        source_dir = source_ref_dir / segment
+        source_record, source_models = source[segment]
         target_dir = target_ref_dir / segment
         builds[segment] = build_segment_map(
             segment=segment,
-            source_record=SeqIO.read(source_dir / "reference.fasta", "fasta"),
+            source_record=source_record,
             target_record=SeqIO.read(target_dir / "reference.fasta", "fasta"),
-            source_models=read_cds_models(source_dir / "genome_annotation.gff3", segment),
+            source_models=source_models,
             target_models=read_cds_models(target_dir / "genome_annotation.gff3", segment),
         )
 
     map_doc = make_map_doc(
-        source_name=args.source_name,
+        source_name=SOURCE_NAME,
         target_name=args.target_name,
         builds=builds,
     )
     write_json(out_dir / "coordinate_map.json", map_doc)
     shard_names = write_segment_shards(out_dir, map_doc)
-    write_nt_tsv(out_dir / "coordinate_map.nt.tsv", args.source_name, builds)
-    write_aa_tsv(out_dir / "coordinate_map.aa.tsv", args.source_name, builds)
-    write_qc_tsv(out_dir / "coordinate_map.qc.tsv", args.source_name, builds)
-    write_nt_alignment_fasta(out_dir / f"{args.source_name}_alignment.fasta", builds)
-    write_aa_alignment_fasta(out_dir / f"{args.source_name}_aa_alignment.fasta", builds)
+    write_nt_tsv(out_dir / "coordinate_map.nt.tsv", SOURCE_NAME, builds)
+    write_aa_tsv(out_dir / "coordinate_map.aa.tsv", SOURCE_NAME, builds)
+    write_qc_tsv(out_dir / "coordinate_map.qc.tsv", SOURCE_NAME, builds)
+    write_nt_alignment_fasta(out_dir / f"{SOURCE_NAME}_alignment.fasta", builds)
+    write_aa_alignment_fasta(out_dir / f"{SOURCE_NAME}_aa_alignment.fasta", builds)
     warn_low_quality_maps(builds)
 
     for produced in (
@@ -222,10 +229,41 @@ def build_map(args: argparse.Namespace) -> None:
         "coordinate_map.nt.tsv",
         "coordinate_map.aa.tsv",
         "coordinate_map.qc.tsv",
-        f"{args.source_name}_alignment.fasta",
-        f"{args.source_name}_aa_alignment.fasta",
+        f"{SOURCE_NAME}_alignment.fasta",
+        f"{SOURCE_NAME}_aa_alignment.fasta",
     ):
         print(f"Wrote {out_dir / produced}")
+
+
+def read_flumut_source(db_path: Path) -> dict[str, tuple[SeqRecord, dict[str, CdsModel]]]:
+    """Segment -> (reference record, gene key -> CDS model) for FluMut's reference in FluMutDB.
+
+    FluMutDB names the M segment's reference `MP`; every other reference is named for its segment.
+    """
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        sequences = conn.execute('SELECT name, sequence FROM "references"').fetchall()
+        annotations = conn.execute(
+            'SELECT reference_name, protein_name, start, "end" FROM annotations'
+        ).fetchall()
+    finally:
+        conn.close()
+
+    parts: dict[str, dict[str, list[tuple[int, int]]]] = {}
+    for reference, protein, start, end in annotations:
+        parts.setdefault(reference, {}).setdefault(canonical_gene(protein), []).append((start, end))
+
+    source: dict[str, tuple[SeqRecord, dict[str, CdsModel]]] = {}
+    for reference, sequence in sequences:
+        segment = "M" if reference == "MP" else reference
+        contig = f"FLUMUT_{segment}"
+        models = {
+            gene: CdsModel(segment=segment, gene=gene, contig=contig, strand="+",
+                           parts=tuple(sorted(gene_parts)))
+            for gene, gene_parts in parts.get(reference, {}).items()
+        }
+        source[segment] = (SeqRecord(Seq(sequence), id=contig), models)
+    return source
 
 
 def parse_gff_attributes(raw: str) -> dict[str, str]:

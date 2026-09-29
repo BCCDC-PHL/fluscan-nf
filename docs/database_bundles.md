@@ -1,9 +1,8 @@
 # Reference database bundles
 
 Every reference the pipeline needs for one reference set lives in a single directory — a
-*bundle* — passed as `--db`. The FluMut coordinate reference is a second, independent
-bundle passed as `--flumut_db`, because it changes far less often and only the optional
-merge step reads it.
+*bundle* — passed as `--db`. The FluMut coordinate reference used by the optional merge
+is not a bundle: it is read from the `flumutdb` conda package.
 
 ```
 nextflow run BCCDC-PHL/fluscan-nf \
@@ -46,7 +45,7 @@ Each workflow validates only what it consumes, so a bundle need not be complete:
 | `SHORT_READ` | `blastn_db.fa` | `snpeff/` — when present, SnpEff annotation, MNV correction and the watchlist scan run; when absent they are skipped and consensus/FluMut still complete |
 | `PAFTOOLS` | `blastn_db.fa`, `snpeff/` | — |
 | `NEXTCLADE` | `nextclade/` (all eight segments) | — |
-| `--merge_flumut_mutations` | `--flumut_db` with `nextclade/` | — |
+| `--merge_flumut_mutations` | `nextclade/` | — |
 
 SnpEff annotation in the short-read workflow is now a property of the bundle rather than
 of a flag. Where you previously omitted `--snpeff_config` to skip it, use a bundle with
@@ -74,7 +73,7 @@ source: NCBI RefSeq NC_007357.1–NC_007364.1
 Quote `version`. Unquoted `2025-07-07` parses as a *date*, not a string, in both the
 YAML reader the pipeline uses and the one that reads the provenance file back.
 
-`nextclade_ref_name` is what appears as `source_reference` / `target_reference` in
+`nextclade_ref_name` is what appears as `target_reference` in
 `aggregate/reference_remap/coordinate_map.json`. It is separate from `name` so a bundle
 can be renamed or relocated on disk without changing labels already written into
 published coordinate maps.
@@ -158,6 +157,5 @@ On macOS that `sed -i` needs an explicit empty backup suffix: `sed -i '' …`.
 `nextclade/` and `blastn_db.fa` are already where they need to be. `db.yml` can be added
 whenever convenient.
 
-Point `--flumut_db` at the FluMut *bundle root*, not at its `nextclade/` subdirectory —
-the reference label comes from the bundle's metadata rather than from the parent
-directory's name. Passing the dataset directory reports the parent to use instead.
+Point `--db` at the *bundle root*, not at its `nextclade/` subdirectory. Passing the
+dataset directory reports the parent to use instead.
