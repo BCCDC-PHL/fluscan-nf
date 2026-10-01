@@ -67,7 +67,7 @@ def _write_dataset(directory: Path, gff3: str) -> Path:
 
 
 def _write_json(path: Path, positions=SUB_POSITIONS, sample: str = "SAMPLE01",
-                qry: dict[int, str] | None = None) -> Path:
+                qry: dict[int, str] | None = None, nuc_to_aa: dict | None = None) -> Path:
     """A minimal nextclade v3 result carrying one substitution per position (qry sets the base)."""
     qry = qry or {}
     substitutions = [
@@ -81,7 +81,7 @@ def _write_json(path: Path, positions=SUB_POSITIONS, sample: str = "SAMPLE01",
             "substitutions": substitutions,
             "deletions":     [],
             "insertions":    [],
-            "nucToAaMuts":   {},
+            "nucToAaMuts":   nuc_to_aa or {},
             "aaDeletions":   [],
             "aaInsertions":  [],
             "frameShifts":   [],
@@ -236,6 +236,36 @@ def test_shared_codon_records_the_single_base_calls(mnv_records):
 def test_lone_substitution_carries_no_mnv_fields(mnv_records):
     info = _info(mnv_records[2])
     assert "MNV_CORRECTED" not in info and "MNV_ORIGINAL_HGVS_P" not in info
+
+
+def _calls(alt_aa: str) -> dict:
+    """nucToAaMuts giving Nextclade's TESTHA call alt_aa for the shared codon at 107/108."""
+    call = [{"cdsName": "TESTHA", "refAa": "Y", "qryAa": alt_aa, "pos": 29}]
+    return {"107": call, "108": call}
+
+
+def test_shared_codon_overrides_a_disagreeing_nextclade_call(tmp_path, dataset):
+    """Nextclade's peptide alignment can gap a codon its nucleotide alignment keeps (HA K345)."""
+    lone = {"400": [{"cdsName": "TESTHA", "refAa": "V", "qryAa": "-", "pos": 126}]}
+    json_path = _write_json(tmp_path / "mnv.json", positions=MNV_POSITIONS, qry=MNV_QRY,
+                            nuc_to_aa=_calls("-") | lone)
+    first, second, third = _records(_run(dataset, json_path, tmp_path / "out")[0])
+    for record in (first, second):
+        assert _hgvs_p(record) == {"TESTLOCUS": "p.Y30A", "HA1": "p.Y29A"}
+        assert "MNV_CORRECTED" in _info(record)
+    assert _info(first)["MNV_ORIGINAL_HGVS_P"] == "TESTLOCUS:p.Y30-|HA1:p.Y29D"
+    # A lone substitution keeps Nextclade's call.
+    assert _hgvs_p(third)["TESTLOCUS"] == "p.V127-"
+
+
+def test_shared_codon_matching_nextclade_is_not_flagged(tmp_path):
+    """MNV_CORRECTED compares against Nextclade's call, not the single-base change."""
+    dataset = _write_dataset(tmp_path / "dataset", GFF3_NO_MATURE)
+    json_path = _write_json(tmp_path / "mnv.json", positions=MNV_POSITIONS[:2], qry=MNV_QRY,
+                            nuc_to_aa=_calls("A"))
+    for record in _records(_run(dataset, json_path, tmp_path / "out")[0]):
+        assert _hgvs_p(record) == {"TESTLOCUS": "p.Y30A"}
+        assert "MNV_CORRECTED" not in _info(record) and "MNV_ORIGINAL_HGVS_P" not in _info(record)
 
 
 def test_mnv_fields_are_declared(tmp_path, dataset, nextclade_json):

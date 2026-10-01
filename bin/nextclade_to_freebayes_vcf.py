@@ -553,8 +553,8 @@ def build_header(chrom: str, ref_len: int, ref_path: str, sample: str) -> str:
         'another substitution; ANN HGVS.p, annotation and impact describe the combined codon">'
     )
     lines.append(
-        '##INFO=<ID=MNV_ORIGINAL_HGVS_P,Number=1,Type=String,Description="HGVS.p each '
-        'multi-substitution codon feature would carry for this variant alone '
+        '##INFO=<ID=MNV_ORIGINAL_HGVS_P,Number=1,Type=String,Description="HGVS.p before codon '
+        'correction: Nextclade\'s call where it made one, otherwise the single-base change '
         '(featureID:hgvs_p pipe-separated)">'
     )
     for fid, number, typ, desc in _FREEBAYES_FORMAT:
@@ -618,15 +618,15 @@ def _ann_field_for_sub(
             ref_aa, alt_aa, aa_pos_1, n_subs = _codon_aa_change(ref_seq, tx, pos_0, qry_subs)
             call = next((c for c in nuc_to_aa.get(str(pos_0), [])
                          if c["cdsName"] == tx["nextclade_cds"]), None)
-            if call:
+            # Nextclade's peptide alignment can gap a codon its nucleotide alignment keeps
+            if call and n_subs == 1:
                 ref_aa, alt_aa = call["refAa"], call["qryAa"]
             entry, hgvs_p = _coding_entry(tx, ref_nt, alt_nt, cds_local_1,
                                           f"{exon_rank}/{exon_count}", ref_aa, alt_aa, aa_pos_1)
             entries.append(entry)
             if n_subs > 1:
                 if call:
-                    # Nextclade translated the whole query codon, so its call is its own original.
-                    before = hgvs_p
+                    before = _hgvs_p(call["refAa"], call["qryAa"], aa_pos_1)
                 else:
                     s_ref, s_alt, s_pos, _ = _codon_aa_change(ref_seq, tx, pos_0, {pos_0: alt_nt})
                     before = _hgvs_p(s_ref, s_alt, s_pos)

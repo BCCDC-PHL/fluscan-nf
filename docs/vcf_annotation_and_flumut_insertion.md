@@ -118,8 +118,9 @@ Rows are sorted by `POS` before return.
 For each substitution the script walks every transcript and appends an `ANN` entry per
 feature it touches (so a base in an overlap region yields several entries):
 
-1. **Inside a main CDS** — take the AA change from `nucToAaMuts` when present, otherwise
-   translate the codon with every substitution in it applied (`_codon_aa_change`). Classify the
+1. **Inside a main CDS** — take the AA change from `nucToAaMuts` when the codon holds this one
+   substitution, otherwise translate the codon with every substitution in it applied
+   (`_codon_aa_change`); see *Substitutions sharing a codon* below. Classify the
    consequence (`_classify_aa_consequence`: `synonymous_variant` / `missense_variant` /
    `stop_gained` / `stop_lost` / `start_lost`, with LOW/MODERATE/HIGH impact) and format
    `HGVS.c` (`c.<n><ref>><alt>`) and `HGVS.p`. `Rank` = exon/exon-count.
@@ -144,12 +145,18 @@ and the `ANN`, `MNV_CORRECTED` and `MNV_ORIGINAL_HGVS_P` `##INFO` definitions.
 
 ### Substitutions sharing a codon
 
-`nucToAaMuts` and `_codon_aa_change` both translate the whole query codon, so every
-substitution in a codon carries the combined change. Where an entry differs from the change
-its substitution would make alone, the row also carries `MNV_CORRECTED` and
-`MNV_ORIGINAL_HGVS_P` (`featureID:HGVS.p` for every feature whose codon holds more than one
-substitution, pipe-separated): the same fields `fix_mnv_codons.py` writes on the PAFTOOLS
-and SHORT_READ VCFs.
+Every substitution in a codon holding more than one carries the combined change, translated
+by `_codon_aa_change` from the nucleotide alignment. Nextclade's own call is not used there:
+its peptide alignment is computed separately and can place a gap on a codon the nucleotide
+alignment keeps (at the H5 cleavage site of North American LPAI viruses it reports `K345-`
+where the sample codon is ACA, Thr).
+
+Where an entry differs from the call made before codon correction — Nextclade's where it
+made one, otherwise the change the substitution would make alone — the row also carries
+`MNV_CORRECTED` and `MNV_ORIGINAL_HGVS_P` (that call as `featureID:HGVS.p`, for every
+feature whose codon holds more than one substitution, pipe-separated). These are the same
+fields, with the same meaning, that `fix_mnv_codons.py` writes on the PAFTOOLS and SHORT_READ
+VCFs.
 
 ---
 

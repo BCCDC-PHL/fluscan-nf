@@ -148,9 +148,11 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 - In the SnpEff-annotated PAFTOOLS and SHORT_READ VCFs, individual SNVs in one
   codon can have incorrect amino-acid annotations until `bin/fix_mnv_codons.py`
   runs; their final VCFs must remain downstream of that step. The Nextclade
-  converter translates each codon with all its substitutions applied (and keeps
-  Nextclade's own call where `nucToAaMuts` has one), writing the same
-  `MNV_CORRECTED`/`MNV_ORIGINAL_HGVS_P` fields itself.
+  converter translates each codon with all its substitutions applied, keeping
+  Nextclade's own `nucToAaMuts` call only for a codon with one substitution, and
+  writes the same `MNV_CORRECTED`/`MNV_ORIGINAL_HGVS_P` fields itself. Nextclade's
+  peptide alignment can gap a codon its nucleotide alignment keeps, so its call
+  must not override a shared codon.
 - `bin/merge_flumut_mutations.py` is the only implementation. It may add
   `FLUMUT=` to matching rows, but must not add, remove, reorder, or otherwise
   rewrite variant rows. The earlier implementation that inserted synthetic rows
