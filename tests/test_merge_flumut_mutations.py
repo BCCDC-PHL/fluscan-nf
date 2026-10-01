@@ -545,23 +545,9 @@ def test_non_substitution_hgvs_p_is_not_reported_as_a_parse_failure(tmp_path, hg
 # MNV provenance
 # ---------------------------------------------------------------------------
 
-def test_mnv_unresolved_rows_are_skipped(tmp_path):
-    """fix_mnv_codons.py sets this flag on rows whose HGVS.p it knows to be wrong but could
-    not correct. Matching a curated marker against one manufactures a false positive."""
-    row = vcf_row(1881, [ann("PB2", "p.E627K")]).replace(BASE_INFO,
-                                                         BASE_INFO + ";MNV_UNRESOLVED")
-    vcf = write_vcf(tmp_path / "in.vcf", [row])
-    cmap = write_coord_map(tmp_path / "map.json", "PB2", {"PB2": identity_map()})
-
-    proc, out = run_script(tmp_path, vcf, cmap, "PB2")
-    assert proc.returncode == 0, proc.stderr
-    assert flumut_fields(out) == [None]
-    assert "MNV_UNRESOLVED" in proc.stderr
-
-
 def test_mnv_corrected_rows_are_still_annotated(tmp_path):
-    """Only the *unresolved* flag suppresses a row; a corrected MNV carries a HGVS.p the
-    pipeline stands behind. The substring must not match the wrong key."""
+    """A corrected MNV carries an HGVS.p the pipeline stands behind, so it is matched like
+    any other row."""
     row = vcf_row(1881, [ann("PB2", "p.E627K")]).replace(BASE_INFO,
                                                          BASE_INFO + ";MNV_CORRECTED")
     vcf = write_vcf(tmp_path / "in.vcf", [row])
@@ -728,7 +714,6 @@ def test_ann_parsing_comes_from_the_shared_module():
 
     assert merge_mod.parse_hgvs_p is aa_markers.parse_hgvs_p
     assert merge_mod.ann_entries is aa_markers.ann_entries
-    assert merge_mod.has_info_flag is aa_markers.has_info_flag
     assert merge_mod.aa_changes_from_info is aa_markers.aa_changes_from_info
 
 
@@ -780,14 +765,3 @@ def test_aa_changes_keeps_one_entry_per_feature_of_the_same_gene():
 ])
 def test_parse_hgvs_p(hgvs_p, expected):
     assert merge_mod.parse_hgvs_p(hgvs_p) == expected
-
-
-@pytest.mark.parametrize("info,key,expected", [
-    ("NS=1;MNV_UNRESOLVED;DP=3", "MNV_UNRESOLVED", True),
-    ("NS=1;MNV_UNRESOLVED=1", "MNV_UNRESOLVED", True),
-    ("NS=1;MNV_CORRECTED;DP=3", "MNV_UNRESOLVED", False),
-    # A substring test would match this; a token test must not.
-    ("NS=1;ANN=A|x|y|MNV_UNRESOLVED", "MNV_UNRESOLVED", False),
-])
-def test_has_info_flag(info, key, expected):
-    assert merge_mod.has_info_flag(info, key) is expected

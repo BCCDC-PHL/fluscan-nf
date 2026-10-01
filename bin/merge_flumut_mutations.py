@@ -38,7 +38,6 @@ from lib.aa_markers import (  # noqa: E402
     HGVS_P_RE_3LETTER,
     aa_changes_from_info,
     ann_entries,
-    has_info_flag,
     parse_hgvs_p,
 )
 from lib.flu_gene_names import canonical_gene  # noqa: E402
@@ -389,14 +388,7 @@ def annotate_vcf(vcf_path: str, segment: str, seg_map: dict, gene_maps: dict, lo
     markers: set = set()
     unmapped_genes: set = set()
     unparsed_hgvs_p: list[str] = []
-    mnv_unresolved = 0
     for info in df["INFO"].astype(str):
-        if has_info_flag(info, "MNV_UNRESOLVED"):
-            # fix_mnv_codons.py left this row's HGVS.p at a value already determined to
-            # be wrong; matching a curated marker against it would be a false positive.
-            mnv_unresolved += 1
-            info_out.append(info)
-            continue
         field = row_flumut_field(info, gene_maps, lookup, want_effects,
                                  alias_index=alias_index,
                                  subunit_parent_genes=subunit_parent_genes,
@@ -409,11 +401,6 @@ def annotate_vcf(vcf_path: str, segment: str, seg_map: dict, gene_maps: dict, lo
             info_out.append(f"{info};{field}")
         else:
             info_out.append(info)
-
-    if mnv_unresolved:
-        log.warning("%d row(s) carry the MNV_UNRESOLVED flag; their HGVS.p is known to be "
-                    "wrong, so they were skipped rather than matched against FluMutDB",
-                    mnv_unresolved)
 
     if unparsed_hgvs_p:
         # Without this an unhandled HGVS.p spelling is indistinguishable from "this VCF has

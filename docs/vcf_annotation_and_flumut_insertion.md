@@ -8,7 +8,7 @@ freebayes-style VCF and tag the curated FluMutDB markers among them:
 | [`bin/nextclade_to_freebayes_vcf.py`](../bin/nextclade_to_freebayes_vcf.py) | Convert a Nextclade JSON into one freebayes-format VCF per sample with snpEff-style `ANN=` annotations. |
 | [`bin/merge_flumut_mutations.py`](../bin/merge_flumut_mutations.py) | Add a `FLUMUT=` INFO field to rows whose AA change matches a FluMutDB marker. Run by the `merge_flumut_mutations` process. |
 | [`bin/lib/flu_gene_names.py`](../bin/lib/flu_gene_names.py) | The canonical gene-key aliases (`NS-1`→`NS1`, `NS2`/`NS-2`→`NEP`), shared by the coordinate map builder and the merge so the two cannot drift. |
-| [`bin/lib/aa_markers.py`](../bin/lib/aa_markers.py) | `ANN=` extraction, both HGVS.p spellings, and the `MNV_UNRESOLVED` flag test, shared by the merge and the watchlist scanner for the same reason. |
+| [`bin/lib/aa_markers.py`](../bin/lib/aa_markers.py) | `ANN=` extraction and both HGVS.p spellings, shared by the merge and the watchlist scanner for the same reason, plus the `MNV_UNRESOLVED` flag test the scanner uses. |
 
 Both VCF-writing scripts share the I/O helpers in [`bin/lib/tools.py`](../bin/lib/tools.py),
 which round-trip a VCF byte-for-byte. `bin/` holds only entry points — Nextflow puts it on
@@ -267,7 +267,7 @@ one are independent.
 
 ### How it runs (`main`)
 
-Steps 1 and 2 run once per call; `annotate_vcf` repeats steps 3 to 6 for each `--vcf`.
+Steps 1 and 2 run once per call; `annotate_vcf` repeats steps 3 to 5 for each `--vcf`.
 
 1. **Load this segment's block** from the coordinate map (`load_segment_map`), warning if it
    carries `stale_annotation`.
@@ -279,12 +279,7 @@ Steps 1 and 2 run once per call; `annotate_vcf` repeats steps 3 to 6 for each `-
    pair columns 1:1, so the inverse is well defined; a collision would be warned about and
    resolved to the lowest source position.
 3. **Read the VCF** with `tools.read_vcf` → DataFrame + header lines.
-4. **Skip rows flagged `MNV_UNRESOLVED`** (`has_info_flag`). `fix_mnv_codons.py` sets that
-   flag on PAFTOOLS and SHORT_READ VCFs when it identified a multi-SNV codon but could not
-   compute the combined change (the Nextclade converter always has the reference codon and
-   never sets it), leaving the row's `HGVS.p` at a value the pipeline has already determined to be wrong;
-   matching a curated marker against it would manufacture a false positive.
-5. **Per row, per `ANN` entry** (`row_flumut_field` → `aa_changes_from_info`): take
+4. **Per row, per `ANN` entry** (`row_flumut_field` → `aa_changes_from_info`): take
    `Gene_Name` and `Feature_ID` — resolved as described under *Gene names* below — and the
    `HGVS.p` substitution, skipping synonymous changes and entries with no `HGVS.p`. Both the
    1-letter (`p.E627K`, what the converter emits) and 3-letter (`p.Glu627Lys`, snpEff's
@@ -297,7 +292,7 @@ Steps 1 and 2 run once per call; `annotate_vcf` repeats steps 3 to 6 for each `-
    mutation count that classifies it as direct or associated; `make_marker_lookup` folds
    those rows into per-mutation effect sets. Every join is a `LEFT JOIN` so that detecting a
    mutation never depends on it having a published effect.
-6. **Write** with `tools.write_vcf`, inserting the `##INFO=<ID=FLUMUT…>` definition
+5. **Write** with `tools.write_vcf`, inserting the `##INFO=<ID=FLUMUT…>` definition
    immediately before the `#CHROM` line.
 
 `ref_seq` is deliberately **not** part of the match: a marker is defined by its alt allele,
@@ -415,7 +410,7 @@ recording which version of the list produced it. That breaks reproducibility for
 that is already available, per sample, in its own file.
 
 What the two legitimately share is the mechanics of reading `ANN=` — HGVS.p parsing in both
-spellings, gene canonicalisation, and the `MNV_UNRESOLVED` skip. Those live once, in
+spellings and gene canonicalisation. Those live once, in
 [`bin/lib/aa_markers.py`](../bin/lib/aa_markers.py), for the reason recorded under
 `flu_gene_names.py`: a second copy is free to drift, and the drift is silent.
 

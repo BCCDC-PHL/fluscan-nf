@@ -160,9 +160,8 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   `merge_flumut_mutations_v2.py`); no `_v2` suffix should reappear. The
   coordinate map's `target_cds` block existed only for the old script and is
   gone too.
-- Rows flagged `MNV_UNRESOLVED` by `bin/fix_mnv_codons.py` are skipped, not
-  matched: their HGVS.p is known to be wrong, so a marker hit there would be a
-  false positive. Every row of a codon holding more than one substitution
+- The merge reads only Nextclade VCFs, which never carry `MNV_UNRESOLVED`, so it
+  has no skip for that flag. Every row of a codon holding more than one substitution
   carries the same combined HGVS.p and so the same `FLUMUT=` entry — downstream
   marker counts must de-duplicate.
 - **Watchlist hits never enter the VCF.** `FLUMUT=` comes from a versioned
@@ -170,7 +169,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   is a CSV we edit, and merging its hits in would make the same consensus
   produce different VCFs depending on that file. Hits go to
   `*_watchlist_hits.tsv`. The shared part — `ANN=` parsing, both HGVS.p
-  spellings, gene canonicalisation, the `MNV_UNRESOLVED` skip — lives once in
+  spellings, gene canonicalisation, the watchlist's `MNV_UNRESOLVED` skip — lives once in
   `bin/lib/aa_markers.py`; do not let a consumer grow its own copy.
 - A watchlist `gene` is a **protein**, not a segment, and gene resolution falls
   back from ANN `Gene_Name` to `Feature_ID` but **never** from a parent gene to
