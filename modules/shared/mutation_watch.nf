@@ -16,7 +16,7 @@ def watch_scans(sample_id, segments, vcfs, watchlists) {
     [segments, [vcfs].flatten()].transpose().collectMany { segment, vcf ->
         [watchlists].flatten().collect { watchlist ->
             def list_name = watchlist.baseName.replaceAll(/_watchlist$/, '')
-            [vcf, watchlist, segment, [sample_id, segment, list_name].findAll().join('_')]
+            [vcf, watchlist, segment, "${sample_id}_${segment}_${list_name}"]
         }
     }
 }

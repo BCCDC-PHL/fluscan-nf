@@ -42,8 +42,9 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   existing VCF rows. The markers and the source coordinates come from the same
   package, so they cannot drift apart.
 - `mutation_watch` scans each final VCF against the custom watchlists in
-  `--watchlist_dir` (default `assets/watchlists/`) and publishes exactly one
-  file, `*_watchlist_hits.tsv` (header-only when nothing matches). It runs in all
+  `--watchlist_dir` (default `assets/watchlists/`) and publishes one
+  `*_watchlist_hits.tsv` per final VCF and watchlist (header-only when nothing
+  matches), named by segment from the VCF filename. It runs in all
   three workflows and is independent of `--merge_flumut_mutations`.
 
 ## Repository map

@@ -134,13 +134,11 @@ workflow SHORT_READ {
                 ch_watchlists = Channel.fromPath(
                     params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
                 )
-                // [sample_id, vcfs] -> [sample_id, [segments], [vcfs]]; each segment is carried
-                // as '' because short-read post_process_vcf emits one VCF per sample, not per
-                // segment, and an invented label would be reported in the output.
+                // [sample_id, vcfs] -> [sample_id, [segments], [vcfs]]; final VCFs end __{SEGMENT}_final.vcf
                 ch_watch_in = post_process_vcf.out.vcf
                     .map { sample_id, vcfs ->
                         vcfs = [vcfs].flatten()
-                        [sample_id, vcfs.collect { '' }, vcfs]
+                        [sample_id, vcfs.collect { it.baseName.split('__')[-1].replaceFirst(/_final$/, '') }, vcfs]
                     }
                 mutation_watch(ch_watch_in, ch_watchlists.collect())
             }
