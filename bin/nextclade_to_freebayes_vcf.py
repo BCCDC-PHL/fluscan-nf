@@ -143,11 +143,12 @@ def load_gff3(gff_path: str) -> tuple[list, list]:
     """Parse GFF3; return (genes, transcripts).
 
     genes: [{gene_name, gene_id, begin_0, end_0}]
-    transcripts: [{transcript_kind, gene_name, gene_id, feature_id, protein_id,
+    transcripts: [{transcript_kind, gene_name, gene_id, feature_id, protein_id, nextclade_cds,
                    strand, segments, is_mature, warnings, cds_length, aa_length}]
 
     segments is a sorted list of (begin_0, end_0) half-open intervals.
     protein_id matches Nextclade's cdsName key in nucToAaMuts/aaSubstitutions.
+    nextclade_cds is the cdsName whose nucToAaMuts call annotates the transcript ("" for none).
     For main CDS transcripts, feature_id == gene_id (locus_tag).
     For mature peptide transcripts, feature_id == protein_id.
     aa_length excludes the stop codon (cds_length // 3 - 1).
@@ -230,6 +231,7 @@ def load_gff3(gff_path: str) -> tuple[list, list]:
             "gene_id":     meta["gene_id"],
             "feature_id":  meta["gene_id"],    # Feature_ID = locus_tag, matching NCBI VCF shape
             "protein_id":  meta["protein_id"], # matches Nextclade cdsName
+            "nextclade_cds": meta["protein_id"],
             "strand":      meta["strand"],
             "segments":    segs_s,
             "is_mature":   False,
@@ -247,6 +249,7 @@ def load_gff3(gff_path: str) -> tuple[list, list]:
             "gene_id":     meta["gene_id"],
             "feature_id":  me["protein_id"],   # mature peptide uses its own protein_id
             "protein_id":  me["protein_id"],
+            "nextclade_cds": "",
             "strand":      me["strand"],
             "segments":    [(me["begin_0"], me["end_0"])],
             "is_mature":   True,
@@ -563,15 +566,20 @@ def build_header(chrom: str, ref_len: int, ref_path: str, sample: str) -> str:
 # Per-variant ANN field builders
 # ---------------------------------------------------------------------------
 
+def _hgvs_p(ref_aa: str, alt_aa: str, aa_pos_1: int) -> str:
+    annotation, _ = _classify_aa_consequence(ref_aa, alt_aa, aa_pos_1)
+    if annotation == "synonymous_variant":
+        return _format_hgvs_p_syn(ref_aa, aa_pos_1)
+    return _format_hgvs_p_sub(ref_aa, aa_pos_1, alt_aa)
+
+
 def _coding_entry(
-    tx: dict, ref_nt: str, alt_nt: str, cds_local_1: int, rank_str: str, aa_change: tuple,
+    tx: dict, ref_nt: str, alt_nt: str, cds_local_1: int, rank_str: str,
+    ref_aa: str, alt_aa: str, aa_pos_1: int,
 ) -> tuple[str, str]:
     """Return (ANN entry, HGVS.p) for a substitution inside a coding transcript."""
-    ref_aa, alt_aa, aa_pos_1 = aa_change[:3]
     annotation, impact = _classify_aa_consequence(ref_aa, alt_aa, aa_pos_1)
-    hgvs_p = (_format_hgvs_p_syn(ref_aa, aa_pos_1)
-              if annotation == "synonymous_variant"
-              else _format_hgvs_p_sub(ref_aa, aa_pos_1, alt_aa))
+    hgvs_p = _hgvs_p(ref_aa, alt_aa, aa_pos_1)
     entry = _build_ann_entry(
         allele=alt_nt, annotation=annotation, impact=impact,
         gene_name=tx["gene_name"], gene_id=tx["gene_id"],
@@ -599,69 +607,51 @@ def _ann_field_for_sub(
     """Return the 'ANN=...' INFO sub-field for a nucleotide substitution, followed by
     MNV_CORRECTED/MNV_ORIGINAL_HGVS_P when a shared codon changes its annotation."""
     entries: list[str] = []
-    # (entry, single-base entry, single-base HGVS.p, feature) for codons holding 2+ substitutions
-    mnv: list[tuple[str, str, str, str]] = []
+    originals: list[str] = []   # feature:HGVS.p before codon correction, per codon with 2+ substitutions
+    corrected = False
 
-    def add_coding(tx, cds_local_1, rank_str, aa_change, single_base):
-        entry, _ = _coding_entry(tx, ref_nt, alt_nt, cds_local_1, rank_str, aa_change)
-        entries.append(entry)
-        if aa_change[3] > 1:
-            mnv.append((entry, *_coding_entry(tx, ref_nt, alt_nt, cds_local_1, rank_str, single_base),
-                        tx["feature_id"]))
-
-    # --- 1. Main CDS transcripts: in-CDS or intronic ---
+    # --- 1. Coding, intronic, or upstream of a mature peptide ---
+    # load_gff3 lists every CDS before any mature peptide, which keeps the ANN order.
     for tx in transcripts:
-        if tx["is_mature"]:
-            continue
         cds_local_1, exon_rank, exon_count = _cds_pos_from_genomic(tx, pos_0)
         if cds_local_1 is not None:
-            rank_str = f"{exon_rank}/{exon_count}"
-            codon = _codon_aa_change(ref_seq, tx, pos_0, qry_subs)
-            # Nextclade's own call translates the query codon, so it needs no correction.
-            aa_changes = [c for c in nuc_to_aa.get(str(pos_0), [])
-                          if c["cdsName"] == tx["protein_id"]]
-            if aa_changes:
-                ch = aa_changes[0]
-                codon = (ch["refAa"], ch["qryAa"], ch["pos"] + 1, codon[3])
-                single_base = codon
-            else:
-                single_base = _codon_aa_change(ref_seq, tx, pos_0, {pos_0: alt_nt})
-            add_coding(tx, cds_local_1, rank_str, codon, single_base)
+            ref_aa, alt_aa, aa_pos_1, n_subs = _codon_aa_change(ref_seq, tx, pos_0, qry_subs)
+            call = next((c for c in nuc_to_aa.get(str(pos_0), [])
+                         if c["cdsName"] == tx["nextclade_cds"]), None)
+            if call:
+                ref_aa, alt_aa = call["refAa"], call["qryAa"]
+            entry, hgvs_p = _coding_entry(tx, ref_nt, alt_nt, cds_local_1,
+                                          f"{exon_rank}/{exon_count}", ref_aa, alt_aa, aa_pos_1)
+            entries.append(entry)
+            if n_subs > 1:
+                if call:
+                    # Nextclade translated the whole query codon, so its call is its own original.
+                    before = hgvs_p
+                else:
+                    s_ref, s_alt, s_pos, _ = _codon_aa_change(ref_seq, tx, pos_0, {pos_0: alt_nt})
+                    before = _hgvs_p(s_ref, s_alt, s_pos)
+                originals.append(f"{tx['feature_id']}:{before}")
+                corrected = corrected or before != hgvs_p
             continue
 
-        # Check for intron position in spliced transcripts
-        intron = _intron_info(tx, pos_0)
-        if intron is not None:
-            cds_end_1, offset, intron_rank, n_introns = intron
-            rank_str = f"{intron_rank}/{n_introns}"
-            hgvs_c = _format_hgvs_c_intron(cds_end_1, offset, ref_nt, alt_nt)
-            entries.append(_build_ann_entry(
-                allele=alt_nt, annotation="intron_variant", impact="MODIFIER",
-                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
-                feature_id=tx["feature_id"],
-                transcript_biotype="protein_coding",
-                hgvs_c=hgvs_c, hgvs_p="",
-                cds_pos=0, cds_len=0, aa_pos=0, aa_len=0,
-                rank_str=rank_str,
-            ))
-
-    # --- 2. Mature peptide transcripts: in-region or upstream ---
-    for tx in transcripts:
         if not tx["is_mature"]:
-            continue
-        seg_begin = tx["segments"][0][0]
-        seg_end   = tx["segments"][-1][1]
-
-        if seg_begin <= pos_0 < seg_end:
-            cds_local_1, exon_rank, exon_count = _cds_pos_from_genomic(tx, pos_0)
-            if cds_local_1 is None:
-                continue
-            rank_str = f"{exon_rank}/{exon_count}"
-            add_coding(tx, cds_local_1, rank_str,
-                       _codon_aa_change(ref_seq, tx, pos_0, qry_subs),
-                       _codon_aa_change(ref_seq, tx, pos_0, {pos_0: alt_nt}))
-        elif pos_0 < seg_begin:
-            distance = seg_begin - pos_0
+            # Check for intron position in spliced transcripts
+            intron = _intron_info(tx, pos_0)
+            if intron is not None:
+                cds_end_1, offset, intron_rank, n_introns = intron
+                rank_str = f"{intron_rank}/{n_introns}"
+                hgvs_c = _format_hgvs_c_intron(cds_end_1, offset, ref_nt, alt_nt)
+                entries.append(_build_ann_entry(
+                    allele=alt_nt, annotation="intron_variant", impact="MODIFIER",
+                    gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+                    feature_id=tx["feature_id"],
+                    transcript_biotype="protein_coding",
+                    hgvs_c=hgvs_c, hgvs_p="",
+                    cds_pos=0, cds_len=0, aa_pos=0, aa_len=0,
+                    rank_str=rank_str,
+                ))
+        elif pos_0 < tx["segments"][0][0]:
+            distance = tx["segments"][0][0] - pos_0
             hgvs_c   = f"c.-{distance}{ref_nt}>{alt_nt}"
             entries.append(_build_ann_entry(
                 allele=alt_nt, annotation="upstream_gene_variant", impact="MODIFIER",
@@ -673,7 +663,7 @@ def _ann_field_for_sub(
                 distance=str(distance), warnings=tx["warnings"],
             ))
 
-    # --- 3. Upstream entries for main CDS transcripts ---
+    # --- 2. Upstream entries for main CDS transcripts ---
     for tx in transcripts:
         if tx["is_mature"]:
             continue
@@ -691,7 +681,7 @@ def _ann_field_for_sub(
                 distance=str(distance),
             ))
 
-    # --- 4. Intergenic (when outside all gene boundaries) ---
+    # --- 3. Intergenic (when outside all gene boundaries) ---
     if not _is_in_gene(genes, pos_0):
         gname, gid, fid = _intergenic_name(genes, pos_0)
         entries.append(_build_ann_entry(
@@ -706,9 +696,8 @@ def _ann_field_for_sub(
     if not entries:
         return ""
     ann = "ANN=" + ",".join(entries)
-    if any(entry != single for entry, single, _, _ in mnv):
-        original = "|".join(f"{feature}:{hgvs_p}" for _, _, hgvs_p, feature in mnv)
-        ann += f";MNV_CORRECTED;MNV_ORIGINAL_HGVS_P={original}"
+    if corrected:
+        ann += ";MNV_CORRECTED;MNV_ORIGINAL_HGVS_P=" + "|".join(originals)
     return ann
 
 
