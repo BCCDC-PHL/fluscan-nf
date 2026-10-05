@@ -28,9 +28,10 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 - In FASTA mode, `FASTA_PREP` (`workflows/fasta-prep.nf`) hashes, cleans and
   QC-aggregates the consensus input and runs FluMut once, then hands the cleaned
   FASTAs and their provenance records to both branches.
-  - `PAFTOOLS` selects references with BLAST, aligns each segment with
-    minimap2, calls differences with `paftools.js`, sorts and annotates VCFs,
-    converts them to the common VCF shape, and corrects MNV codons.
+  - `PAFTOOLS` selects references with BLAST, then one `paftools_variants`
+    task per sample aligns each segment with minimap2, calls differences with
+    `paftools.js`, annotates with SnpEff, converts to the common VCF shape, and
+    corrects MNV codons.
   - `NEXTCLADE` batches samples by segment, runs Nextclade once per segment,
     splits per-sample results, and converts JSON to the common VCF shape,
     annotating substitutions that share a codon with the combined change.
@@ -276,8 +277,8 @@ published filenames/content. Use `-profile conda`; `conda.useMamba` is enabled.
   starts with `hash_files` (`modules/shared/hash_files.nf`, aliased to
   `short_read_hash_files` in SHORT_READ, run by `FASTA_PREP` for the FASTA
   branches). The collection chains are inner joins,
-  and `prepare_consensus`, `blastn` and `paftools_align` all run
-  `errorStrategy 'ignore'` — so a sample failing any of them publishes no
+  and `prepare_consensus` and `blastn` both run
+  `errorStrategy 'ignore'` — so a sample failing either publishes no
   provenance file, losing its input hash along with everything else. Use
   `join(..., remainder: true)` with a null guard
   (the pattern in `workflows/nextclade.nf`) if that record must survive.
@@ -305,9 +306,6 @@ published filenames/content. Use `-profile conda`; `conda.useMamba` is enabled.
 - The GitHub Actions test path is legacy and short-read-only. It references an
   absent output-checking script, and `--db` now needs a bundle directory that
   nothing in CI provisions; reconcile it with current code before relying on CI.
-- The pipeline's process scripts assume GNU userland: `grep -oP`, `sed -i`
-  without a suffix, `sed` with `\S`, and bash 4+ `${VAR,,}`. They do not run on
-  a stock macOS shell; test workflow changes on Linux or in a container.
-- Known documentation drift includes the PAFTOOLS aggregate filename. Executable
-  code writes `aggregate/paftools_qc_summary.tsv`; fix code/docs together when
-  touching these areas.
+- The pipeline's process scripts assume GNU userland: `sed -i` without a
+  suffix, `sed` with `\S`, and bash 4+ `${VAR,,}`. They do not run on a stock
+  macOS shell; test workflow changes on Linux or in a container.

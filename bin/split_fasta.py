@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Split a multi-segment influenza FASTA into per-segment files, or combine them back.
+"""Split a multi-segment influenza FASTA into per-segment files.
 
-Split:  fasta_splitter.py split  in.fasta          → in_PB2.s.fasta, in_HA.s.fasta, …
-Combine: fasta_splitter.py combine in_*.s.fasta    → in.fasta
+split_fasta.py split in.fasta  ->  in_PB2.s.fasta, in_HA.s.fasta, …
 """
 
 import argparse
@@ -15,12 +14,7 @@ SEGMENTS = ("PB2", "PB1", "PA", "HA", "NP", "NA", "M", "NS")
 
 
 def parse_segment(header: str) -> str | None:
-    """Extract the segment name from a FASTA header.
-
-    TODO: Customise this regex/logic to match your header format.
-    Currently looks for one of the 8 segment names as a word in the header.
-    Returns the segment string (e.g. "HA") or None if not found.
-    """
+    """Return the segment named by the header's last `_`/`|` field (e.g. "HA"), or None."""
     for seg in SEGMENTS:
         if re.search(rf"[_\|]{seg}$", header, re.IGNORECASE):
             return seg.upper()
@@ -49,22 +43,6 @@ def split(input_fasta: Path) -> None:
         print(f"  {seg}: {n} record(s) → {stem}_{seg}.s.fasta")
 
 
-def combine(input_fastas: list[Path], out_dir: Path) -> None:
-    """Merge ``*_{segment}.s.fasta`` files back into a single FASTA.
-
-    The output filename is derived by stripping the ``_{segment}.s`` suffix
-    from the first file's name.
-    """
-    # Derive output name from the first file: drop _{SEGMENT}.s
-    first_stem = input_fastas[0].stem                          # e.g. "sample_HA.s"
-    base = re.sub(r"_(" + "|".join(SEGMENTS) + r")\.s$", "", first_stem, flags=re.IGNORECASE)
-    out_path = out_dir / f"{base}.fasta"
-
-    records = [rec for f in input_fastas for rec in SeqIO.parse(f, "fasta")]
-    SeqIO.write(records, out_path, "fasta")
-    print(f"  {len(records)} record(s) → {out_path}")
-
-
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="mode", required=True)
@@ -72,20 +50,8 @@ def main() -> None:
     sp = sub.add_parser("split", help="Split one FASTA into per-segment files")
     sp.add_argument("input", type=Path, help="Input multi-record FASTA")
 
-    cp = sub.add_parser("combine", help="Combine *.s.fasta files into one FASTA")
-    cp.add_argument("inputs", type=Path, nargs="+", help="Input *.s.fasta files")
-    cp.add_argument("-o", "--outdir", type=Path, default=None,
-                    help="Output directory (default: same as first input file)")
-
-    args = p.parse_args()
-
-    if args.mode == "split":
-        split(args.input)
-    else:
-        out_dir = args.outdir or args.inputs[0].parent
-        combine(args.inputs, out_dir)
+    split(p.parse_args().input)
 
 
 if __name__ == "__main__":
     main()
-

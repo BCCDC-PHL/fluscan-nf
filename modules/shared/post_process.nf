@@ -1,7 +1,7 @@
-// shared/post_process.nf - MNV codon correction applied to SnpEff-annotated VCFs (PAFTOOLS and SHORT_READ)
+// shared/post_process.nf - MNV codon correction applied to SHORT_READ's SnpEff-annotated VCFs
 
 // Processes all segments of one sample in one task.
-// VCF files named {sample_id}__{ref}__{subtype}__{segment}_paf.vcf;
+// VCF files named {sample_id}__{ref}__{subtype}__{segment}.vcf;
 // references named {sample_id}_ref_{segment}.s.fasta — matched by segment in the loop.
 process post_process_vcf {
     tag { sample_id }
@@ -18,7 +18,7 @@ process post_process_vcf {
     tuple val(sample_id), path("${sample_id}_post_process_vcf_provenance.yml"), emit: provenance
 
     script:
-    def min_af = params.mnv_min_af ?: 0.5
+    def min_af = params.mnv_min_af
     def parallel_jobs = task.cpus ?: 1
     workflow = task.ext.workflow ?: "unknown_workflow"
     """
@@ -42,7 +42,6 @@ min_af="\$3"
 
 vcf_basename=\$(basename "\$vcf_file" .vcf)
 segment="\${vcf_basename##*__}"
-segment="\${segment%_paf}"
 reference_fa="reference/\${sample_id}_ref_\${segment}.s.fasta"
 
 echo "Processing \$vcf_file with min_af=\${min_af}"

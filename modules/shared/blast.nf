@@ -40,10 +40,8 @@ process blastn {
     path(blast_db)
 
     output:
-    tuple val(sample_id), path("${sample_id}*blastn.tsv"), emit: raw
-    tuple val(sample_id), path("${sample_id}*filter.tsv"), path("${sample_id}*fasta"), emit: main
+    path("${sample_id}*.tsv")    // declared so publishDir sees them; nothing reads them
     tuple val(sample_id), path("${sample_id}*_ref.fasta"), emit: ref
-    path("${sample_id}*filter.tsv"), emit: filter
     tuple val(sample_id), path("${sample_id}-*-provenance.yml"), emit: provenance
 
     script:

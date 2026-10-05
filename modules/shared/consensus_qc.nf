@@ -46,8 +46,6 @@ process split_fasta {
 
     errorStrategy 'ignore'
 
-    //publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}_s_*.fasta", mode: 'copy'
-
     input:
     tuple val(sample_id), path(fasta)
 
