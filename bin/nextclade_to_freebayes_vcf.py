@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert nextclade JSON output to a freebayes-format VCF with snpEff-compatible ANN= annotations.
+"""Convert nextclade JSON output to freebayes-format VCFs with snpEff-compatible ANN= annotations.
 
 Reads a per-segment GFF3 annotation (the same file Nextclade consumed) to resolve CDS
 structure, then annotates each variant with per-transcript HGVS.c / HGVS.p entries for
@@ -11,19 +11,21 @@ Handles overlapping influenza ORFs (M1/M2, NS1/NEP, PB1/PB1-F2, PA/PA-X) and
 spliced CDSes (M2, NEP, PA-X) natively from GFF3 segment data.
 
 Requires:
-  -i    Nextclade v3 JSON (per-segment)
-  -d    Nextclade reference dataset directory (must contain reference.fasta and genome_annotation.gff3)
+  -i        Nextclade v3 JSON for one segment, any number of samples
+  -d        Nextclade reference dataset directory (must contain reference.fasta and genome_annotation.gff3)
+  --suffix  each sample's VCF is written to <seqName><suffix>
 
---output-no-mature writes a second VCF alongside the first, carrying the same records but
-no mature-peptide ANN entries: HA is annotated as HA0 only, with no HA1/HA2 entries.
+A sequence Nextclade could not align gets no VCF. --no-mature-suffix writes a second VCF
+per sample, carrying the same records but no mature-peptide ANN entries: HA is annotated
+as HA0 only, with no HA1/HA2 entries.
 
-Pipeline position: after nextclade run, before fix_mnv_codons.py.
+Substitutions sharing a codon are annotated with the combined codon change; rows whose
+annotation differs from the single-base one carry MNV_CORRECTED and MNV_ORIGINAL_HGVS_P.
 """
 
 import argparse
 import json
 import logging
-import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -141,11 +143,12 @@ def load_gff3(gff_path: str) -> tuple[list, list]:
     """Parse GFF3; return (genes, transcripts).
 
     genes: [{gene_name, gene_id, begin_0, end_0}]
-    transcripts: [{transcript_kind, gene_name, gene_id, feature_id, protein_id,
+    transcripts: [{transcript_kind, gene_name, gene_id, feature_id, protein_id, nextclade_cds,
                    strand, segments, is_mature, warnings, cds_length, aa_length}]
 
     segments is a sorted list of (begin_0, end_0) half-open intervals.
     protein_id matches Nextclade's cdsName key in nucToAaMuts/aaSubstitutions.
+    nextclade_cds is the cdsName whose nucToAaMuts call annotates the transcript ("" for none).
     For main CDS transcripts, feature_id == gene_id (locus_tag).
     For mature peptide transcripts, feature_id == protein_id.
     aa_length excludes the stop codon (cds_length // 3 - 1).
@@ -228,6 +231,7 @@ def load_gff3(gff_path: str) -> tuple[list, list]:
             "gene_id":     meta["gene_id"],
             "feature_id":  meta["gene_id"],    # Feature_ID = locus_tag, matching NCBI VCF shape
             "protein_id":  meta["protein_id"], # matches Nextclade cdsName
+            "nextclade_cds": meta["protein_id"],
             "strand":      meta["strand"],
             "segments":    segs_s,
             "is_mature":   False,
@@ -245,6 +249,7 @@ def load_gff3(gff_path: str) -> tuple[list, list]:
             "gene_id":     meta["gene_id"],
             "feature_id":  me["protein_id"],   # mature peptide uses its own protein_id
             "protein_id":  me["protein_id"],
+            "nextclade_cds": "",
             "strand":      me["strand"],
             "segments":    [(me["begin_0"], me["end_0"])],
             "is_mature":   True,
@@ -332,10 +337,11 @@ def _cds_to_genomic(cds_pos_0: int, segments: list, strand: str) -> Optional[int
     return None
 
 
-def _synonymous_aa_change(ref_seq: str, tx: dict, pos_0: int, ref_nt: str, alt_nt: str) -> tuple[str, str, int]:
-    """Return (refAa, altAa, aa_pos_1) by direct codon translation from the reference.
+def _codon_aa_change(ref_seq: str, tx: dict, pos_0: int, qry_subs: dict[int, str]) -> tuple[str, str, int, int]:
+    """Return (refAa, altAa, aa_pos_1, n_subs) for the codon holding pos_0, translated with
+    every substitution in qry_subs applied; n_subs counts the substitutions inside that codon.
 
-    Falls back to ('X','X',0) when the codon cannot be determined (e.g. minus strand,
+    Falls back to ('X','X',0,1) when the codon cannot be determined (e.g. minus strand,
     segment-boundary ambiguity, or out-of-range position).
     """
     segs   = tx["segments"]
@@ -350,25 +356,21 @@ def _synonymous_aa_change(ref_seq: str, tx: dict, pos_0: int, ref_nt: str, alt_n
             break
         running += (e - b)
     if cds_local_0 is None:
-        return "X", "X", 0
+        return "X", "X", 0, 1
 
-    codon_idx    = cds_local_0 // 3
-    codon_offset = cds_local_0 % 3
-    aa_pos_1     = codon_idx + 1
+    codon_idx = cds_local_0 // 3
+    aa_pos_1  = codon_idx + 1
 
     # Genomic positions for all 3 codon bases
     gpos = [_cds_to_genomic(codon_idx * 3 + i, segs, strand) for i in range(3)]
-    if None in gpos:
-        return "X", "X", aa_pos_1
+    if None in gpos or strand != "+":
+        # minus strand reads the codon reversed; just fall back
+        return "X", "X", aa_pos_1, 1
 
-    if strand == "+":
-        ref_codon = "".join(ref_seq[g] for g in gpos)
-        alt_codon = ref_codon[:codon_offset] + alt_nt + ref_codon[codon_offset + 1:]
-    else:
-        # minus strand: reading direction is reversed; just fall back
-        return "X", "X", aa_pos_1
-
-    return _translate_codon(ref_codon), _translate_codon(alt_codon), aa_pos_1
+    ref_codon = "".join(ref_seq[g] for g in gpos)
+    alt_codon = "".join(qry_subs.get(g, ref_seq[g]) for g in gpos)
+    n_subs    = sum(g in qry_subs for g in gpos)
+    return _translate_codon(ref_codon), _translate_codon(alt_codon), aa_pos_1, n_subs
 
 # ---------------------------------------------------------------------------
 # HGVS formatters  (1-letter amino-acid codes, matching paftools/snpEff output)
@@ -546,6 +548,15 @@ def build_header(chrom: str, ref_len: int, ref_path: str, sample: str) -> str:
         " cDNA.length | CDS.pos / CDS.length | AA.pos / AA.length | Distance |"
         " ERRORS / WARNINGS / INFO'\">"
     )
+    lines.append(
+        '##INFO=<ID=MNV_CORRECTED,Number=0,Type=Flag,Description="Variant shares a codon with '
+        'another substitution; ANN HGVS.p, annotation and impact describe the combined codon">'
+    )
+    lines.append(
+        '##INFO=<ID=MNV_ORIGINAL_HGVS_P,Number=1,Type=String,Description="HGVS.p before codon '
+        'correction: Nextclade\'s call where it made one, otherwise the single-base change '
+        '(featureID:hgvs_p pipe-separated)">'
+    )
     for fid, number, typ, desc in _FREEBAYES_FORMAT:
         lines.append(f'##FORMAT=<ID={fid},Number={number},Type={typ},Description="{desc}">')
     lines.append(f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample}")
@@ -555,6 +566,34 @@ def build_header(chrom: str, ref_len: int, ref_path: str, sample: str) -> str:
 # Per-variant ANN field builders
 # ---------------------------------------------------------------------------
 
+def _hgvs_p(ref_aa: str, alt_aa: str, aa_pos_1: int) -> str:
+    annotation, _ = _classify_aa_consequence(ref_aa, alt_aa, aa_pos_1)
+    if annotation == "synonymous_variant":
+        return _format_hgvs_p_syn(ref_aa, aa_pos_1)
+    return _format_hgvs_p_sub(ref_aa, aa_pos_1, alt_aa)
+
+
+def _coding_entry(
+    tx: dict, ref_nt: str, alt_nt: str, cds_local_1: int, rank_str: str,
+    ref_aa: str, alt_aa: str, aa_pos_1: int,
+) -> tuple[str, str]:
+    """Return (ANN entry, HGVS.p) for a substitution inside a coding transcript."""
+    annotation, impact = _classify_aa_consequence(ref_aa, alt_aa, aa_pos_1)
+    hgvs_p = _hgvs_p(ref_aa, alt_aa, aa_pos_1)
+    entry = _build_ann_entry(
+        allele=alt_nt, annotation=annotation, impact=impact,
+        gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+        feature_id=tx["feature_id"],
+        transcript_biotype="protein_coding",
+        hgvs_c=_format_hgvs_c_snp(cds_local_1, ref_nt, alt_nt), hgvs_p=hgvs_p,
+        cds_pos=cds_local_1, cds_len=tx["cds_length"],
+        aa_pos=aa_pos_1, aa_len=tx["aa_length"],
+        rank_str=rank_str,
+        warnings=tx["warnings"],
+    )
+    return entry, hgvs_p
+
+
 def _ann_field_for_sub(
     pos_0:      int,
     ref_nt:     str,
@@ -563,92 +602,56 @@ def _ann_field_for_sub(
     genes:      list,
     transcripts: list,
     ref_seq:    str,
+    qry_subs:   dict[int, str],
 ) -> str:
-    """Return 'ANN=...' INFO sub-field for a nucleotide substitution."""
+    """Return the 'ANN=...' INFO sub-field for a nucleotide substitution, followed by
+    MNV_CORRECTED/MNV_ORIGINAL_HGVS_P when a shared codon changes its annotation."""
     entries: list[str] = []
+    originals: list[str] = []   # feature:HGVS.p before codon correction, per codon with 2+ substitutions
+    corrected = False
 
-    # --- 1. Main CDS transcripts: in-CDS or intronic ---
+    # --- 1. Coding, intronic, or upstream of a mature peptide ---
+    # load_gff3 lists every CDS before any mature peptide, which keeps the ANN order.
     for tx in transcripts:
-        if tx["is_mature"]:
-            continue
         cds_local_1, exon_rank, exon_count = _cds_pos_from_genomic(tx, pos_0)
         if cds_local_1 is not None:
-            rank_str = f"{exon_rank}/{exon_count}"
-            aa_changes = [c for c in nuc_to_aa.get(str(pos_0), [])
-                          if c["cdsName"] == tx["protein_id"]]
-            if aa_changes:
-                ch      = aa_changes[0]
-                ref_aa  = ch["refAa"]
-                alt_aa  = ch["qryAa"]
-                aa_pos_1 = ch["pos"] + 1
-            else:
-                ref_aa, alt_aa, aa_pos_1 = _synonymous_aa_change(ref_seq, tx, pos_0, ref_nt, alt_nt)
-
-            annotation, impact = _classify_aa_consequence(ref_aa, alt_aa, aa_pos_1)
-            hgvs_c = _format_hgvs_c_snp(cds_local_1, ref_nt, alt_nt)
-            hgvs_p = (_format_hgvs_p_syn(ref_aa, aa_pos_1)
-                      if annotation == "synonymous_variant"
-                      else _format_hgvs_p_sub(ref_aa, aa_pos_1, alt_aa))
-
-            entries.append(_build_ann_entry(
-                allele=alt_nt, annotation=annotation, impact=impact,
-                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
-                feature_id=tx["feature_id"],
-                transcript_biotype="protein_coding",
-                hgvs_c=hgvs_c, hgvs_p=hgvs_p,
-                cds_pos=cds_local_1, cds_len=tx["cds_length"],
-                aa_pos=aa_pos_1, aa_len=tx["aa_length"],
-                rank_str=rank_str,
-            ))
+            ref_aa, alt_aa, aa_pos_1, n_subs = _codon_aa_change(ref_seq, tx, pos_0, qry_subs)
+            call = next((c for c in nuc_to_aa.get(str(pos_0), [])
+                         if c["cdsName"] == tx["nextclade_cds"]), None)
+            # Nextclade's peptide alignment can gap a codon its nucleotide alignment keeps
+            if call and n_subs == 1:
+                ref_aa, alt_aa = call["refAa"], call["qryAa"]
+            entry, hgvs_p = _coding_entry(tx, ref_nt, alt_nt, cds_local_1,
+                                          f"{exon_rank}/{exon_count}", ref_aa, alt_aa, aa_pos_1)
+            entries.append(entry)
+            if n_subs > 1:
+                if call:
+                    before = _hgvs_p(call["refAa"], call["qryAa"], aa_pos_1)
+                else:
+                    s_ref, s_alt, s_pos, _ = _codon_aa_change(ref_seq, tx, pos_0, {pos_0: alt_nt})
+                    before = _hgvs_p(s_ref, s_alt, s_pos)
+                originals.append(f"{tx['feature_id']}:{before}")
+                corrected = corrected or before != hgvs_p
             continue
 
-        # Check for intron position in spliced transcripts
-        intron = _intron_info(tx, pos_0)
-        if intron is not None:
-            cds_end_1, offset, intron_rank, n_introns = intron
-            rank_str = f"{intron_rank}/{n_introns}"
-            hgvs_c = _format_hgvs_c_intron(cds_end_1, offset, ref_nt, alt_nt)
-            entries.append(_build_ann_entry(
-                allele=alt_nt, annotation="intron_variant", impact="MODIFIER",
-                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
-                feature_id=tx["feature_id"],
-                transcript_biotype="protein_coding",
-                hgvs_c=hgvs_c, hgvs_p="",
-                cds_pos=0, cds_len=0, aa_pos=0, aa_len=0,
-                rank_str=rank_str,
-            ))
-
-    # --- 2. Mature peptide transcripts: in-region or upstream ---
-    for tx in transcripts:
         if not tx["is_mature"]:
-            continue
-        seg_begin = tx["segments"][0][0]
-        seg_end   = tx["segments"][-1][1]
-
-        if seg_begin <= pos_0 < seg_end:
-            cds_local_1, exon_rank, exon_count = _cds_pos_from_genomic(tx, pos_0)
-            if cds_local_1 is None:
-                continue
-            rank_str = f"{exon_rank}/{exon_count}"
-            ref_aa, alt_aa, aa_pos_1 = _synonymous_aa_change(ref_seq, tx, pos_0, ref_nt, alt_nt)
-            annotation, impact = _classify_aa_consequence(ref_aa, alt_aa, aa_pos_1)
-            hgvs_c = _format_hgvs_c_snp(cds_local_1, ref_nt, alt_nt)
-            hgvs_p = (_format_hgvs_p_syn(ref_aa, aa_pos_1)
-                      if annotation == "synonymous_variant"
-                      else _format_hgvs_p_sub(ref_aa, aa_pos_1, alt_aa))
-            entries.append(_build_ann_entry(
-                allele=alt_nt, annotation=annotation, impact=impact,
-                gene_name=tx["gene_name"], gene_id=tx["gene_id"],
-                feature_id=tx["feature_id"],
-                transcript_biotype="protein_coding",
-                hgvs_c=hgvs_c, hgvs_p=hgvs_p,
-                cds_pos=cds_local_1, cds_len=tx["cds_length"],
-                aa_pos=aa_pos_1, aa_len=tx["aa_length"],
-                rank_str=rank_str,
-                warnings=tx["warnings"],
-            ))
-        elif pos_0 < seg_begin:
-            distance = seg_begin - pos_0
+            # Check for intron position in spliced transcripts
+            intron = _intron_info(tx, pos_0)
+            if intron is not None:
+                cds_end_1, offset, intron_rank, n_introns = intron
+                rank_str = f"{intron_rank}/{n_introns}"
+                hgvs_c = _format_hgvs_c_intron(cds_end_1, offset, ref_nt, alt_nt)
+                entries.append(_build_ann_entry(
+                    allele=alt_nt, annotation="intron_variant", impact="MODIFIER",
+                    gene_name=tx["gene_name"], gene_id=tx["gene_id"],
+                    feature_id=tx["feature_id"],
+                    transcript_biotype="protein_coding",
+                    hgvs_c=hgvs_c, hgvs_p="",
+                    cds_pos=0, cds_len=0, aa_pos=0, aa_len=0,
+                    rank_str=rank_str,
+                ))
+        elif pos_0 < tx["segments"][0][0]:
+            distance = tx["segments"][0][0] - pos_0
             hgvs_c   = f"c.-{distance}{ref_nt}>{alt_nt}"
             entries.append(_build_ann_entry(
                 allele=alt_nt, annotation="upstream_gene_variant", impact="MODIFIER",
@@ -660,7 +663,7 @@ def _ann_field_for_sub(
                 distance=str(distance), warnings=tx["warnings"],
             ))
 
-    # --- 3. Upstream entries for main CDS transcripts ---
+    # --- 2. Upstream entries for main CDS transcripts ---
     for tx in transcripts:
         if tx["is_mature"]:
             continue
@@ -678,7 +681,7 @@ def _ann_field_for_sub(
                 distance=str(distance),
             ))
 
-    # --- 4. Intergenic (when outside all gene boundaries) ---
+    # --- 3. Intergenic (when outside all gene boundaries) ---
     if not _is_in_gene(genes, pos_0):
         gname, gid, fid = _intergenic_name(genes, pos_0)
         entries.append(_build_ann_entry(
@@ -692,7 +695,10 @@ def _ann_field_for_sub(
 
     if not entries:
         return ""
-    return "ANN=" + ",".join(entries)
+    ann = "ANN=" + ",".join(entries)
+    if corrected:
+        ann += ";MNV_CORRECTED;MNV_ORIGINAL_HGVS_P=" + "|".join(originals)
+    return ann
 
 
 def _ann_field_for_del(
@@ -895,12 +901,13 @@ def variants_from_json_result(
         for i in result.get("aaInsertions", [])
     ]
     frame_shifts = result.get("frameShifts", [])
+    qry_subs     = {sub["pos"]: sub["qryNuc"] for sub in result.get("substitutions", [])}
 
     for sub in result.get("substitutions", []):
         vcf_pos = sub["pos"] + 1
         ann     = _ann_field_for_sub(
             sub["pos"], sub["refNuc"], sub["qryNuc"],
-            nuc_to_aa, genes, transcripts, ref_seq,
+            nuc_to_aa, genes, transcripts, ref_seq, qry_subs,
         )
         rows.append((vcf_pos, variant_row(chrom, vcf_pos, sub["refNuc"], sub["qryNuc"], qual, ann=ann)))
 
@@ -953,29 +960,6 @@ def write_vcf(
     return len(rows)
 
 
-def write_results(
-    output_path: Path,
-    results:     list[tuple[str, list[tuple[int, str]]]],
-    chrom:       str,
-    ref_len:     int,
-    ref_path:    str,
-    named_sample: bool,
-) -> None:
-    """Write one VCF per result; multi-sample input appends the sample name to the stem."""
-    if len(results) == 1:
-        sample, rows = results[0]
-        n = write_vcf(str(output_path), chrom, ref_len, ref_path, sample, rows)
-        log.info("Wrote %d records for '%s' -> %s", n, sample, output_path)
-        return
-
-    if named_sample:
-        log.warning("--sample ignored for multi-sample input")
-    for sample, rows in results:
-        safe = re.sub(r"[^\w.-]", "_", sample)
-        out  = output_path.parent / f"{output_path.stem}_{safe}.vcf"
-        n    = write_vcf(str(out), chrom, ref_len, ref_path, sample, rows)
-        log.info("Wrote %d records for '%s' -> %s", n, sample, out)
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -983,35 +967,22 @@ def write_results(
 def get_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Convert nextclade JSON output to a freebayes-format VCF with "
+            "Convert nextclade JSON output to one freebayes-format VCF per sample with "
             "snpEff-compatible ANN= annotations sourced from a GFF3 annotation file."
         )
     )
     p.add_argument("-i", "--input",   required=True,
-                   help="Nextclade v3 JSON input file")
+                   help="Nextclade v3 JSON; one VCF is written per entry in results")
     p.add_argument("-d", "--dataset", required=True,
                    help="Nextclade reference dataset directory (must contain reference.fasta and genome_annotation.gff3)")
-    p.add_argument("-o", "--output",  required=True,
-                   help="Output VCF file (used as prefix when input has multiple samples)")
-    p.add_argument("--output-no-mature", default=None, dest="output_no_mature",
-                   help="Optional second output VCF with the same records but no "
+    p.add_argument("--suffix", required=True,
+                   help="Each VCF is written to <seqName><suffix> in the working directory")
+    p.add_argument("--no-mature-suffix", default=None, dest="no_mature_suffix",
+                   help="Also write <seqName><no-mature-suffix> with the same records but no "
                         "mature-peptide (HA1/HA2) ANN entries")
-    p.add_argument("--sample", default=None,
-                   help="Override sample name (single-sample inputs only)")
     p.add_argument("--qual",   type=int, default=60,
                    help="QUAL score for all records (default: 60)")
     return p.parse_args()
-
-
-_SEED_COVER_RE = re.compile(r"seed alignment covers (\d+(?:\.\d+)?%)")
-
-
-def _extract_seed_cover(error_messages: list[str]) -> Optional[str]:
-    for msg in error_messages:
-        m = _SEED_COVER_RE.search(msg)
-        if m:
-            return m.group(1)
-    return None
 
 
 def main() -> None:
@@ -1039,62 +1010,27 @@ def main() -> None:
     # The no-mature output is the same annotation pass run against a transcript list with
     # the mature peptides removed, so it matches what a GFF3 without them would produce.
     transcripts_no_mature = [tx for tx in transcripts if not tx["is_mature"]]
-    if args.output_no_mature:
-        log.info(
-            "Also writing a no-mature VCF -> %s (%d mature-peptide transcript(s) omitted)",
-            args.output_no_mature, len(transcripts) - len(transcripts_no_mature),
-        )
 
     with open(args.input) as fh:
         data = json.load(fh)
 
-    results:           list[tuple[str, list[tuple[int, str]]]] = []
-    results_no_mature: list[tuple[str, list[tuple[int, str]]]] = []
-
     for result in data.get("results", []):
+        sample = result.get("seqName", "SAMPLE")
         if result.get("errors"):
-            log.warning("Skipping %s: errors=%s", result.get("seqName", "?"), result["errors"])
+            log.warning("Skipping %s: errors=%s", sample, result["errors"])
             continue
-        sample = args.sample or result.get("seqName", "SAMPLE")
-        results.append((
-            sample,
-            variants_from_json_result(result, ref_seq, chrom, genes, transcripts, args.qual),
-        ))
-        if args.output_no_mature:
-            results_no_mature.append((
-                sample,
-                variants_from_json_result(
-                    result, ref_seq, chrom, genes, transcripts_no_mature, args.qual,
-                ),
-            ))
+        outputs = [(args.suffix, transcripts)]
+        if args.no_mature_suffix:
+            outputs.append((args.no_mature_suffix, transcripts_no_mature))
+        for suffix, txs in outputs:
+            rows = variants_from_json_result(result, ref_seq, chrom, genes, txs, args.qual)
+            n = write_vcf(f"{sample}{suffix}", chrom, ref_len, str(ref_path), sample, rows)
+            log.info("Wrote %d records for '%s' -> %s%s", n, sample, sample, suffix)
 
+    # A sequence Nextclade could not align gets no VCF; the batch status TSV records it.
     for error_entry in data.get("errors", []):
-        seq_name = error_entry.get("seqName", "UNKNOWN")
-        sample   = args.sample or seq_name
-        msgs     = error_entry.get("errors", [])
-        if any("Unable to align" in m for m in msgs):
-            seed_cover = _extract_seed_cover(msgs)
-            if seed_cover:
-                log.warning("Unable to align '%s' (seed alignment covers %s); writing empty VCF",
-                            sample, seed_cover)
-            else:
-                log.warning("Unable to align '%s'; writing empty VCF", sample)
-        else:
-            log.warning("Nextclade errors for '%s': %s; writing empty VCF",
-                        sample, "; ".join(str(m) for m in msgs))
-        results.append((sample, []))
-        if args.output_no_mature:
-            results_no_mature.append((sample, []))
-
-    if not results:
-        log.error("No results found in %s", args.input)
-        sys.exit(1)
-
-    write_results(Path(args.output), results, chrom, ref_len, str(ref_path), bool(args.sample))
-    if args.output_no_mature:
-        # named_sample=False: the first call has already warned about --sample if needed.
-        write_results(Path(args.output_no_mature), results_no_mature,
-                      chrom, ref_len, str(ref_path), False)
+        log.warning("No VCF for '%s': %s", error_entry.get("seqName", "UNKNOWN"),
+                    "; ".join(str(m) for m in error_entry.get("errors", [])))
 
 
 if __name__ == "__main__":

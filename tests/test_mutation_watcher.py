@@ -317,6 +317,17 @@ def test_the_flag_is_matched_as_a_token_not_a_substring(tmp_path):
     assert skipped == 0
 
 
+@pytest.mark.parametrize("info,key,expected", [
+    ("NS=1;MNV_UNRESOLVED;DP=3", "MNV_UNRESOLVED", True),
+    ("NS=1;MNV_UNRESOLVED=1", "MNV_UNRESOLVED", True),
+    ("NS=1;MNV_CORRECTED;DP=3", "MNV_UNRESOLVED", False),
+    # A substring test would match this; a token test must not.
+    ("NS=1;ANN=A|x|y|MNV_UNRESOLVED", "MNV_UNRESOLVED", False),
+])
+def test_has_info_flag(info, key, expected):
+    assert watcher.has_info_flag(info, key) is expected
+
+
 # ---------------------------------------------------------------------------
 # Loading the watchlist
 # ---------------------------------------------------------------------------

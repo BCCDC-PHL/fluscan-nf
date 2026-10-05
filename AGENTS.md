@@ -25,14 +25,15 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 - `SHORT_READ` performs read QC/primer trimming, downsampling, assembly,
   BLAST-based reference selection, mapping, LoFreq calling, SnpEff annotation,
   MNV correction, consensus generation, and FluMut screening.
-- In FASTA mode, both branches independently prepare the same consensus input
-  and run FluMut.
+- In FASTA mode, `FASTA_PREP` (`workflows/fasta-prep.nf`) hashes, cleans and
+  QC-aggregates the consensus input and runs FluMut once, then hands the cleaned
+  FASTAs and their provenance records to both branches.
   - `PAFTOOLS` selects references with BLAST, aligns each segment with
     minimap2, calls differences with `paftools.js`, sorts and annotates VCFs,
     converts them to the common VCF shape, and corrects MNV codons.
   - `NEXTCLADE` batches samples by segment, runs Nextclade once per segment,
-    splits per-sample results, converts JSON to the common VCF shape, and
-    corrects MNV codons.
+    splits per-sample results, and converts JSON to the common VCF shape,
+    annotating substitutions that share a codon with the combined change.
 - `--merge_flumut_mutations` is off by default. When enabled in the Nextclade
   branch, a run-level map lifts coordinates from FluMut's own reference
   (source, the `references`/`annotations` tables of the installed `flumutdb`
@@ -41,8 +42,9 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   existing VCF rows. The markers and the source coordinates come from the same
   package, so they cannot drift apart.
 - `mutation_watch` scans each final VCF against the custom watchlists in
-  `--watchlist_dir` (default `assets/watchlists/`) and publishes exactly one
-  file, `*_watchlist_hits.tsv` (header-only when nothing matches). It runs in all
+  `--watchlist_dir` (default `assets/watchlists/`) and publishes one
+  `*_watchlist_hits.tsv` per final VCF and watchlist (header-only when nothing
+  matches), named by segment from the VCF filename. It runs in all
   three workflows and is independent of `--merge_flumut_mutations`.
 
 ## Repository map
@@ -51,7 +53,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 | --- | --- |
 | `main.nf` | Entry point and workflow dispatch |
 | `nextflow.config` | Parameters, Conda profile, resources, reports |
-| `workflows/` | Channel wiring for the three top-level workflows |
+| `workflows/` | Channel wiring for the three top-level workflows and the `FASTA_PREP` subworkflow both FASTA branches take their input from |
 | `modules/shared/` | Reused BLAST, consensus, FluMut, post-processing, and provenance processes |
 | `modules/{short_read,paftools,nextclade}/` | Branch-specific processes |
 | `bin/` | Python CLI entry points *only* — Nextflow puts this directory on `PATH` for every task, so nothing that is merely importable belongs here |
@@ -61,8 +63,8 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 | `docs/vcf_annotation_and_flumut_insertion.md` | Detailed Nextclade VCF and FluMutDB semantics |
 | `docs/watchlists.md` | Custom watchlist schema, matching rules, and the HA1/HA numbering trap |
 | `assets/watchlists/` | The shipped `*watchlist.csv` files; `--watchlist_dir` defaults here |
-| `modules/shared/sample_id.nf` | The only place a consensus or sample sheet `sample_id` is derived; holds the FASTA discovery channel both FASTA branches call and `samplesheet_channel`, which all three workflows call for `--samplesheet_input`. Changing `clean_sample_id` renames every output |
-| `modules/shared/database.nf` | The only place that knows the `--db` bundle layout; `resolve_db` validates it up front. Also holds the canonical segment list — `@Field DB_SEGMENTS` is not importable across an `include`, so workflows reach it through the `db_segments()` accessor rather than repeating the literal |
+| `modules/shared/sample_id.nf` | The only place a consensus or sample sheet `sample_id` is derived; holds the FASTA discovery channel `FASTA_PREP` calls and `samplesheet_channel`, which all three workflows call for `--samplesheet_input`. Changing `clean_sample_id` renames every output |
+| `modules/shared/database.nf` | The only place that knows the `--db` bundle layout; `resolve_db` validates it up front. Also holds the canonical segment list, `@Field DB_SEGMENTS`, which it uses to check each segment's dataset |
 | `scripts/validate_db.py` | Deeper, contents-level bundle check; run after building or moving a bundle |
 | `docs/database_bundles.md` | Bundle layout, `db.yml` schema, how to build and validate one |
 | `README.md` | User-facing inputs, commands, outputs, and architecture |
@@ -127,8 +129,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   explicitly unless a local config supplies it.
 - `--samplesheet_input` is parsed eagerly by `samplesheet_channel`, so column,
   blank-cell, ID and file-existence errors all fail before any task is submitted.
-  Both FASTA branches choose between it and `consensus_fasta_channel` with the same
-  ternary; keep them mirrored. `run_name` is the sheet's filename without `.csv`.
+  `FASTA_PREP` chooses between it and `consensus_fasta_channel`. `run_name` is the sheet's filename without `.csv`.
 - Channel tuple keys are part of the design. Preserve `sample_id` and `segment`
   through `join`, `combine`, `transpose`, and batching operations, and comment
   non-obvious tuple shapes next to the transformation.
@@ -145,8 +146,14 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 - Consensus-derived Nextclade VCFs are deliberately “freebayes-shaped.”
   Depth, quality, and genotype fields are placeholders; biological meaning is
   carried by coordinates, alleles, and the 16-field SnpEff-compatible `ANN=`.
-- Individual SNVs in one codon can have incorrect amino-acid annotations until
-  `bin/fix_mnv_codons.py` runs. Final VCFs must remain downstream of that step.
+- In the SnpEff-annotated PAFTOOLS and SHORT_READ VCFs, individual SNVs in one
+  codon can have incorrect amino-acid annotations until `bin/fix_mnv_codons.py`
+  runs; their final VCFs must remain downstream of that step. The Nextclade
+  converter translates each codon with all its substitutions applied, keeping
+  Nextclade's own `nucToAaMuts` call only for a codon with one substitution, and
+  writes the same `MNV_CORRECTED`/`MNV_ORIGINAL_HGVS_P` fields itself. Nextclade's
+  peptide alignment can gap a codon its nucleotide alignment keeps, so its call
+  must not override a shared codon.
 - `bin/merge_flumut_mutations.py` is the only implementation. It may add
   `FLUMUT=` to matching rows, but must not add, remove, reorder, or otherwise
   rewrite variant rows. The earlier implementation that inserted synthetic rows
@@ -154,17 +161,16 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   `merge_flumut_mutations_v2.py`); no `_v2` suffix should reappear. The
   coordinate map's `target_cds` block existed only for the old script and is
   gone too.
-- Rows flagged `MNV_UNRESOLVED` by `bin/fix_mnv_codons.py` are skipped, not
-  matched: their HGVS.p is known to be wrong, so a marker hit there would be a
-  false positive. Every member row of a *resolved* MNV group carries the same
-  corrected HGVS.p and so the same `FLUMUT=` entry — downstream marker counts
-  must de-duplicate.
+- The merge reads only Nextclade VCFs, which never carry `MNV_UNRESOLVED`, so it
+  has no skip for that flag. Every row of a codon holding more than one substitution
+  carries the same combined HGVS.p and so the same `FLUMUT=` entry — downstream
+  marker counts must de-duplicate.
 - **Watchlist hits never enter the VCF.** `FLUMUT=` comes from a versioned
   database, so the same consensus always yields the same annotation; a watchlist
   is a CSV we edit, and merging its hits in would make the same consensus
   produce different VCFs depending on that file. Hits go to
   `*_watchlist_hits.tsv`. The shared part — `ANN=` parsing, both HGVS.p
-  spellings, gene canonicalisation, the `MNV_UNRESOLVED` skip — lives once in
+  spellings, gene canonicalisation, the watchlist's `MNV_UNRESOLVED` skip — lives once in
   `bin/lib/aa_markers.py`; do not let a consumer grow its own copy.
 - A watchlist `gene` is a **protein**, not a segment, and gene resolution falls
   back from ANN `Gene_Name` to `Feature_ID` but **never** from a parent gene to
@@ -268,7 +274,8 @@ published filenames/content. Use `-profile conda`; `conda.useMamba` is enabled.
   complete without those annotated final VCF steps.
 - Sample-level provenance collection is wired in all three workflows, and each
   starts with `hash_files` (`modules/shared/hash_files.nf`, aliased to
-  `short_read_hash_files` in SHORT_READ). The collection chains are inner joins,
+  `short_read_hash_files` in SHORT_READ, run by `FASTA_PREP` for the FASTA
+  branches). The collection chains are inner joins,
   and `prepare_consensus`, `blastn` and `paftools_align` all run
   `errorStrategy 'ignore'` — so a sample failing any of them publishes no
   provenance file, losing its input hash along with everything else. Use
@@ -278,15 +285,18 @@ published filenames/content. Use `-profile conda`; `conda.useMamba` is enabled.
   FASTA dispatch runs PAFTOOLS and NEXTCLADE over the same samples into the same
   `${outdir}/${sample_id}/`, and their timestamps collide at second resolution;
   without the label one branch silently overwrites the other. Any new workflow
-  needs a `withName: '<NAME>:.*' { ext.workflow = … }` block or its records fall
-  back to the unlabelled, collision-prone name.
-- `mutation_watch` emits a provenance YAML that SHORT_READ does not join in, so
-  its watchlist scan is absent from the collected record. Both FASTA branches
-  join it, with `groupTuple()` and `remainder: true`.
-- The two FASTA branches are deliberate mirrors from input discovery through
-  `prepare_consensus`, `flumut`, the consensus QC aggregate, and the shape of
-  the provenance chain and watchlist block. Only the analysis between those
-  differs. A change to one of the mirrored parts belongs in both.
+  that collects provenance needs a `withName: '<NAME>:.*' { ext.workflow = … }`
+  block or its records fall back to the unlabelled, collision-prone name.
+- `mutation_watch` runs once per sample over all of its final VCFs and every
+  watchlist, and emits one provenance YAML per sample. SHORT_READ does not join
+  it in, so its watchlist scan is absent from the collected record. Both FASTA
+  branches join it with `remainder: true`.
+- The two FASTA branches share their input through `FASTA_PREP`, and each
+  opens its provenance chain with its own `pipeline_provenance` record ahead of
+  the prep records. Their watchlist blocks and provenance joins are still
+  mirrored; a change to one belongs in both. NEXTCLADE also combines each
+  per-segment record (`nextclade_run_batch`, `merge_flumut_mutations`) onto
+  every sample.
 - `tests/conftest.py` puts `bin/` on `sys.path` so the entry points can resolve
   their `from lib.…` imports under pytest. Fix an import failure there, not by
   adding path manipulation to a production script.

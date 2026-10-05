@@ -103,7 +103,7 @@ would be a wrong answer with nothing to show it was wrong.
 
 ## Output
 
-`${outdir}/${sample_id}/${workflow}/${sample_id}_[segment_]${list}_watchlist_hits.tsv`:
+`${outdir}/${sample_id}/${workflow}/${sample_id}_${segment}_${list}_watchlist_hits.tsv`:
 
 ```
 sample_id  segment  gene  position  ref_aa  alt_aa  mutation  chrom  pos  hgvs_p  note
@@ -124,8 +124,8 @@ a file we edit. Merging watchlist hits into the VCF would make the same consensu
 different VCFs depending on the contents of a CSV, which breaks every downstream assumption
 about a VCF being reproducible from its inputs.
 
-The two share the mechanics of reading `ANN=` — HGVS.p parsing, gene canonicalisation, the
-`MNV_UNRESOLVED` skip — and those live in exactly one place, `bin/lib/aa_markers.py`.
+The two share the mechanics of reading `ANN=` — HGVS.p parsing and gene canonicalisation —
+and those live in exactly one place, `bin/lib/aa_markers.py`.
 
 ## Rows that are skipped
 
