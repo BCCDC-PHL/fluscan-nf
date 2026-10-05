@@ -1,7 +1,7 @@
 # fluscan-nf
 
 This is a Nextflow pipeline for Influenza A mutation analysis from either short-read FASTQ data or pre-built consensus FASTA files.
-The short-read workflow performs trimming, assembly, mapping, LoFreq variant calling, SnpEff annotation, and consensus generation. In FASTA mode (`--fasta_input`), the pipeline currently launches both a PAFTOOLS branch and a NEXTCLADE branch: PAFTOOLS validates the supplied FASTA, selects a subtype-matched reference with BLAST, aligns per segment with `minimap2`, calls differences with `paftools.js`, sorts with `bcftools`, annotates with SnpEff, and fixes multi-nucleotide variant codons; NEXTCLADE validates the same input, batches sequences by segment for `nextclade run`, and converts the results to VCF, annotating substitutions that share a codon with their combined codon change.
+The short-read workflow performs trimming, assembly, mapping, LoFreq variant calling, SnpEff annotation, and consensus generation. In FASTA mode (`--fasta_input`), the pipeline currently launches both a PAFTOOLS branch and a NEXTCLADE branch: PAFTOOLS validates the supplied FASTA, selects a subtype-matched reference with BLAST, aligns per segment with `minimap2`, calls differences with `paftools.js`, annotates with SnpEff, and fixes multi-nucleotide variant codons; NEXTCLADE validates the same input, batches sequences by segment for `nextclade run`, and converts the results to VCF, annotating substitutions that share a codon with their combined codon change.
 
 ## Analyses
 
@@ -25,7 +25,6 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - Automated reference selection from built-in database via BLAST
 - Per-segment alignment using minimap2 (`asm20` mode)
 - Variant calling using `paftools.js`
-- VCF sorting with `bcftools sort`
 - Annotation of amino acid variant calls using SnpEff
 - MNV codon correction
 - Alignment coverage QC with run-level aggregation
@@ -60,29 +59,30 @@ flowchart TD
     subgraph PAFTOOLS[PAFTOOLS workflow]
         direction TB
         blastn[blastn reference selection]
-        split_ref[split_fasta]
-        minimap[minimap2 asm20]
-        covqc[coverage QC]
         covagg[aggregate coverage summary]
-        paftools_call[paftools.js call]
-        sortvcf[bcftools sort]
-        snpeff[SnpEff]
-        paf2fb[paftools_to_freebayes_vcf.py]
-        fixmnv_paf[fix_mnv_codons.py]
         paf_final[Final PAFTOOLS VCFs]
 
+        subgraph paftools_variants[paftools_variants, one task per sample]
+            direction TB
+            minimap[minimap2 asm20]
+            covqc[coverage QC]
+            paftools_call[paftools.js call]
+            snpeff[SnpEff]
+            paf2fb[paftools_to_freebayes_vcf.py]
+            fixmnv_paf[fix_mnv_codons.py]
+
+            minimap --> covqc
+            minimap --> paftools_call
+            paftools_call --> snpeff
+            snpeff --> paf2fb
+            covqc --> paf2fb
+            paf2fb --> fixmnv_paf
+        end
+
         prepare --> blastn
-        prepare --> split_ref
-        blastn --> split_ref
-        split_ref --> minimap
-        minimap --> covqc
+        prepare --> minimap
+        blastn --> minimap
         covqc --> covagg
-        minimap --> paftools_call
-        paftools_call --> sortvcf
-        sortvcf --> snpeff
-        snpeff --> paf2fb
-        covqc --> paf2fb
-        paf2fb --> fixmnv_paf
         fixmnv_paf --> paf_final
     end
 
@@ -257,7 +257,7 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 | `*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
 | `*_blastn.tsv` | BLAST search results against the reference database |
 | `*_blastn_filter.tsv` | Filtered BLAST search results |
-| `qc/*_coverage_qc.tsv` | Per-segment PAFTOOLS consensus coverage QC with coverage percentage and PASS/WARN/FAIL status |
+| `qc/*_coverage_qc.tsv` | Per-segment PAFTOOLS consensus coverage QC with coverage percentage and PASS/WARN/FAIL status. A segment with no BLAST reference, or that minimap2 cannot align, is FAIL and has no VCF |
 | `paftools/*_final.vcf` | Per-segment final VCF after `paftools.js`, SnpEff, freebayes-style conversion, and MNV codon correction |
 | `paftools/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |

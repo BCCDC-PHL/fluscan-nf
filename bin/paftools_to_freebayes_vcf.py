@@ -1,36 +1,24 @@
 #!/usr/bin/env python3
-"""Convert a paftools.js-format VCF to a freebayes-format VCF.
+"""Convert a paftools.js + SnpEff VCF to the freebayes-shaped VCF all three workflows emit.
 
-Paftools VCFs are produced from consensus FASTA input (depth=1) and carry only
-QNAME/QSTART/QSTRAND plus snpEff annotations.  The downstream summarizer
-(summarize_vcf_cyvcf2.py) expects the richer freebayes INFO/FORMAT schema.
-
-This script synthesises all missing freebayes fields with plausible depth-1
-defaults (DP=1, AO=1, RO=0, AF=1, MQM=60, …) while preserving every
-paftools-specific field (QNAME, QSTART, QSTRAND, ANN, LOF, NMD, MNV_*).
-
-Pipeline position: after paftools.js + snpEff (+ optional fix_mnv_codons.py),
-before summarize_vcf_cyvcf2.py.
+Consensus calls have depth 1, so every freebayes INFO/FORMAT field is filled with a
+depth-1 placeholder (DP=1, AO=1, RO=0, AF=1, MQM=60, ...). The paftools fields (QNAME,
+QSTART, QSTRAND) and SnpEff's ANN/LOF/NMD are kept. The segment's alignment coverage QC
+row is recorded as a ##fluscan_alignment_coverage header line.
 """
 
 import argparse
+import csv
 import logging
 
 import numpy as np
-
-try:
-    from cyvcf2 import VCF, Writer
-except ImportError as exc:
-    raise SystemExit("cyvcf2 is required: conda install -c bioconda cyvcf2") from exc
+from cyvcf2 import VCF, Writer
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Freebayes header definitions to inject
-# Each tuple: (ID, Number, Type, Description)
-# ---------------------------------------------------------------------------
 
+# (ID, Number, Type, Description)
 _FREEBAYES_INFO = [
     ("NS",      "1", "Integer", "Number of samples with data"),
     ("DP",      "1", "Integer", "Total read depth at the locus"),
@@ -86,10 +74,6 @@ _FREEBAYES_FORMAT = [
     ("QA",  "A", "Integer", "Sum of quality of the alternate observations"),
 ]
 
-# ---------------------------------------------------------------------------
-# Variant classification
-# ---------------------------------------------------------------------------
-
 def classify(ref: str, alt: str) -> tuple[str, str, int]:
     """Return (type_str, cigar_str, len_val) for a REF/ALT pair."""
     if len(ref) == 1 and len(alt) == 1:
@@ -106,10 +90,6 @@ def classify(ref: str, alt: str) -> tuple[str, str, int]:
     direction = "I" if len(alt) > len(ref) else "D"
     return "complex", f"{min(len(ref), len(alt))}M{diff}{direction}", max(len(ref), len(alt))
 
-# ---------------------------------------------------------------------------
-# Main conversion
-# ---------------------------------------------------------------------------
-
 def _existing_header_ids(vcf: VCF) -> set[str]:
     ids = set()
     for h in vcf.header_iter():
@@ -119,7 +99,17 @@ def _existing_header_ids(vcf: VCF) -> set[str]:
     return ids
 
 
-def convert(input_path: str, output_path: str) -> int:
+def coverage_header(coverage_tsv: str) -> str:
+    """Return the ##fluscan_alignment_coverage line for a one-row coverage QC TSV."""
+    with open(coverage_tsv) as fh:
+        row = next(csv.DictReader(fh, delimiter="\t"))
+    return (
+        f"##fluscan_alignment_coverage=STATUS={row['status']};"
+        f"coverage_pct={row['coverage_pct']};range={row['first_pos']}-{row['last_pos']}"
+    )
+
+
+def convert(input_path: str, output_path: str, coverage_tsv: str) -> int:
     vcf = VCF(input_path)
     existing = _existing_header_ids(vcf)
 
@@ -132,6 +122,7 @@ def convert(input_path: str, output_path: str) -> int:
             vcf.add_format_to_header({"ID": field_id, "Number": number, "Type": typ, "Description": desc})
 
     vcf.add_to_header("##source=paftools_to_freebayes_vcf.py")
+    vcf.add_to_header(coverage_header(coverage_tsv))
 
     writer = Writer(output_path, vcf)
     n_written = 0
@@ -221,19 +212,10 @@ def convert(input_path: str, output_path: str) -> int:
 
     return n_written
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
 def get_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=(
-            "Convert a paftools.js+snpEff VCF to a freebayes-format VCF. "
-            "Synthesises depth-1 freebayes INFO/FORMAT fields so that "
-            "summarize_vcf_cyvcf2.py can parse the output unchanged."
-        )
-    )
-    p.add_argument("-i", "--input",  required=True, help="Input paftools VCF")
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("-i", "--input",  required=True, help="Input paftools + SnpEff VCF")
+    p.add_argument("-c", "--coverage-tsv", required=True, help="consensus_coverage_qc.py TSV for this segment")
     p.add_argument("-o", "--output", required=True, help="Output freebayes-format VCF")
     return p.parse_args()
 
@@ -241,7 +223,7 @@ def get_args() -> argparse.Namespace:
 def main() -> None:
     args = get_args()
     log.info("Converting %s -> %s", args.input, args.output)
-    n = convert(args.input, args.output)
+    n = convert(args.input, args.output, args.coverage_tsv)
     log.info("Wrote %d records to %s", n, args.output)
 
 
