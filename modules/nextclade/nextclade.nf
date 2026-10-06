@@ -1,14 +1,14 @@
 // nextclade/nextclade.nf - Per-segment Nextclade alignment and VCF conversion processes
 
-// Cross-sample per-segment batch: runs nextclade once for all samples' sequences for a
-// given segment, splits the output into per-sample JSON, TSV and identity QC files, and
+// Cross-sample per-segment batch: runs nextclade once for one bundle's samples' sequences
+// for a given segment, splits the output into per-sample JSON, TSV and identity QC files, and
 // converts it to one final VCF per sample. A sample Nextclade cannot align gets no JSON and
 // no VCF, and an identity QC row of FAIL.
 process nextclade_run_batch {
 
     conda "${projectDir}/environments/nextclade.yml"
 
-    tag { segment }
+    tag { "${db_name}/${segment}" }
 
     publishDir "${params.outdir}", mode: 'copy',
         saveAs: { filename ->
@@ -24,7 +24,7 @@ process nextclade_run_batch {
             }
             if (filename =~ /.*_nextclade_status\.tsv$/) {
                 def workflow = task.ext.workflow ?: 'unknown_workflow'
-                return "${workflow}/status/${filename}"
+                return "${workflow}/status/${db_name}/${filename}"
             }
             if (filename =~ /.*_nextclade\.(json|tsv)$/) {
                 def file_extension = filename.endsWith('.json') ? 'json' : 'tsv'
@@ -35,23 +35,23 @@ process nextclade_run_batch {
             }
             if (filename =~ /nc_output.*/) {
                 def newname = filename.replaceAll(/nc_output/, "${segment}_output")
-                return "nextclade/${newname}"
+                return "nextclade/${db_name}/${newname}"
             }
             return null
         }
 
     input:
-    tuple val(segment), path(batch_fasta, stageAs: 'batch.fasta'), path(dataset_dir)
+    tuple val(db_name), val(segment), path(batch_fasta, stageAs: 'batch.fasta'), path(dataset_dir)
 
     output:
-    tuple val(segment), path("*_nc_final.vcf"),              optional: true, emit: vcf
-    tuple val(segment), path("*_nc_nomat_final.vcf"),        optional: true, emit: vcf_no_mature
-    tuple val(segment), path("*_nextclade.json"),            optional: true, emit: json
-    tuple val(segment), path("*_nextclade.tsv"),                             emit: tsv
-    tuple val(segment), path("*_identity_qc.tsv"),                           emit: identity_qc
-    tuple val(segment), path("nc_output"),                                   emit: all
-    tuple val(segment), path("${segment}_nextclade_status.tsv"),             emit: status
-    tuple val(segment), path("${segment}_nextclade_provenance.yml"),         emit: provenance
+    tuple val(db_name), val(segment), path("*_nc_final.vcf"),              optional: true, emit: vcf
+    tuple val(db_name), val(segment), path("*_nc_nomat_final.vcf"),        optional: true, emit: vcf_no_mature
+    tuple val(db_name), val(segment), path("*_nextclade.json"),            optional: true, emit: json
+    tuple val(db_name), val(segment), path("*_nextclade.tsv"),                             emit: tsv
+    tuple val(db_name), val(segment), path("*_identity_qc.tsv"),                           emit: identity_qc
+    tuple val(db_name), val(segment), path("nc_output"),                                   emit: all
+    tuple val(db_name), val(segment), path("${segment}_nextclade_status.tsv"),             emit: status
+    tuple val(db_name), val(segment), path("${segment}_nextclade_provenance.yml"),         emit: provenance
 
     script:
     def threads = task.cpus ?: 1

@@ -7,7 +7,7 @@
 
 process merge_flumut_mutations {
 
-    tag { segment }
+    tag { "${db_name}/${segment}" }
 
     conda "${projectDir}/environments/fluscan.yml"
 
@@ -27,11 +27,11 @@ process merge_flumut_mutations {
         }
 
     input:
-    tuple val(segment), path(vcfs, stageAs: 'vcf/*'), path(coord_json)
+    tuple val(db_name), val(segment), path(vcfs, stageAs: 'vcf/*'), path(coord_json)
 
     output:
-    tuple val(segment), path("*_flumut_annotated.vcf"),                  emit: vcf
-    tuple val(segment), path("${segment}_merge_flumut_provenance.yml"),  emit: provenance
+    tuple val(db_name), val(segment), path("*_flumut_annotated.vcf"),                  emit: vcf
+    tuple val(db_name), val(segment), path("${segment}_merge_flumut_provenance.yml"),  emit: provenance
 
     script:
     """

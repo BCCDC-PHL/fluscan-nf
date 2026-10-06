@@ -20,21 +20,24 @@ include { makeblastdb }         from '../modules/shared/blast.nf'
 include { blastn }              from '../modules/shared/blast.nf'
 include { paftools_variants }   from '../modules/paftools/paftools.nf'
 include { mutation_watch }      from '../modules/shared/mutation_watch.nf'
-include { resolve_db }          from '../modules/shared/database.nf'
+include { resolve_dbs }         from '../modules/shared/database.nf'
+include { input_db_paths }      from '../modules/shared/sample_id.nf'
 
 workflow PAFTOOLS {
 
     take:
         ch_cleaned              // [sample_id, cleaned consensus FASTA]
+        ch_db                   // [sample_id, bundle name]
         ch_prep_provenance      // [sample_id, [hash, prepare, flumut]]
 
     main:
 
         // Reference selection is BLAST-driven and every called variant is SnpEff-annotated,
         // so both components are mandatory for this branch.
-        def db = resolve_db(params.db, ['blastn', 'snpeff'])
+        def dbs = resolve_dbs(input_db_paths(), ['blastn', 'snpeff'])
 
-        ch_workflow_metadata = Channel.value([
+        ch_workflow_metadata = Channel.fromList(dbs.values().collect { db -> [
+            db.name,
             workflow.sessionId,
             workflow.runName,
             workflow.manifest.name,
@@ -45,20 +48,23 @@ workflow PAFTOOLS {
                 database_version: db.version,
                 database_path:    db.root,
             ],
-        ])
+        ] })
 
-        ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
+        ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)    // [bundle name, record]
 
-        // The whole snpeff/ directory is staged so the config and the database it names
-        // travel together; the process overrides data.dir with -dataDir.
-        ch_snpeff_dir = Channel.fromPath(db.snpeff_dir, checkIfExists: true)
+        makeblastdb(Channel.fromList(dbs.values().collect { db -> [db.name, db.blastn] }))
 
-        makeblastdb(Channel.fromPath(db.blastn)).first().set{ch_blastdb}
+        // [sample_id, consensus, the sample's bundle's BLAST db]
+        blastn(ch_cleaned.join(ch_db)
+            .map { sample_id, consensus, db_name -> [db_name, sample_id, consensus] }
+            .combine(makeblastdb.out.db, by: 0)
+            .map { db_name, sample_id, consensus, blastdb -> [sample_id, consensus, blastdb] })
 
-        blastn(ch_cleaned, ch_blastdb)
-
-        // [sample_id, consensus, BLAST references, snpeff/]
-        paftools_variants(ch_cleaned.join(blastn.out.ref).combine(ch_snpeff_dir))
+        // [sample_id, consensus, BLAST references, snpeff/]. The whole snpeff/ directory is
+        // staged so the config and the database it names travel together; the process
+        // overrides data.dir with -dataDir.
+        paftools_variants(ch_cleaned.join(blastn.out.ref).join(ch_db)
+            .map { sample_id, consensus, reference, db_name -> [sample_id, consensus, reference, dbs[db_name].snpeff_dir] })
 
         paftools_variants.out.coverage
             .map{ it -> it[1] }
@@ -92,8 +98,10 @@ workflow PAFTOOLS {
 
         // Per-sample provenance. Inner joins: prepare_consensus and blastn run errorStrategy
         // 'ignore', so a sample failing either leaves the chain and publishes no provenance.
-        ch_provenance = ch_prep_provenance
-            .combine(ch_pipeline_provenance)
+        ch_provenance = ch_prep_provenance.join(ch_db)
+            .map { sample_id, records, db_name -> [db_name, sample_id, records] }
+            .combine(ch_pipeline_provenance, by: 0)
+            .map { db_name, sample_id, records, pipeline -> [sample_id, records, pipeline] }
             .join(blastn.out.provenance)
             .join(paftools_variants.out.provenance)
             .map{ sample_id, records, pipeline, blast, paftools -> [sample_id, [pipeline] + records + [blast, paftools]] }

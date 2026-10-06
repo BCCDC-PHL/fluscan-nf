@@ -16,13 +16,16 @@
 // does not, because snpeff/ is already the per-bundle directory that level provided.
 //
 // The filenames are fixed on purpose. A bundle is identified by its layout, so this
-// file is the only place that knows where anything inside one lives; --db is the only
-// path the caller supplies.
+// file is the only place that knows where anything inside one lives; the bundle root is
+// the only path the caller supplies.
 //
 // Bundles may be partial. Each workflow declares the components it consumes and only
 // those are validated: SHORT_READ requires 'blastn' (and picks up snpeff annotation
 // when the bundle happens to carry it), PAFTOOLS requires 'blastn' and 'snpeff',
 // NEXTCLADE requires 'nextclade'.
+//
+// SHORT_READ uses the one --db bundle. In FASTA mode each sample carries its own bundle
+// (the sample sheet's DB column, else --db), so one run can hold several.
 
 import org.yaml.snakeyaml.Yaml
 
@@ -119,15 +122,15 @@ def built_snpeff_genomes(snpeff_dir) {
 def resolve_db(String path, List required) {
 
     if (!path || path == 'NO_FILE') {
-        error "ERROR: --db must be set to a reference database bundle.\n" + db_layout_help()
+        error "ERROR: --db (or a sample sheet DB value) must be set to a reference database bundle.\n" + db_layout_help()
     }
 
     def root = file(path)
     if (!root.exists()) {
-        error "ERROR: --db ${path} does not exist."
+        error "ERROR: reference database bundle ${path} does not exist."
     }
     if (!root.isDirectory()) {
-        error "ERROR: --db ${path} is not a directory; it must be a bundle root.\n" + db_layout_help()
+        error "ERROR: reference database bundle ${path} is not a directory; it must be a bundle root.\n" + db_layout_help()
     }
 
     def blastn        = root.resolve('blastn_db.fa')
@@ -212,6 +215,18 @@ def resolve_db(String path, List required) {
         has_snpeff:         present.snpeff,
         meta:               meta,
     ]
+}
+
+
+// Resolve every bundle in `paths` with resolve_db, keyed by bundle name. The name labels
+// run-level outputs, so two different bundles may not share one.
+def resolve_dbs(List paths, List required) {
+    def dbs = paths.collect { resolve_db(it, required) }.unique { it.root }
+    def clashes = dbs.countBy { it.name }.findAll { it.value > 1 }.keySet()
+    if (clashes) {
+        error "ERROR: different bundles share the name ${clashes.join(', ')}; give each a distinct name in its db.yml."
+    }
+    return dbs.collectEntries { [(it.name): it] }
 }
 
 

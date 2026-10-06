@@ -2,15 +2,15 @@
 
 process makeblastdb {
 
-    tag { fasta_db.name }
+    tag { db_name }
 
     conda "${projectDir}/environments/fluscan.yml"
 
     input:
-    path(fasta_db)
+    tuple val(db_name), path(fasta_db)
 
     output:
-    path("${blast_db_name}*"), emit: db
+    tuple val(db_name), path("${blast_db_name}*"), emit: db
 
     script:
     blast_db_name = "${task.ext.workflow}_blastn_db.fasta"
@@ -36,8 +36,7 @@ process blastn {
     publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*fasta" , mode:'copy'
 
     input:
-    tuple val(sample_id), path(query)
-    path(blast_db)
+    tuple val(sample_id), path(query), path(blast_db)
 
     output:
     path("${sample_id}*.tsv")    // declared so publishDir sees them; nothing reads them

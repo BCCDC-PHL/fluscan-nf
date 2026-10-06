@@ -9,13 +9,14 @@ include { SHORT_READ } from './workflows/short-read.nf'
 include { FASTA_PREP } from './workflows/fasta-prep.nf'
 include { PAFTOOLS }   from './workflows/paftools.nf'
 include { NEXTCLADE }  from './workflows/nextclade.nf'
-include { resolve_db } from './modules/shared/database.nf'
-include { db_summary } from './modules/shared/database.nf'
+include { resolve_dbs }     from './modules/shared/database.nf'
+include { db_summary }      from './modules/shared/database.nf'
+include { input_db_paths }  from './modules/shared/sample_id.nf'
 
-// Resolved with no required components: this only checks that --db points at something
-// that exists, so a typo fails before the banner. Each workflow re-resolves with the
-// components it actually consumes.
-def db = resolve_db(params.db, [])
+// Resolved with no required components: this only checks that every bundle the input names
+// exists, so a typo fails before the banner. Each workflow re-resolves with the components
+// it actually consumes.
+def dbs = resolve_dbs(input_db_paths(), [])
 
 // prints to the screen and to the log
 log.info """
@@ -26,7 +27,7 @@ log.info """
   fastqInputDir     : ${params.fastq_input}
   fastaInputDir     : ${params.fasta_input}
   samplesheet       : ${params.samplesheet_input}
-  database          : ${db_summary(db)}
+  database          : ${dbs.values().collect { db_summary(it) }.join('\n                      ')}
   primers           : ${params.primers}
   outdir            : ${params.outdir}
   pipeline run name : ${workflow.runName}
@@ -50,12 +51,16 @@ workflow {
         ? (file(params.samplesheet_input, checkIfExists: true).splitCsv(strip: true)[0] ?: [])
         : []
 
+    if ('R1' in header && 'DB' in header) {
+        error "ERROR: the short-read workflow takes one --db bundle; remove the DB column from ${params.samplesheet_input}."
+    }
+
     if (params.fastq_input != 'NO_FILE' || 'R1' in header) {
         SHORT_READ()
     } else if (params.fasta_input != 'NO_FILE' || 'FASTA' in header) {
         FASTA_PREP()
-        PAFTOOLS(FASTA_PREP.out.cleaned, FASTA_PREP.out.provenance)
-        NEXTCLADE(FASTA_PREP.out.cleaned, FASTA_PREP.out.provenance)
+        PAFTOOLS(FASTA_PREP.out.cleaned, FASTA_PREP.out.db, FASTA_PREP.out.provenance)
+        NEXTCLADE(FASTA_PREP.out.cleaned, FASTA_PREP.out.db, FASTA_PREP.out.provenance)
     } else if (params.samplesheet_input != 'NO_FILE') {
         error "ERROR: --samplesheet_input needs an ID,R1,R2 header (short-read workflow) or an ID,FASTA header (PAFTOOLS/NEXTCLADE workflow)."
     } else {

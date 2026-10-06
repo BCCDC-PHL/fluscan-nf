@@ -94,7 +94,7 @@ flowchart TD
         nc2vcf[nextclade_to_freebayes_vcf.py]
         nc_final[Final NEXTCLADE VCFs]
         coord_map[coordinate_conversion: build_reference_coordinate_map.py]
-        coord_final[aggregate/reference_remap]
+        coord_final[aggregate/reference_remap, per bundle]
         flumut_merge[merge_flumut_mutations: merge_flumut_mutations.py]
         flumut_annotated[FluMutDB-annotated VCFs]
 
@@ -140,12 +140,23 @@ SAMPLE-01,/path/to/SAMPLE-01.fasta
 SAMPLE-02,/path/to/SAMPLE-02.fasta
 ```
 
-runs PAFTOOLS and NEXTCLADE. Other columns are ignored.
+runs PAFTOOLS and NEXTCLADE. A FASTA sheet may add a `DB` column naming each sample's
+reference bundle, so one run can mix subtypes:
+
+```csv
+ID,FASTA,DB
+SAMPLE-01,/path/to/SAMPLE-01.fasta,/path/to/refs/gsgd
+SAMPLE-02,/path/to/SAMPLE-02.fasta,/path/to/refs/wisconsin588
+```
+
+A blank `DB` cell falls back to `--db`; see [docs/database_bundles.md](docs/database_bundles.md#several-bundles-in-one-run). Other columns are ignored.
 
 - Each `ID` is cleaned by the same rule as a FASTA filename (see the note under Usage), so `24-1234-IP7-SAMPLE_01` is reported as `SAMPLE-01`. After cleaning, an ID may contain only letters, digits, `.` and `-`.
 - Relative paths resolve against the directory `nextflow run` is launched from; absolute paths are safer.
 - The run stops before any task starts if a column or value is missing, a file does not exist, or two IDs clean to the same sample name.
 - `run_name`, which prefixes the run-level reports, is the sample sheet's filename without `.csv`.
+- `aggregate/sample_ids.csv` maps each input ID (or FASTA filename) to its cleaned `sample_id` and bundle name.
+- The short-read workflow takes a single `--db` and rejects a sheet with a `DB` column.
 - Give only one of `--fastq_input`, `--fasta_input` and `--samplesheet_input`.
 
 ## Reference databases
@@ -289,13 +300,14 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 |------|-------------|
 | `${run_name}_fluscan-nf_multiqc_report.html` | MultiQC report summarising fastp, cutadapt, and FastQC results for all samples (short-read workflow only) |
 | `aggregate/paftools_qc_summary.tsv` | Run-level tabular summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
+| `aggregate/sample_ids.csv` | `input_id,sample_id,db`: each input's sample sheet `ID` (or FASTA filename), its cleaned `sample_id`, and the bundle it ran against (FASTA mode) |
 | `aggregate/consensus_qc_summary.tsv` | Every `*_qc_report.tsv` row from consensus preparation, concatenated across the run. A sample rejected at preparation — duplicate segment, or headers naming more than one sample — contributes no rows and is reported only in the Nextflow log |
-| `aggregate/reference_remap/coordinate_map.json` | Primary machine-readable nucleotide/amino-acid coordinate map lifting flumut's reference (source) onto the selected Nextclade reference dataset (target) (NEXTCLADE workflow only) |
-| `aggregate/reference_remap/coordinate_map.nt.tsv` | Flat per-position nucleotide coordinate map (source/flumut position/base -> target/nextclade position/base, per segment) |
-| `aggregate/reference_remap/coordinate_map.aa.tsv` | Flat per-residue amino-acid coordinate map (source/flumut position/residue -> target/nextclade position/residue, per segment/gene) |
-| `aggregate/reference_remap/coordinate_map.qc.tsv` | Per-segment/per-gene alignment QC: identity, coverage, the number of co-optimal alignments the map's gap placement was chosen from, and status (`ok`/`warning`/`missing_in_source`/`extra_in_source`/`stale_annotation`) |
-| `aggregate/reference_remap/flumut_alignment.fasta` | Target/source (nextclade/flumut) nucleotide alignment blocks, one per segment |
-| `aggregate/reference_remap/flumut_aa_alignment.fasta` | Target/source (nextclade/flumut) amino-acid alignment blocks, one per gene |
+| `aggregate/reference_remap/<db>/coordinate_map.json` | Primary machine-readable nucleotide/amino-acid coordinate map lifting flumut's reference (source) onto bundle `<db>`'s Nextclade reference datasets (target), one directory per bundle (NEXTCLADE workflow only) |
+| `aggregate/reference_remap/<db>/coordinate_map.nt.tsv` | Flat per-position nucleotide coordinate map (source/flumut position/base -> target/nextclade position/base, per segment) |
+| `aggregate/reference_remap/<db>/coordinate_map.aa.tsv` | Flat per-residue amino-acid coordinate map (source/flumut position/residue -> target/nextclade position/residue, per segment/gene) |
+| `aggregate/reference_remap/<db>/coordinate_map.qc.tsv` | Per-segment/per-gene alignment QC: identity, coverage, the number of co-optimal alignments the map's gap placement was chosen from, and status (`ok`/`warning`/`missing_in_source`/`extra_in_source`/`stale_annotation`) |
+| `aggregate/reference_remap/<db>/flumut_alignment.fasta` | Target/source (nextclade/flumut) nucleotide alignment blocks, one per segment |
+| `aggregate/reference_remap/<db>/flumut_aa_alignment.fasta` | Target/source (nextclade/flumut) amino-acid alignment blocks, one per gene |
 | `${run_name}_fluscan-nf_nextflow_report.html` | Nextflow execution report |
 | `${run_name}_fluscan-nf_nextflow_timeline.html` | Nextflow execution timeline |
 | `${run_name}_fluscan-nf_nextflow_trace.txt` | Nextflow task trace |

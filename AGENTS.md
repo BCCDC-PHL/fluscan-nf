@@ -21,7 +21,8 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   `--fastq_input`, `--fasta_input` and `--samplesheet_input` may be set.
   `--fastq_input` runs `SHORT_READ` and `--fasta_input` launches both `PAFTOOLS`
   and `NEXTCLADE`. For `--samplesheet_input` the header decides: `ID,R1,R2` runs
-  `SHORT_READ`, `ID,FASTA` runs the two FASTA branches.
+  `SHORT_READ`, `ID,FASTA` runs the two FASTA branches. An optional `DB` column
+  gives each FASTA sample its own bundle, so one run can mix subtypes.
 - `SHORT_READ` performs read QC/primer trimming, downsampling, assembly,
   BLAST-based reference selection, mapping, LoFreq calling, SnpEff annotation,
   MNV correction, consensus generation, and FluMut screening.
@@ -32,13 +33,13 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
     task per sample aligns each segment with minimap2, calls differences with
     `paftools.js`, annotates with SnpEff, converts to the common VCF shape, and
     corrects MNV codons.
-  - `NEXTCLADE` batches samples by segment, runs Nextclade once per segment,
+  - `NEXTCLADE` batches samples by bundle and segment, runs Nextclade once per batch,
     splits per-sample results, and converts JSON to the common VCF shape,
     annotating substitutions that share a codon with the combined change.
 - `--merge_flumut_mutations` is off by default. When enabled in the Nextclade
-  branch, a run-level map lifts coordinates from FluMut's own reference
+  branch, a per-bundle map lifts coordinates from FluMut's own reference
   (source, the `references`/`annotations` tables of the installed `flumutdb`
-  sqlite) onto the selected bundle's Nextclade datasets (`--db`, target), then
+  sqlite) onto each bundle's Nextclade datasets (target), then
   `bin/merge_flumut_mutations.py` adds `FLUMUT=` annotations to matching
   existing VCF rows. The markers and the source coordinates come from the same
   package, so they cannot drift apart.
@@ -64,8 +65,8 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 | `docs/vcf_annotation_and_flumut_insertion.md` | Detailed Nextclade VCF and FluMutDB semantics |
 | `docs/watchlists.md` | Custom watchlist schema, matching rules, and the HA1/HA numbering trap |
 | `assets/watchlists/` | The shipped `*watchlist.csv` files; `--watchlist_dir` defaults here |
-| `modules/shared/sample_id.nf` | The only place a consensus or sample sheet `sample_id` is derived; holds the FASTA discovery channel `FASTA_PREP` calls and `samplesheet_channel`, which all three workflows call for `--samplesheet_input`. Changing `clean_sample_id` renames every output |
-| `modules/shared/database.nf` | The only place that knows the `--db` bundle layout; `resolve_db` validates it up front. Also holds the canonical segment list, `@Field DB_SEGMENTS`, which it uses to check each segment's dataset |
+| `modules/shared/sample_id.nf` | The only place a consensus or sample sheet `sample_id` is derived; holds `fasta_sample_channel` (FASTA input with each sample's bundle), `input_db_paths` (every bundle the input names) and `samplesheet_channel` (SHORT_READ). Changing `clean_sample_id` renames every output |
+| `modules/shared/database.nf` | The only place that knows the bundle layout; `resolve_db` validates one bundle up front and `resolve_dbs` every bundle a run uses, keyed by name. Also holds the canonical segment list, `@Field DB_SEGMENTS`, which it uses to check each segment's dataset |
 | `scripts/validate_db.py` | Deeper, contents-level bundle check; run after building or moving a bundle |
 | `docs/database_bundles.md` | Bundle layout, `db.yml` schema, how to build and validate one |
 | `README.md` | User-facing inputs, commands, outputs, and architecture |
@@ -97,11 +98,16 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   underscore, and colliding pairs are dropped silently by `.unique`; sample sheet
   FASTQ IDs go through `clean_sample_id` instead. Avoid introducing or silently
   accepting colliding names.
-- All reference data comes from one bundle directory, `--db`, in the fixed
+- Each sample's reference data comes from one bundle directory, in the fixed
   layout `blastn_db.fa` + `nextclade/` + `snpeff/{snpEff.config,<genome>/}` plus an
   optional `db.yml`. Resolve it through `resolve_db()` in
   `modules/shared/database.nf` rather than composing paths at the call site;
-  that function is the only thing that should know the layout.
+  that function is the only thing that should know the layout. SHORT_READ uses
+  `--db`. In FASTA mode the bundle is the sample sheet's `DB` cell, else `--db`,
+  so a run can hold several; their names (`db.yml` `name`, else the directory)
+  must differ, because they key the per-bundle channels and the run-level
+  outputs `nextclade/<db>/`, `nextclade/status/<db>/` and
+  `aggregate/reference_remap/<db>/`.
 - The nucleotide reference FASTA used for BLAST has headers
   `accession|subtype|segment`.
 - Nextclade datasets live in uppercase per-segment subdirectories (`HA/`, `PB2/`,
@@ -130,9 +136,12 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   explicitly unless a local config supplies it.
 - `--samplesheet_input` is parsed eagerly by `samplesheet_channel`, so column,
   blank-cell, ID and file-existence errors all fail before any task is submitted.
-  `FASTA_PREP` chooses between it and `consensus_fasta_channel`. `run_name` is the sheet's filename without `.csv`.
+  `fasta_sample_channel` chooses between it and `consensus_fasta_channel`, and
+  `FASTA_PREP` publishes `aggregate/sample_ids.csv` (`input_id,sample_id,db`), the
+  only record of how an input ID was cleaned. `run_name` is the sheet's filename without `.csv`.
 - Channel tuple keys are part of the design. Preserve `sample_id` and `segment`
-  through `join`, `combine`, `transpose`, and batching operations, and comment
+  through `join`, `combine`, `transpose`, and batching operations (and in FASTA
+  mode the bundle name, which keys per-bundle tasks and provenance), and comment
   non-obvious tuple shapes next to the transformation.
 - Preserve `publishDir` destinations and filenames when refactoring. Outputs
   are primarily `${outdir}/${sample_id}/...`, with run-level data under

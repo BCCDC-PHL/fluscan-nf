@@ -44,6 +44,7 @@ workflow SHORT_READ {
     def db = resolve_db(params.db, ['blastn'])
 
     ch_workflow_metadata = Channel.value([
+        db.name,
         workflow.sessionId,
         workflow.runName,
         workflow.manifest.name,
@@ -56,7 +57,7 @@ workflow SHORT_READ {
         ],
     ])
 
-    ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata)
+    ch_pipeline_provenance = pipeline_provenance(ch_workflow_metadata).map { db_name, record -> record }
 
     ch_primers = Channel.fromPath(params.primers, checkIfExists: true)
 
@@ -66,7 +67,7 @@ workflow SHORT_READ {
         ch_fastq_input = Channel.fromFilePairs( params.fastq_search_path, flat: true ).map{ it -> [it[0].split('_')[0], it[1], it[2]] }.unique{ it -> it[0] }
     }
 
-    ch_blastn_db = Channel.fromPath(db.blastn)
+    ch_blastn_db = Channel.of([db.name, db.blastn])
 
     main:
 
@@ -92,8 +93,8 @@ workflow SHORT_READ {
         short_read_multiqc(short_read_fastp.out.json.mix( short_read_cutadapt.out.log, ch_fastqc_collected ).collect().ifEmpty([]) )
 
         // Build BLAST database, then search assembled contigs against it to select references
-        makeblastdb(ch_blastn_db).first().set{ch_blastdb}
-        blastn(short_read_assembly.out.contigs, ch_blastdb)
+        makeblastdb(ch_blastn_db)
+        blastn(short_read_assembly.out.contigs.combine(makeblastdb.out.db.map { db_name, blastdb -> [blastdb] }))
 
         // NOTE: Currently mapping raw reads (ch_fastq_input). Consider using
         // short_read_cutadapt.out.primer_trimmed_reads instead to avoid adapter/primer artifacts.
