@@ -13,12 +13,12 @@
 //      kept one: the saveAs in modules/nextclade/nextclade.nf and the sample_name
 //      column in bin/filter_alignments.py
 //   3. strip the submitter prefix some partner organisations prepend,
-//      e.g. 24-1234-IP7-SAMPLE-A -> SAMPLE-A
+//      e.g. 24-1234-IP7-SAMPLE-A -> SAMPLE-A, 25-7015--WLH25-1607 -> WLH25-1607
 
 def clean_sample_id(String name) {
     name.replaceFirst(/(?i)_consensus$/, '')
         .replaceAll(/_/, '-')
-        .replaceFirst(/^\d{2}-\d+(?:-IP\d+)?-/, '')
+        .replaceFirst(/^\d{2}-\d+(?:-IP\d+)?-+/, '')
 }
 
 // Consensus FASTA discovery for the PAFTOOLS and NEXTCLADE branches. Each file
