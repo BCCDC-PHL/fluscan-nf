@@ -1,6 +1,6 @@
 // nextclade/coordinate_conversion.nf - Build a FluMut->Nextclade reference coordinate map.
 //
-// Runs once per pipeline invocation, not per sample. Translates nucleotide and amino-acid
+// Runs once per bundle, not per sample. Translates nucleotide and amino-acid
 // indices from flumut's fixed reference (source, read from the installed flumutdb package)
 // onto the selected Nextclade dataset (target), so merge_flumut_mutations can place FluMutDB
 // positions in Nextclade coordinates. Idempotent: the same flumutdb and dataset always give
@@ -12,16 +12,17 @@ process coordinate_conversion {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/aggregate", pattern: "reference_remap", mode: 'copy'
+    publishDir "${params.outdir}/aggregate/reference_remap", pattern: "reference_remap", mode: 'copy',
+        saveAs: { db_name }
 
     input:
-    tuple val(target_name), path(target_dataset_dir, stageAs: 'target_dataset')
+    tuple val(db_name), val(target_name), path(target_dataset_dir, stageAs: 'target_dataset')
 
     output:
-    path("reference_remap"),                                          emit: map_dir
-    path("reference_remap/coordinate_map.json"),                      emit: json
-    path("reference_remap/coordinate_map.*.json"),                    emit: json_shards
-    path("reference_remap/coordinate_conversion_provenance.yml"),     emit: provenance
+    tuple val(db_name), path("reference_remap"),                                          emit: map_dir
+    tuple val(db_name), path("reference_remap/coordinate_map.json"),                      emit: json
+    tuple val(db_name), path("reference_remap/coordinate_map.*.json"),                    emit: json_shards
+    tuple val(db_name), path("reference_remap/coordinate_conversion_provenance.yml"),     emit: provenance
 
     script:
     """

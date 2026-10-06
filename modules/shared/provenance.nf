@@ -25,15 +25,15 @@ process collect_provenance {
 
 process pipeline_provenance {
 
-    tag { pipeline_name + " / " + pipeline_version }
+    tag { db_name }
 
     executor 'local'
 
     input:
-    tuple val(session_id), val(run_name), val(pipeline_name), val(pipeline_version), val(timestamp_analysis_start), val(databases)
+    tuple val(db_name), val(session_id), val(run_name), val(pipeline_name), val(pipeline_version), val(timestamp_analysis_start), val(databases)
 
     output:
-    file("pipeline_provenance.yml")
+    tuple val(db_name), path("pipeline_provenance.yml")
 
     script:
     // `databases` is an insertion-ordered map of reference-database facts, so which keys

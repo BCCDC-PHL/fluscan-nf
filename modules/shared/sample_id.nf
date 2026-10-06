@@ -40,10 +40,10 @@ def consensus_fasta_channel(String input_dir) {
     return ch
 }
 
-// Sample sheet discovery for every workflow: an ID column plus the given file columns,
-// ['R1', 'R2'] or ['FASTA']. Parsed eagerly, so a bad sheet fails before any task runs.
-// Relative paths resolve against the launch directory.
-def samplesheet_channel(String path, List<String> columns) {
+// Validated sample sheet rows as [sample_id, row] pairs: an ID column plus the given file
+// columns, ['R1', 'R2'] or ['FASTA']. Parsed eagerly, so a bad sheet fails before any task
+// runs.
+def samplesheet_rows(String path, List<String> columns) {
     def rows = file(path, checkIfExists: true).splitCsv(header: true, strip: true)
     if (!rows) {
         error "ERROR: sample sheet ${path} has no rows."
@@ -71,8 +71,35 @@ def samplesheet_channel(String path, List<String> columns) {
         error "ERROR: IDs in ${path} collapse to duplicate sample IDs: ${duplicates.join(', ')}"
     }
 
-    // [sample_id, file, ...] in the order of columns, e.g. [sample_id, R1, R2]
-    return Channel.fromList([ids, rows].transpose().collect { id, row ->
+    return [ids, rows].transpose()
+}
+
+// [sample_id, file, ...] in the order of columns, e.g. [sample_id, R1, R2]. Relative paths
+// resolve against the launch directory.
+def samplesheet_channel(String path, List<String> columns) {
+    return Channel.fromList(samplesheet_rows(path, columns).collect { id, row ->
         [id] + columns.collect { file(row[it], checkIfExists: true) }
     })
+}
+
+// FASTA-mode samples as [sample_id, FASTA, bundle path, input ID]. The bundle is the sample
+// sheet's DB cell, or --db for a blank cell, a sheet without DB, and --fasta_input.
+def fasta_sample_channel() {
+    if (params.samplesheet_input == 'NO_FILE') {
+        return consensus_fasta_channel(params.fasta_input)
+            .map { id, fasta -> [id, fasta, params.db, fasta.name] }
+    }
+    return Channel.fromList(samplesheet_rows(params.samplesheet_input, ['FASTA']).collect { id, row ->
+        [id, file(row.FASTA, checkIfExists: true), row.DB ?: params.db, row.ID]
+    })
+}
+
+// Every bundle path the input names, by the same rule as fasta_sample_channel. Read eagerly
+// so each bundle is validated before any task runs.
+def input_db_paths() {
+    def rows = params.samplesheet_input == 'NO_FILE' ? [] : file(params.samplesheet_input).splitCsv(header: true, strip: true)
+    if (!rows || !('FASTA' in rows[0].keySet())) {
+        return [params.db]
+    }
+    return rows.collect { row -> row.DB ?: params.db }.unique()
 }

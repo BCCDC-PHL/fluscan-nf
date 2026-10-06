@@ -18,18 +18,32 @@
 include { hash_files }              from '../modules/shared/hash_files.nf'
 include { prepare_consensus }       from '../modules/shared/consensus_qc.nf'
 include { flumut }                  from '../modules/shared/flumut.nf'
-include { consensus_fasta_channel } from '../modules/shared/sample_id.nf'
-include { samplesheet_channel }     from '../modules/shared/sample_id.nf'
+include { fasta_sample_channel }    from '../modules/shared/sample_id.nf'
+include { input_db_paths }          from '../modules/shared/sample_id.nf'
+include { resolve_dbs }             from '../modules/shared/database.nf'
 
 workflow FASTA_PREP {
 
     main:
 
-        // Consensus FASTAs from the sample sheet or the input directory.
-        // Each file is expected to contain 8 segments for a single sample.
-        ch_fasta_input = params.samplesheet_input != 'NO_FILE'
-            ? samplesheet_channel(params.samplesheet_input, ['FASTA'])
-            : consensus_fasta_channel(params.fasta_input)
+        // Consensus FASTAs from the sample sheet or the input directory, with each sample's
+        // bundle. Each file is expected to contain 8 segments for a single sample.
+        def dbs = resolve_dbs(input_db_paths(), [])
+        ch_samples = fasta_sample_channel()      // [sample_id, FASTA, bundle path, input ID]
+        ch_fasta_input = ch_samples.map { sample_id, fasta, db_path, input_id -> [sample_id, fasta] }
+        ch_db = ch_samples.map { sample_id, fasta, db_path, input_id ->
+            [sample_id, dbs.values().find { it.root == file(db_path) }.name]
+        }
+
+        // Input ID to sample_id and bundle, for joining results back to the submitter's IDs.
+        ch_samples.join(ch_db)
+            .map { sample_id, fasta, db_path, input_id, db_name -> "${input_id},${sample_id},${db_name}\n" }
+            .collectFile(
+                name: 'sample_ids.csv',
+                storeDir: "${params.outdir}/aggregate",
+                seed: "input_id,sample_id,db\n",
+                sort: true
+            )
 
         // Hash the input FASTA. One file per sample, so no list-wrapping here.
         hash_files(ch_fasta_input.combine(Channel.of("fasta_input")))
@@ -60,5 +74,6 @@ workflow FASTA_PREP {
 
     emit:
         cleaned    = prepare_consensus.out.cleaned    // [sample_id, cleaned consensus FASTA]
+        db         = ch_db                            // [sample_id, bundle name]
         provenance = ch_provenance                    // [sample_id, [hash, prepare, flumut]]
 }

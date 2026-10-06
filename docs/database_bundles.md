@@ -1,8 +1,10 @@
 # Reference database bundles
 
 Every reference the pipeline needs for one reference set lives in a single directory — a
-*bundle* — passed as `--db`. The FluMut coordinate reference used by the optional merge
-is not a bundle: it is read from the `flumutdb` conda package.
+*bundle* — passed as `--db`. In FASTA mode a sample sheet's `DB` column can instead give
+each sample its own bundle (see [Several bundles in one run](#several-bundles-in-one-run)).
+The FluMut coordinate reference used by the optional merge is not a bundle: it is read from
+the `flumutdb` conda package.
 
 ```
 nextflow run BCCDC-PHL/fluscan-nf \
@@ -34,7 +36,24 @@ nests them one level deeper under `data/`; a bundle does not, because `snpeff/` 
 already the per-bundle directory that level provided.
 
 The filenames are fixed and not configurable. `modules/shared/database.nf` is the only
-place that knows this layout; `--db` is the only path you supply.
+place that knows this layout; the bundle root is the only path you supply.
+
+### Several bundles in one run
+
+In FASTA mode a sample sheet may carry a `DB` column holding a bundle root per row:
+
+```csv
+ID,FASTA,DB
+SAMPLE-01,/path/to/SAMPLE-01.fasta,/path/to/refs/gsgd
+SAMPLE-02,/path/to/SAMPLE-02.fasta,/path/to/refs/wisconsin588
+```
+
+A blank `DB` cell, or a sheet without the column, falls back to `--db`. Every bundle is
+validated before any task runs, and each sample is analysed against its own bundle only.
+Bundle names (`db.yml` `name`, else the directory name) must differ within a run, because
+run-level outputs are filed under them: `nextclade/<name>/`, `nextclade/status/<name>/`
+and `aggregate/reference_remap/<name>/`. The short-read workflow takes one `--db` and
+rejects a sheet with a `DB` column.
 
 ### Bundles may be partial
 
@@ -74,7 +93,7 @@ Quote `version`. Unquoted `2025-07-07` parses as a *date*, not a string, in both
 YAML reader the pipeline uses and the one that reads the provenance file back.
 
 `nextclade_ref_name` is what appears as `target_reference` in
-`aggregate/reference_remap/coordinate_map.json`. It is separate from `name` so a bundle
+`aggregate/reference_remap/<name>/coordinate_map.json`. It is separate from `name` so a bundle
 can be renamed or relocated on disk without changing labels already written into
 published coordinate maps.
 
