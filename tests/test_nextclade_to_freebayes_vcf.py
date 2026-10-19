@@ -14,6 +14,7 @@ nothing outside the repo. An HA-shaped annotation is used: one gene, one CDS, an
 mature peptides standing in for HA1 and HA2.
 """
 
+import csv
 import json
 import subprocess
 import sys
@@ -25,6 +26,8 @@ REPO_ROOT   = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "bin" / "nextclade_to_freebayes_vcf.py"
 
 pytest.importorskip("Bio", reason="Biopython is required by the script under test")
+
+import nextclade_to_freebayes_vcf as nc2vcf  # noqa: E402  (needs Biopython, checked above)
 
 CHROM = "TEST_REF"
 
@@ -58,6 +61,16 @@ def _reference_sequence(length: int = 700) -> str:
 
 REF_SEQ = _reference_sequence()
 
+# Alignment fields of a full-length, identical sequence with clean Nextclade QC.
+ALIGNED = {
+    "alignmentRange": {"begin": 0, "end": len(REF_SEQ)}, "lenUnaligned": len(REF_SEQ),
+    "totalSubstitutions": 0, "totalDeletions": 0, "totalInsertions": 0,
+    "totalMissing": 0, "totalNonACGTNs": 0,
+    "qc": {"overallStatus": "good", "frameShifts": {"status": "good"}, "stopCodons": {"status": "good"}},
+}
+
+QC_ARGS = ["--segment", "HA", "--qc", "qc.tsv", "--pass-pct", "90"]
+
 
 def _write_dataset(directory: Path, gff3: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
@@ -85,6 +98,7 @@ def _write_json(path: Path, positions=SUB_POSITIONS, sample: str = "SAMPLE01",
             "aaDeletions":   [],
             "aaInsertions":  [],
             "frameShifts":   [],
+            **ALIGNED,
         }],
     }))
     return path
@@ -94,7 +108,7 @@ def _run(dataset: Path, json_path: Path, workdir: Path, no_mature: bool = False)
     """Convert json_path inside workdir; return SAMPLE01's standard and no-mature VCF paths."""
     workdir.mkdir(parents=True, exist_ok=True)
     cmd = [sys.executable, str(SCRIPT_PATH), "-i", str(json_path),
-           "-d", str(dataset), "--suffix", ".vcf"]
+           "-d", str(dataset), "--suffix", ".vcf", *QC_ARGS]
     if no_mature:
         cmd += ["--no-mature-suffix", "_nomat.vcf"]
     subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=workdir)
@@ -293,7 +307,7 @@ def test_no_second_file_without_the_suffix(tmp_path, dataset, nextclade_json):
 def _result(name: str) -> dict:
     return {"seqName": name, "substitutions": [{"pos": 100, "refNuc": REF_SEQ[100], "qryNuc": "A"}],
             "deletions": [], "insertions": [], "nucToAaMuts": {},
-            "aaDeletions": [], "aaInsertions": [], "frameShifts": []}
+            "aaDeletions": [], "aaInsertions": [], "frameShifts": [], **ALIGNED}
 
 
 def test_batch_input_writes_one_named_vcf_per_sample(tmp_path, dataset):
@@ -301,7 +315,8 @@ def test_batch_input_writes_one_named_vcf_per_sample(tmp_path, dataset):
     json_path.write_text(json.dumps({"results": [_result("SAMPLE01"), _result("SAMPLE02")]}))
     subprocess.run(
         [sys.executable, str(SCRIPT_PATH), "-i", str(json_path), "-d", str(dataset),
-         "--suffix", "__REF__HA_nc_final.vcf", "--no-mature-suffix", "__REF__HA_nc_nomat_final.vcf"],
+         "--suffix", "__REF__HA_nc_final.vcf", "--no-mature-suffix", "__REF__HA_nc_nomat_final.vcf",
+         *QC_ARGS],
         check=True, capture_output=True, text=True, cwd=tmp_path,
     )
     for sample in ("SAMPLE01", "SAMPLE02"):
@@ -327,3 +342,81 @@ def test_batch_where_nothing_aligned_writes_nothing(tmp_path, dataset):
     json_path.write_text(json.dumps({"results": [], "errors": [{"seqName": "SAMPLE01", "errors": ["x"]}]}))
     _run(dataset, json_path, tmp_path / "out")
     assert list((tmp_path / "out").glob("*.vcf")) == []
+
+
+# ---------------------------------------------------------------------------
+# Segment QC
+# ---------------------------------------------------------------------------
+
+def _aligned(begin=0, end=100, subs=0, dels=0, ins=0, missing=0, non_acgtn=0,
+             frameshifts="good", stops="good") -> dict:
+    return {"alignmentRange": {"begin": begin, "end": end}, "totalSubstitutions": subs,
+            "totalDeletions": dels, "totalInsertions": ins, "totalMissing": missing,
+            "totalNonACGTNs": non_acgtn,
+            "qc": {"frameShifts": {"status": frameshifts}, "stopCodons": {"status": stops}}}
+
+
+def test_identical_full_length_is_100():
+    assert nc2vcf.identity_pct(_aligned(), 100) == 100.0
+
+
+def test_substitutions_missing_and_ambiguous_bases_are_mismatches():
+    assert nc2vcf.identity_pct(_aligned(subs=5, missing=3, non_acgtn=2), 100) == 90.0
+
+
+def test_insertions_widen_the_alignment():
+    assert nc2vcf.identity_pct(_aligned(ins=25), 100) == 80.0
+
+
+def test_deletions_and_unaligned_ends_are_mismatches():
+    assert nc2vcf.identity_pct(_aligned(begin=10, dels=10), 100) == 80.0
+
+
+@pytest.mark.parametrize("result, expected", [
+    (_aligned(),                           ("PASS", [])),
+    (_aligned(subs=10),                    ("PASS", [])),           # exactly at the pass threshold
+    (_aligned(subs=20),                    ("WARN", ["identity"])),
+    (_aligned(missing=90),                 ("WARN", ["identity"])), # mostly Ns: still has a VCF
+    (_aligned(frameshifts="mediocre"),     ("FAIL", ["frameshift"])),
+    (_aligned(frameshifts="bad"),          ("FAIL", ["frameshift"])),
+    (_aligned(stops="bad"),                ("FAIL", ["stop_codons"])),
+    (_aligned(stops="mediocre"),           ("PASS", [])),
+    (_aligned(subs=40, frameshifts="bad"), ("FAIL", ["frameshift", "identity"])),
+])
+def test_segment_qc_status(result, expected):
+    status, reasons, _ = nc2vcf.segment_qc(result, 100, pass_pct=90)
+    assert (status, reasons) == expected
+
+
+def test_a_disabled_qc_rule_is_not_a_failure():
+    result = _aligned()
+    result["qc"]["frameShifts"] = None
+    assert nc2vcf.segment_qc(result, 100, pass_pct=90)[0] == "PASS"
+
+
+def test_qc_table_covers_every_sequence_and_failures_get_no_vcf(tmp_path, dataset):
+    misaligned = {**_result("MISALIGNED"),
+                  "qc": {"overallStatus": "bad", "frameShifts": {"status": "bad"},
+                         "stopCodons": {"status": "good"}}}
+    json_path = tmp_path / "batch.json"
+    json_path.write_text(json.dumps({
+        "results": [_result("PASSER"), misaligned],
+        "errors":  [{"seqName": "UNALIGNED", "errors": ["Unable to align"]}],
+    }))
+    out = tmp_path / "out"
+    _run(dataset, json_path, out, no_mature=True)
+
+    assert sorted(p.name for p in out.glob("*.vcf")) == ["PASSER.vcf", "PASSER_nomat.vcf"]
+    with open(out / "qc.tsv") as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+    assert list(rows[0]) == nc2vcf.QC_COLUMNS
+    assert [(r["sample_id"], r["status"], r["reasons"]) for r in rows] == [
+        ("MISALIGNED", "FAIL", "frameshift"),
+        ("PASSER", "PASS", ""),
+        ("UNALIGNED", "FAIL", "not_aligned"),
+    ]
+    assert rows[1] == {"sample_id": "PASSER", "segment": "HA", "status": "PASS", "reasons": "",
+                       "identity_pct": "100.000", "consensus_length": str(len(REF_SEQ)),
+                       "reference_length": str(len(REF_SEQ)), "reference_id": CHROM,
+                       "nextclade_qc": "good"}
+    assert rows[2]["identity_pct"] == "NA"

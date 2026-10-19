@@ -34,8 +34,7 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - Consensus FASTA validation and header normalisation
 - Per-segment batching across samples
 - Per-segment `nextclade run` against built-in datasets
-- Per-sample JSON/TSV splitting from the batch results
-- Consensus/reference identity QC from the Nextclade alignment
+- Per-segment QC from the Nextclade alignment; a segment that fails gets no VCF
 - Conversion to freebayes-style VCF, with substitutions that share a codon annotated as one codon change
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
 - *Optional* (`--merge_flumut_mutations`, default off): reference coordinate conversion — builds a run-level, idempotent nucleotide/amino-acid coordinate map lifting flumut's fixed reference onto the selected Nextclade reference dataset coordinate system (`bin/build_reference_coordinate_map.py`) — followed by FluMutDB annotation of the VCF, which tags each fluscan amino-acid call that matches a curated FluMutDB marker with a `FLUMUT=` INFO field carrying the mutation name and its published effects, split into those directly attributable to that mutation and those associated with it through a multi-mutation marker, each qualified by the subtype it was observed in. No rows are added or removed, so a marker is only reported where fluscan called a difference from the Nextclade reference. Because FluMutDB numbers HA by its HA1/HA2 subunits, HA markers are only annotated when the Nextclade dataset also exposes that split — either as two dedicated `HA1`/`HA2` CDS features, or as `mature_protein_region_of_CDS` children of a single HA CDS (the NCBI/RefSeq model, which the GsGD dataset uses). A dataset offering only a bare `HA` CDS is flagged `stale_annotation` and passes through with its HA rows unannotated
@@ -90,8 +89,7 @@ flowchart TD
         direction TB
         groupseg[collect each segment across samples: splitFasta + collectFile]
         nc_run[nextclade run batch]
-        split_results[split per-sample JSON and TSV]
-        nc2vcf[nextclade_to_freebayes_vcf.py]
+        nc2vcf[nextclade_to_freebayes_vcf.py: QC + VCF]
         nc_final[Final NEXTCLADE VCFs]
         coord_map[coordinate_conversion: build_reference_coordinate_map.py]
         coord_final[aggregate/reference_remap, per bundle]
@@ -100,7 +98,6 @@ flowchart TD
 
         prepare --> groupseg
         groupseg --> nc_run
-        nc_run --> split_results
         nc_run --> nc2vcf
         nc2vcf --> nc_final
         dispatch -.->|"flumutdb reference + db nextclade datasets, sample-independent (if merge_flumut_mutations)"| coord_map
@@ -281,10 +278,7 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 
 | File | Description |
 |------|-------------|
-| `nextclade/json/*_nextclade.json` | Per-segment Nextclade JSON split out from the cross-sample batch result |
-| `nextclade/tsv/*_nextclade.tsv` | Per-segment Nextclade TSV split out from the cross-sample batch result |
-| `qc/*_identity_qc.tsv` | Per-segment identity of the consensus to the Nextclade dataset reference, taken from Nextclade's alignment: exact matches over the reference plus inserted bases, with Ns and ambiguous bases counted as mismatches. PASS/WARN/FAIL at `--consensus_identity_pass_pct` (default 90) and `--consensus_identity_warn_pct` (default 70); a segment Nextclade could not align is FAIL with `identity_pct` `NA` |
-| `nextclade/*_final.vcf` | Per-segment final VCF from the Nextclade-to-VCF conversion. Rows in a codon holding more than one substitution carry the combined change, plus `MNV_CORRECTED` and `MNV_ORIGINAL_HGVS_P` where it differs from the call before codon correction (Nextclade's, otherwise the single-base change) |
+| `nextclade/*_final.vcf` | Per-segment final VCF from the Nextclade-to-VCF conversion, written only for segments that do not FAIL QC (see `aggregate/nextclade_qc_summary.tsv`). Rows in a codon holding more than one substitution carry the combined change, plus `MNV_CORRECTED` and `MNV_ORIGINAL_HGVS_P` where it differs from the call before codon correction (Nextclade's, otherwise the single-base change) |
 | `nextclade/no_mature_peptide/*_nc_nomat_final.vcf` | *Optional* (`--emit_no_mature_vcf`): the same records annotated without mature peptides, so HA carries only its HA0 `ANN=` entry and no HA1/HA2 ones |
 | `nextclade/flumut_annotated/*_flumut_annotated.vcf` | *Optional* (`--merge_flumut_mutations`): the same VCF with a `FLUMUT=` INFO field (`Protein\|AA_Pos\|Alt_AA\|Mutation_Name\|DirectEffect\|AssociatedEffect`) on rows whose amino-acid change matches a curated FluMutDB marker |
 | `nextclade/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF. Independent of `--merge_flumut_mutations`: `FLUMUT=` is a curated annotation written *into* the VCF, this is a custom list scanned *out* of it |
@@ -300,6 +294,7 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 |------|-------------|
 | `${run_name}_fluscan-nf_multiqc_report.html` | MultiQC report summarising fastp, cutadapt, and FastQC results for all samples (short-read workflow only) |
 | `aggregate/paftools_qc_summary.tsv` | Run-level tabular summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
+| `aggregate/nextclade_qc_summary.tsv` | One row per sample and segment Nextclade saw (NEXTCLADE workflow). `status` is FAIL, with no VCF written, when Nextclade could not align the segment (`not_aligned`), reports a frameshift (`frameshift`), or scores its stop codons `bad` (`stop_codons`); WARN when `identity_pct` is below `--consensus_identity_pass_pct` (default 90); otherwise PASS. `identity_pct` is exact matches over the reference plus inserted bases, with Ns and ambiguous bases counted as mismatches, so a segment with many Ns WARNs but keeps its VCF. `nextclade_qc` is Nextclade's own overall status |
 | `aggregate/sample_ids.csv` | `input_id,sample_id,db`: each input's sample sheet `ID` (or FASTA filename), its cleaned `sample_id`, and the bundle it ran against (FASTA mode) |
 | `aggregate/consensus_qc_summary.tsv` | Every `*_qc_report.tsv` row from consensus preparation, concatenated across the run. A sample rejected at preparation — duplicate segment, or headers naming more than one sample — contributes no rows and is reported only in the Nextflow log |
 | `aggregate/reference_remap/<db>/coordinate_map.json` | Primary machine-readable nucleotide/amino-acid coordinate map lifting flumut's reference (source) onto bundle `<db>`'s Nextclade reference datasets (target), one directory per bundle (NEXTCLADE workflow only) |

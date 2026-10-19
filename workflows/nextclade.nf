@@ -61,11 +61,22 @@ workflow NEXTCLADE {
             // -> [bundle name, segment, batch.fasta, dataset_dir]
 
         // --- Step 2: Run nextclade once per segment for all samples, and convert to VCF ---
-        //   Also writes each sample's report-only consensus/reference identity QC.
+        //   A segment that fails QC gets no VCF, so nothing downstream sees it.
         //   With --emit_no_mature_vcf it also publishes each VCF without mature-peptide
         //   (HA1/HA2) annotations. Nothing downstream reads that copy: mutation_watch and
         //   merge_flumut_mutations resolve HA markers through the HA1/HA2 Feature_ID.
         nextclade_run_batch(ch_segment_batches)
+
+        // One run-level table of every sample and segment Nextclade saw, with its QC status.
+        nextclade_run_batch.out.qc
+            .map { db_name, segment, qc -> qc }
+            .collectFile(
+                name: 'nextclade_qc_summary.tsv',
+                storeDir: "${params.outdir}/aggregate",
+                keepHeader: true,                   // keep header from first file only
+                skip: 1,                            // drop the header line from the rest
+                sort: false
+            )
 
         // --- Step 3: Scan the final VCFs for custom watchlists (optional) ---
         //   Independent of --merge_flumut_mutations: FLUMUT= is a curated annotation written
