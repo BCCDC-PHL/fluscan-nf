@@ -31,7 +31,7 @@ process nextclade_run_batch {
     tuple val(db_name), val(segment), path("*_nc_final.vcf"),              optional: true, emit: vcf
     tuple val(db_name), val(segment), path("*_nc_nomat_final.vcf"),        optional: true, emit: vcf_no_mature
     tuple val(db_name), val(segment), path("${segment}_nextclade_qc.tsv"),                 emit: qc
-    tuple val(db_name), val(segment), path("nc_output"),                                   emit: all
+    tuple val(db_name), val(segment), path("nc_output")
     tuple val(db_name), val(segment), path("${segment}_nextclade_provenance.yml"),         emit: provenance
 
     script:
@@ -60,7 +60,7 @@ process nextclade_run_batch {
     printf -- "    - parameter: segment\\n      value: ${segment}\\n"                             >> ${segment}_nextclade_provenance.yml
     printf -- "    - parameter: reference\\n      value: \$REFERENCE_NAME\\n"                     >> ${segment}_nextclade_provenance.yml
     printf -- "    - parameter: alignment_preset\\n      value: ${params.nextclade_alignment_preset}\\n" >> ${segment}_nextclade_provenance.yml
-    printf -- "    - parameter: consensus_identity_pass_pct\\n      value: ${params.consensus_identity_pass_pct}\\n" >> ${segment}_nextclade_provenance.yml
+    printf -- "    - parameter: consensus_coverage_pass_pct\\n      value: ${params.consensus_coverage_pass_pct}\\n" >> ${segment}_nextclade_provenance.yml
 
     nextclade_to_freebayes_vcf.py \\
         -i nc_output/batch.json \\
@@ -69,6 +69,6 @@ process nextclade_run_batch {
         ${no_mature_arg} \\
         --segment ${segment} \\
         --qc ${segment}_nextclade_qc.tsv \\
-        --pass-pct ${params.consensus_identity_pass_pct}
+        --pass-pct ${params.consensus_coverage_pass_pct}
     """
 }

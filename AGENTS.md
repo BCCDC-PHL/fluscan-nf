@@ -149,7 +149,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   are primarily `${outdir}/${sample_id}/...`, with run-level data under
   `${outdir}/aggregate`. Several joins and parsers depend on double-underscore
   VCF stems and the `_paf`, `_nc`, and `_final.vcf` suffixes.
-- PAFTOOLS coverage QC and NEXTCLADE identity are report-only; NEXTCLADE's
+- Coverage QC is report-only in both PAFTOOLS and NEXTCLADE; NEXTCLADE's
   frameshift and stop-codon checks withhold the VCF. Some processes intentionally
   ignore errors, so a successful run status does not prove every expected
   sample and segment was published; check completeness explicitly.

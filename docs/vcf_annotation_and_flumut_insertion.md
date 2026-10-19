@@ -76,7 +76,8 @@ VCFs. It resolves CDS structure directly from the dataset's GFF3, handling overl
 
 ```
 nextclade_to_freebayes_vcf.py -i <batch.json> -d <dataset_dir> --suffix <suffix>
-                              [--no-mature-suffix <suffix>] [--qual 60]
+                              --segment <SEG> --qc <qc.tsv> --pass-pct <pct>
+                              [--no-mature-suffix <suffix>]
 ```
 
 `-d` must contain `reference.fasta` and `genome_annotation.gff3` (the same files Nextclade
@@ -94,11 +95,12 @@ directory; `nextclade_run_batch` passes `__<ref>__<subtype>__<SEGMENT>_nc_final.
      ORFs work), `strand`, `cds_length`, `aa_length` (`cds_len//3 − 1`, i.e. excluding the
      stop codon), `feature_id`, `protein_id` (matches Nextclade's `cdsName`), `is_mature`,
      and any `warnings`.
-3. **Iterate JSON `results`** — one sequence at a time. Sequences whose result carries
-   `errors`, or that appear under the top-level `errors` array (e.g. *"Unable to align"*),
-   get **no VCF** and a warning. So does a sequence that fails QC (`segment_qc`): Nextclade's
-   `frameShifts` QC is `mediocre` or `bad`, or its `stopCodons` QC is `bad`. Every sequence,
-   failed or not, gets a row in the `--qc` table, collected into `aggregate/nextclade_qc_summary.tsv`.
+3. **Iterate JSON `results`** — one sequence at a time. Sequences under the top-level
+   `errors` array (e.g. *"Unable to align"*) get **no VCF** and a warning. So does a
+   sequence that fails QC (`segment_qc`): Nextclade's `frameShifts` QC is `mediocre` or
+   `bad`, or its `stopCodons` QC is `bad`. Reference coverage below `--pass-pct` only
+   WARNs. Every sequence gets a row in the `--qc` table, collected into
+   `aggregate/nextclade_qc_summary.tsv`.
 4. **Emit variants** (`variants_from_json_result`) and **write** (`write_vcf`), one file
    per sequence.
 

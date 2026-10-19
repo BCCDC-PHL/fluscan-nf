@@ -66,7 +66,7 @@ ALIGNED = {
     "alignmentRange": {"begin": 0, "end": len(REF_SEQ)}, "lenUnaligned": len(REF_SEQ),
     "totalSubstitutions": 0, "totalDeletions": 0, "totalInsertions": 0,
     "totalMissing": 0, "totalNonACGTNs": 0,
-    "qc": {"overallStatus": "good", "frameShifts": {"status": "good"}, "stopCodons": {"status": "good"}},
+    "qc": {"frameShifts": {"status": "good"}, "stopCodons": {"status": "good"}},
 }
 
 QC_ARGS = ["--segment", "HA", "--qc", "qc.tsv", "--pass-pct", "90"]
@@ -356,36 +356,38 @@ def _aligned(begin=0, end=100, subs=0, dels=0, ins=0, missing=0, non_acgtn=0,
             "qc": {"frameShifts": {"status": frameshifts}, "stopCodons": {"status": stops}}}
 
 
-def test_identical_full_length_is_100():
-    assert nc2vcf.identity_pct(_aligned(), 100) == 100.0
+def test_identical_full_length_is_full_coverage_and_identity():
+    assert nc2vcf.segment_qc(_aligned(), 100, pass_pct=90)[2:] == (100.0, 100.0)
 
 
-def test_substitutions_missing_and_ambiguous_bases_are_mismatches():
-    assert nc2vcf.identity_pct(_aligned(subs=5, missing=3, non_acgtn=2), 100) == 90.0
+def test_ns_and_unaligned_ends_lower_coverage_but_not_identity():
+    assert nc2vcf.segment_qc(_aligned(begin=10, missing=40), 100, pass_pct=90)[2:] == (50.0, 100.0)
 
 
-def test_insertions_widen_the_alignment():
-    assert nc2vcf.identity_pct(_aligned(ins=25), 100) == 80.0
+def test_mismatches_count_against_identity_over_called_bases():
+    _, _, coverage, identity = nc2vcf.segment_qc(_aligned(missing=50, subs=3, dels=1, non_acgtn=1),
+                                                 100, pass_pct=90)
+    assert (coverage, identity) == (50.0, 90.0)
 
 
-def test_deletions_and_unaligned_ends_are_mismatches():
-    assert nc2vcf.identity_pct(_aligned(begin=10, dels=10), 100) == 80.0
+def test_insertions_widen_the_identity_denominator():
+    assert nc2vcf.segment_qc(_aligned(ins=25), 100, pass_pct=90)[3] == 80.0
 
 
 @pytest.mark.parametrize("result, expected", [
-    (_aligned(),                           ("PASS", [])),
-    (_aligned(subs=10),                    ("PASS", [])),           # exactly at the pass threshold
-    (_aligned(subs=20),                    ("WARN", ["identity"])),
-    (_aligned(missing=90),                 ("WARN", ["identity"])), # mostly Ns: still has a VCF
-    (_aligned(frameshifts="mediocre"),     ("FAIL", ["frameshift"])),
-    (_aligned(frameshifts="bad"),          ("FAIL", ["frameshift"])),
-    (_aligned(stops="bad"),                ("FAIL", ["stop_codons"])),
-    (_aligned(stops="mediocre"),           ("PASS", [])),
-    (_aligned(subs=40, frameshifts="bad"), ("FAIL", ["frameshift", "identity"])),
+    (_aligned(),                              ("PASS", [])),
+    (_aligned(missing=10),                    ("PASS", [])),           # exactly at the pass threshold
+    (_aligned(subs=20),                       ("PASS", [])),           # divergent but fully covered
+    (_aligned(missing=11),                    ("WARN", ["coverage"])),
+    (_aligned(begin=20),                      ("WARN", ["coverage"])), # truncated: still has a VCF
+    (_aligned(frameshifts="mediocre"),        ("FAIL", ["frameshift"])),
+    (_aligned(frameshifts="bad"),             ("FAIL", ["frameshift"])),
+    (_aligned(stops="bad"),                   ("FAIL", ["stop_codons"])),
+    (_aligned(stops="mediocre"),              ("PASS", [])),
+    (_aligned(missing=40, frameshifts="bad"), ("FAIL", ["frameshift", "coverage"])),
 ])
 def test_segment_qc_status(result, expected):
-    status, reasons, _ = nc2vcf.segment_qc(result, 100, pass_pct=90)
-    assert (status, reasons) == expected
+    assert nc2vcf.segment_qc(result, 100, pass_pct=90)[:2] == expected
 
 
 def test_a_disabled_qc_rule_is_not_a_failure():
@@ -396,8 +398,7 @@ def test_a_disabled_qc_rule_is_not_a_failure():
 
 def test_qc_table_covers_every_sequence_and_failures_get_no_vcf(tmp_path, dataset):
     misaligned = {**_result("MISALIGNED"),
-                  "qc": {"overallStatus": "bad", "frameShifts": {"status": "bad"},
-                         "stopCodons": {"status": "good"}}}
+                  "qc": {"frameShifts": {"status": "bad"}, "stopCodons": {"status": "good"}}}
     json_path = tmp_path / "batch.json"
     json_path.write_text(json.dumps({
         "results": [_result("PASSER"), misaligned],
@@ -416,7 +417,7 @@ def test_qc_table_covers_every_sequence_and_failures_get_no_vcf(tmp_path, datase
         ("UNALIGNED", "FAIL", "not_aligned"),
     ]
     assert rows[1] == {"sample_id": "PASSER", "segment": "HA", "status": "PASS", "reasons": "",
-                       "identity_pct": "100.000", "consensus_length": str(len(REF_SEQ)),
-                       "reference_length": str(len(REF_SEQ)), "reference_id": CHROM,
-                       "nextclade_qc": "good"}
-    assert rows[2]["identity_pct"] == "NA"
+                       "coverage_pct": "100.000", "identity_pct": "100.000",
+                       "consensus_length": str(len(REF_SEQ)),
+                       "reference_length": str(len(REF_SEQ)), "reference_id": CHROM}
+    assert rows[2]["coverage_pct"] == rows[2]["identity_pct"] == "NA"
