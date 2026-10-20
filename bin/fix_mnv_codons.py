@@ -128,6 +128,9 @@ _HGVS_P_1L_RE = re.compile(r"p\.([A-Z\*])(\d+)", re.ASCII)
 # Data structures
 # ---------------------------------------------------------------------------
 
+# (chrom, pos, ref, alt): the one VCF record a correction belongs to
+VariantKey = Tuple[str, int, str, str]
+
 @dataclass(slots=True)
 class CodonSNV:
     """One SNV contributing to a codon group for a specific transcript."""
@@ -141,9 +144,13 @@ class CodonSNV:
     ref_aa_1: Optional[str]
     hgvs_c_ref_nuc: Optional[str]
 
+    @property
+    def key(self) -> VariantKey:
+        return (self.chrom, self.vcf_pos, self.ref_nuc, self.alt_nuc)
+
 @dataclass(slots=True)
 class AnnCorrection:
-    """Correction to apply to a specific (chrom, vcf_pos, feature_id) triplet."""
+    """Correction to one transcript's ANN entry on a (chrom, pos, ref, alt) record."""
     feature_id: str
     protein_pos: int
     ref_aa_1: str
@@ -453,15 +460,14 @@ def collect_codon_groups(vcf_path: str, min_af: float) -> Dict[Tuple[str, str, i
 def compute_corrections(
     codon_groups: Dict[Tuple[str, str, int], List[CodonSNV]],
     ref_seqs: Optional[Dict[str, str]] = None,
-) -> Tuple[Dict[Tuple[str, int], List[AnnCorrection]], Set[Tuple[str, int]]]:
+) -> Tuple[Dict[VariantKey, List[AnnCorrection]], Set[VariantKey]]:
     """For each codon group with >=2 SNVs, resolve the true combined AA change.
 
-    Returns (corrections, unresolved_positions) where unresolved_positions is
-    the set of (chrom, vcf_pos) tuples belonging to codon groups that were
-    detected but could not be resolved.
+    Returns (corrections, unresolved) keyed by (chrom, pos, ref, alt), where unresolved
+    holds the SNVs of codon groups that were detected but could not be resolved.
     """
-    corrections: Dict[Tuple[str, int], List[AnnCorrection]] = defaultdict(list)
-    unresolved: Set[Tuple[str, int]] = set()
+    corrections: Dict[VariantKey, List[AnnCorrection]] = defaultdict(list)
+    unresolved: Set[VariantKey] = set()
     n_groups = n_corrected = n_skipped = 0
 
     for (chrom, feature_id, codon_number), snvs in codon_groups.items():
@@ -492,7 +498,7 @@ def compute_corrections(
         if resolved is None:
             n_skipped += 1
             for snv in snvs:
-                unresolved.add((chrom, snv.vcf_pos))
+                unresolved.add(snv.key)
             continue
 
         ref_codon, mut_codon, ref_aa_1, true_alt_aa_1 = resolved
@@ -501,7 +507,7 @@ def compute_corrections(
                         mut_codon, chrom, feature_id, codon_number)
             n_skipped += 1
             for snv in snvs:
-                unresolved.add((chrom, snv.vcf_pos))
+                unresolved.add(snv.key)
             continue
 
         protein_pos = snvs[0].protein_pos
@@ -514,7 +520,7 @@ def compute_corrections(
                                    ref_aa_1=ref_aa_1, true_alt_aa_1=true_alt_aa_1,
                                    codon_group_id=codon_group_id)
         for snv in snvs:
-            corrections[(chrom, snv.vcf_pos)].append(correction)
+            corrections[snv.key].append(correction)
         n_corrected += 1
 
     log.info("Codon groups: %d found, %d correctable, %d skipped", n_groups, n_corrected, n_skipped)
@@ -546,8 +552,8 @@ def apply_corrections_to_ann(raw_ann: str, corrections: List[AnnCorrection]) -> 
 def write_corrected_vcf(
     vcf_path: str,
     output_vcf_path: str,
-    corrections: Dict[Tuple[str, int], List[AnnCorrection]],
-    unresolved_positions: Set[Tuple[str, int]],
+    corrections: Dict[VariantKey, List[AnnCorrection]],
+    unresolved: Set[VariantKey],
 ) -> int:
     """Emit all records to a new VCF, correcting ANN fields for MNV groups.
     Returns the count of corrected records."""
@@ -572,7 +578,7 @@ def write_corrected_vcf(
 
     try:
         for variant in vcf:
-            key = (variant.CHROM, variant.POS)
+            key = (variant.CHROM, variant.POS, variant.REF.upper(), ",".join(variant.ALT).upper())
             correction_list = corrections.get(key)
             if correction_list:
                 raw_ann = variant.INFO.get("ANN")
@@ -591,7 +597,7 @@ def write_corrected_vcf(
                         if orig_hgvs:
                             variant.INFO["MNV_ORIGINAL_HGVS_P"] = orig_hgvs
                         n_corrected += 1
-            elif key in unresolved_positions:
+            elif key in unresolved:
                 variant.INFO["MNV_UNRESOLVED"] = True
 
             writer.write_record(variant)
@@ -739,7 +745,7 @@ def main() -> None:
 
     corrections, unresolved = compute_corrections(mnv_candidates, ref_seqs=ref_seqs)
     log.info(
-        "%d positions to correct, %d positions flagged MNV_UNRESOLVED",
+        "%d records to correct, %d records flagged MNV_UNRESOLVED",
         len(corrections),
         len(unresolved),
     )
