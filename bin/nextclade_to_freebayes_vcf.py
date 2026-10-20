@@ -15,7 +15,8 @@ Requires:
   -d        Nextclade reference dataset directory (must contain reference.fasta and genome_annotation.gff3)
   --suffix  each sample's VCF is written to <seqName><suffix>
 
-A sequence Nextclade could not align gets no VCF. --no-mature-suffix writes a second VCF
+Every sequence gets a row in the --qc table with a PASS/WARN/FAIL status. A FAIL sequence,
+including one Nextclade could not align, gets no VCF. --no-mature-suffix writes a second VCF
 per sample, carrying the same records but no mature-peptide ANN entries: HA is annotated
 as HA0 only, with no HA1/HA2 entries.
 
@@ -24,6 +25,7 @@ annotation differs from the single-base one carry MNV_CORRECTED and MNV_ORIGINAL
 """
 
 import argparse
+import csv
 import json
 import logging
 import sys
@@ -939,6 +941,40 @@ def variants_from_json_result(
     return rows
 
 # ---------------------------------------------------------------------------
+# Segment QC
+# ---------------------------------------------------------------------------
+
+QC_COLUMNS = ["sample_id", "segment", "status", "reasons", "coverage_pct", "identity_pct",
+              "consensus_length", "reference_length", "reference_id"]
+
+
+def segment_qc(result: dict, ref_len: int, pass_pct: float) -> tuple[str, list[str], float, float]:
+    """Return (PASS/WARN/FAIL, reasons, coverage %, identity %) for one aligned sequence.
+
+    FAIL means the calls cannot be trusted: a frameshift or a bad stop-codon score marks a
+    misalignment or a broken consensus. Low reference coverage only WARNs.
+    """
+    called = result["alignmentRange"]["end"] - result["alignmentRange"]["begin"] - result["totalMissing"]
+    mismatches = result["totalSubstitutions"] + result["totalDeletions"] + result["totalNonACGTNs"]
+    coverage = called / ref_len * 100
+    identity = (called - mismatches) / (called + result["totalInsertions"]) * 100
+    qc = result["qc"]
+    reasons = [reason for reason, hit in (
+        ("frameshift",  (qc.get("frameShifts") or {}).get("status") in ("mediocre", "bad")),
+        ("stop_codons", (qc.get("stopCodons") or {}).get("status") == "bad"),
+        ("coverage",    coverage < pass_pct),
+    ) if hit]
+    status = "FAIL" if {"frameshift", "stop_codons"} & set(reasons) else "WARN" if reasons else "PASS"
+    return status, reasons, coverage, identity
+
+
+def write_qc(path: str, rows: list[list]) -> None:
+    with open(path, "w", newline="") as fh:
+        writer = csv.writer(fh, delimiter="\t", lineterminator="\n")
+        writer.writerow(QC_COLUMNS)
+        writer.writerows(sorted(rows))
+
+# ---------------------------------------------------------------------------
 # Writer
 # ---------------------------------------------------------------------------
 
@@ -980,8 +1016,9 @@ def get_args() -> argparse.Namespace:
     p.add_argument("--no-mature-suffix", default=None, dest="no_mature_suffix",
                    help="Also write <seqName><no-mature-suffix> with the same records but no "
                         "mature-peptide (HA1/HA2) ANN entries")
-    p.add_argument("--qual",   type=int, default=60,
-                   help="QUAL score for all records (default: 60)")
+    p.add_argument("--segment", required=True, help="Segment name for the QC table (e.g. HA)")
+    p.add_argument("--qc", required=True, help="Per-sample QC table written for this batch")
+    p.add_argument("--pass-pct", type=float, required=True, help="Reference coverage below which a segment is WARN")
     return p.parse_args()
 
 
@@ -1014,23 +1051,31 @@ def main() -> None:
     with open(args.input) as fh:
         data = json.load(fh)
 
+    # A sequence Nextclade could not align is listed under the top-level errors.
+    qc_rows = []
+    for error_entry in data.get("errors", []):
+        log.warning("No VCF for '%s': %s", error_entry["seqName"],
+                    "; ".join(str(m) for m in error_entry.get("errors", [])))
+        qc_rows.append([error_entry["seqName"], args.segment, "FAIL", "not_aligned",
+                        "NA", "NA", "NA", ref_len, chrom])
+
     for result in data.get("results", []):
-        sample = result.get("seqName", "SAMPLE")
-        if result.get("errors"):
-            log.warning("Skipping %s: errors=%s", sample, result["errors"])
+        sample = result["seqName"]
+        status, reasons, coverage, identity = segment_qc(result, ref_len, args.pass_pct)
+        qc_rows.append([sample, args.segment, status, ",".join(reasons), f"{coverage:.3f}",
+                        f"{identity:.3f}", result["lenUnaligned"], ref_len, chrom])
+        if status == "FAIL":
+            log.warning("No VCF for '%s': QC FAIL (%s)", sample, ", ".join(reasons))
             continue
         outputs = [(args.suffix, transcripts)]
         if args.no_mature_suffix:
             outputs.append((args.no_mature_suffix, transcripts_no_mature))
         for suffix, txs in outputs:
-            rows = variants_from_json_result(result, ref_seq, chrom, genes, txs, args.qual)
+            rows = variants_from_json_result(result, ref_seq, chrom, genes, txs, 60)
             n = write_vcf(f"{sample}{suffix}", chrom, ref_len, str(ref_path), sample, rows)
             log.info("Wrote %d records for '%s' -> %s%s", n, sample, sample, suffix)
 
-    # A sequence Nextclade could not align gets no VCF; the batch status TSV records it.
-    for error_entry in data.get("errors", []):
-        log.warning("No VCF for '%s': %s", error_entry.get("seqName", "UNKNOWN"),
-                    "; ".join(str(m) for m in error_entry.get("errors", [])))
+    write_qc(args.qc, qc_rows)
 
 
 if __name__ == "__main__":

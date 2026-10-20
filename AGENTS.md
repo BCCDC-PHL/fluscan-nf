@@ -34,8 +34,10 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
     `paftools.js`, annotates with SnpEff, converts to the common VCF shape, and
     corrects MNV codons.
   - `NEXTCLADE` batches samples by bundle and segment, runs Nextclade once per batch,
-    splits per-sample results, and converts JSON to the common VCF shape,
-    annotating substitutions that share a codon with the combined change.
+    and converts JSON to the common VCF shape, annotating substitutions that share a
+    codon with the combined change. The same pass writes a QC row per sample and
+    segment, and a segment that FAILs (not aligned, frameshift, bad stop codons) gets
+    no VCF.
 - `--merge_flumut_mutations` is off by default. When enabled in the Nextclade
   branch, a per-bundle map lifts coordinates from FluMut's own reference
   (source, the `references`/`annotations` tables of the installed `flumutdb`
@@ -147,7 +149,8 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   are primarily `${outdir}/${sample_id}/...`, with run-level data under
   `${outdir}/aggregate`. Several joins and parsers depend on double-underscore
   VCF stems and the `_paf`, `_nc`, and `_final.vcf` suffixes.
-- Identity and coverage QC are report-only. Some processes intentionally
+- Coverage QC is report-only in both PAFTOOLS and NEXTCLADE; NEXTCLADE's
+  frameshift and stop-codon checks withhold the VCF. Some processes intentionally
   ignore errors, so a successful run status does not prove every expected
   sample and segment was published; check completeness explicitly.
 
