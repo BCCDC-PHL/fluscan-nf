@@ -47,9 +47,10 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   package, so they cannot drift apart.
 - `mutation_watch` scans each final VCF against the custom watchlists in
   `--watchlist_dir` (default `assets/watchlists/`) and publishes one
-  `*_watchlist_hits.tsv` per final VCF and watchlist (header-only when nothing
-  matches), named by segment from the VCF filename. It runs in all
-  three workflows and is independent of `--merge_flumut_mutations`.
+  `watchlist/<list>/*_watchlist_hits.tsv` per final VCF and watchlist (header-only
+  when nothing matches), named by segment from the VCF filename and tagged
+  `pf`/`nc`/`sr` by workflow, since FASTA mode puts both branches in one list dir.
+  It runs in all three workflows and is independent of `--merge_flumut_mutations`.
 
 ## Repository map
 
@@ -108,8 +109,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   `--db`. In FASTA mode the bundle is the sample sheet's `DB` cell, else `--db`,
   so a run can hold several; their names (`db.yml` `name`, else the directory)
   must differ, because they key the per-bundle channels and the run-level
-  outputs `nextclade/<db>/`, `nextclade/status/<db>/` and
-  `aggregate/reference_remap/<db>/`.
+  outputs under `aggregate/nextclade/<db>/`.
 - The nucleotide reference FASTA used for BLAST has headers
   `accession|subtype|segment`.
 - Nextclade datasets live in uppercase per-segment subdirectories (`HA/`, `PB2/`,

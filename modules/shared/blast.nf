@@ -31,9 +31,7 @@ process blastn {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*blastn.tsv" , mode:'copy'
-    publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*filter.tsv" , mode:'copy'
-    publishDir "${params.outdir}/${sample_id}/", pattern: "${sample_id}*fasta" , mode:'copy'
+    publishDir "${params.outdir}/${sample_id}/blast", pattern: "${sample_id}*.{tsv,fasta}", mode:'copy'
 
     input:
     tuple val(sample_id), path(query), path(blast_db)

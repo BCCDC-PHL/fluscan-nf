@@ -13,7 +13,7 @@ process prepare_consensus {
     conda "${projectDir}/environments/fluscan.yml"
 
     publishDir "${params.outdir}/${sample_id}", pattern: "*.fasta",         mode: 'copy'
-    publishDir "${params.outdir}/${sample_id}", pattern: "*_qc_report.tsv", mode: 'copy'
+    publishDir "${params.outdir}/${sample_id}/qc", pattern: "*_qc_report.tsv", mode: 'copy'
 
     input:
     tuple val(sample_id), path(fasta_input, stageAs: 'input/*')

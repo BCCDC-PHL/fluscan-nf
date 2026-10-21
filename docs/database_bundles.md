@@ -51,8 +51,7 @@ SAMPLE-02,/path/to/SAMPLE-02.fasta,/path/to/refs/wisconsin588
 A blank `DB` cell, or a sheet without the column, falls back to `--db`. Every bundle is
 validated before any task runs, and each sample is analysed against its own bundle only.
 Bundle names (`db.yml` `name`, else the directory name) must differ within a run, because
-run-level outputs are filed under them: `nextclade/<name>/`, `nextclade/status/<name>/`
-and `aggregate/reference_remap/<name>/`. The short-read workflow takes one `--db` and
+run-level outputs are filed under them in `aggregate/nextclade/<name>/`. The short-read workflow takes one `--db` and
 rejects a sheet with a `DB` column.
 
 ### Bundles may be partial
@@ -93,7 +92,7 @@ Quote `version`. Unquoted `2025-07-07` parses as a *date*, not a string, in both
 YAML reader the pipeline uses and the one that reads the provenance file back.
 
 `nextclade_ref_name` is what appears as `target_reference` in
-`aggregate/reference_remap/<name>/coordinate_map.json`. It is separate from `name` so a bundle
+`aggregate/nextclade/<name>/reference_remap/coordinate_map.json`. It is separate from `name` so a bundle
 can be renamed or relocated on disk without changing labels already written into
 published coordinate maps.
 

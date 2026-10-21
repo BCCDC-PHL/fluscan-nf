@@ -17,9 +17,8 @@ process merge_flumut_mutations {
     publishDir "${params.outdir}", mode: 'copy',
         saveAs: { filename ->
             if (filename.endsWith('_flumut_annotated.vcf')) {
-                def wf = task.ext.workflow ?: 'nextclade'
                 def sample_id = filename.split('__')[0]
-                return "${sample_id}/${wf}/flumut_annotated/${filename}"
+                return "${sample_id}/nextclade/flumut_annotated/${filename}"
             }
             // Provenance is not published from here: collect_provenance concatenates it
             // with the rest of each sample's records and publishes that single file.

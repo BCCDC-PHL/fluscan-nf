@@ -12,8 +12,7 @@ process coordinate_conversion {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}/aggregate/reference_remap", pattern: "reference_remap", mode: 'copy',
-        saveAs: { db_name }
+    publishDir "${params.outdir}/aggregate/nextclade/${db_name}", pattern: "reference_remap", mode: 'copy'
 
     input:
     tuple val(db_name), val(target_name), path(target_dataset_dir, stageAs: 'target_dataset')

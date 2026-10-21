@@ -6,8 +6,6 @@ process short_read_lofreq {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}*{gz,csi}", mode: 'copy'
-
     input:
 	tuple val(sample_id), path(bamfile), path(bam_index), path(reference)
 
@@ -64,8 +62,6 @@ process short_read_snpeff_annotation {
     tag { sample_id }
 
     conda "${projectDir}/environments/fluscan.yml"
-
-    //publishDir "${params.outdir}/${sample_id}/vcf", pattern: "${sample_id}__*.vcf", mode: 'copy'
 
     input:
     tuple val(sample_id), path(vcf), path(vcf_index), path(snpeff_dir, stageAs: 'snpeff')

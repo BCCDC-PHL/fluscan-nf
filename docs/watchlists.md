@@ -103,7 +103,8 @@ would be a wrong answer with nothing to show it was wrong.
 
 ## Output
 
-`${outdir}/${sample_id}/${workflow}/${sample_id}_${segment}_${list}_watchlist_hits.tsv`:
+`${outdir}/${sample_id}/watchlist/${list}/${sample_id}_${segment}_${list}_${wf}_watchlist_hits.tsv`,
+where `${wf}` is `pf` (PAFTOOLS), `nc` (NEXTCLADE) or `sr` (SHORT_READ):
 
 ```
 sample_id  segment  gene  position  ref_aa  alt_aa  mutation  chrom  pos  hgvs_p  note

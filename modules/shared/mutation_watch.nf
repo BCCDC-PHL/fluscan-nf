@@ -3,20 +3,21 @@
 // Runs in all three workflows off whatever each one calls its final VCFs; the only thing it
 // needs is a VCF carrying ANN=. One task per sample scans every VCF against every watchlist.
 //
-// Publishes one *_watchlist_hits.tsv per (VCF, watchlist), with one row per matching variant.
-// A scan that finds nothing writes a header-only file.
+// Publishes one watchlist/<list>/*_watchlist_hits.tsv per (VCF, watchlist), with one row per
+// matching variant. A scan that finds nothing writes a header-only file.
 //
 // Nothing here writes to the VCF. FLUMUT= is curated and always-on and belongs in the VCF;
 // a watchlist is set on our own terms, and merging it in would make the same consensus
 // produce different VCFs depending on the contents of a CSV.
 
-// One scan per (VCF, watchlist): [vcf, watchlist, segment, output stem]. segments[i] labels
-// vcfs[i]; the watchlist name is in the stem so several lists never collide on publish.
-def watch_scans(sample_id, segments, vcfs, watchlists) {
+// One scan per (VCF, watchlist): [vcf, watchlist, segment, output path]. segments[i] labels
+// vcfs[i]; the workflow tag keeps FASTA mode's PAFTOOLS and NEXTCLADE hits apart in one list dir.
+def watch_scans(sample_id, workflow, segments, vcfs, watchlists) {
+    def wf_tag = [paftools: 'pf', nextclade: 'nc', short_read: 'sr'][workflow]
     [segments, [vcfs].flatten()].transpose().collectMany { segment, vcf ->
         [watchlists].flatten().collect { watchlist ->
             def list_name = watchlist.baseName.replaceAll(/_watchlist$/, '')
-            [vcf, watchlist, segment, "${sample_id}_${segment}_${list_name}"]
+            [vcf, watchlist, segment, "${list_name}/${sample_id}_${segment}_${list_name}_${wf_tag}_watchlist_hits.tsv"]
         }
     }
 }
@@ -27,28 +28,22 @@ process mutation_watch {
 
     conda "${projectDir}/environments/fluscan.yml"
 
-    publishDir "${params.outdir}", mode: 'copy',
-        saveAs: { filename ->
-            if (filename.endsWith('.tsv')) {
-                def wf = task.ext.workflow ?: 'watchlist'
-                return "${sample_id}/${wf}/${filename}"
-            }
-            // Provenance is not published from here: collect_provenance concatenates it
-            // with the rest of the sample's records and publishes that single file.
-            return null
-        }
+    // Provenance is not published from here: collect_provenance concatenates it with the
+    // rest of the sample's records and publishes that single file.
+    publishDir "${params.outdir}/${sample_id}/watchlist", pattern: "*/*_watchlist_hits.tsv", mode: 'copy'
 
     input:
     tuple val(sample_id), val(segments), path(vcfs, stageAs: 'vcf/*')
     path(watchlists, stageAs: 'watchlists/*')
 
     output:
-    tuple val(sample_id), path("*_watchlist_hits.tsv"),                      emit: hits
+    tuple val(sample_id), path("*/*_watchlist_hits.tsv"),                    emit: hits
     tuple val(sample_id), path("${sample_id}_mutation_watch_provenance.yml"), emit: provenance
 
     script:
-    def scans = watch_scans(sample_id, segments, vcfs, watchlists).collect { vcf, watchlist, segment, stem ->
-        "mutation_watcher.py --vcf ${vcf} --watchlist ${watchlist} --sample ${sample_id} --segment '${segment}' -o ${stem}_watchlist_hits.tsv"
+    def scans = watch_scans(sample_id, task.ext.workflow, segments, vcfs, watchlists)
+    def commands = scans.collect { vcf, watchlist, segment, out ->
+        "mutation_watcher.py --vcf ${vcf} --watchlist ${watchlist} --sample ${sample_id} --segment '${segment}' -o ${out}"
     }
     """
     for watchlist in watchlists/*; do
@@ -59,13 +54,15 @@ process mutation_watch {
         printf -- "  watchlist: \$(basename "\$watchlist")\\n"                                    >> ${sample_id}_mutation_watch_provenance.yml
     done
 
-    ${scans.join('\n    ')}
+    mkdir -p ${scans.collect { it[3].tokenize('/')[0] }.unique().join(' ')}
+    ${commands.join('\n    ')}
     """
 
     stub:
-    def hits = watch_scans(sample_id, segments, vcfs, watchlists).collect { it[3] + '_watchlist_hits.tsv' }
+    def scans = watch_scans(sample_id, task.ext.workflow, segments, vcfs, watchlists)
     """
-    touch ${hits.join(' ')}
+    mkdir -p ${scans.collect { it[3].tokenize('/')[0] }.unique().join(' ')}
+    touch ${scans.collect { it[3] }.join(' ')}
     touch ${sample_id}_mutation_watch_provenance.yml
     """
 }
