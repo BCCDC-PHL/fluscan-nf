@@ -104,7 +104,7 @@ process short_read_fastqc {
 
 process short_read_multiqc {
 
-    publishDir "${params.outdir}", pattern: "*_multiqc_report.html", mode:'copy'
+    publishDir "${params.outdir}/aggregate", pattern: "*_multiqc_report.html", mode:'copy'
 
     input:
     path '*'

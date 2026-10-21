@@ -12,16 +12,12 @@ process nextclade_run_batch {
     publishDir "${params.outdir}", mode: 'copy',
         saveAs: { filename ->
             if (filename.endsWith('_final.vcf')) {
-                def workflow  = task.ext.workflow ?: 'unknown_workflow'
                 def sample_id = filename.split('__')[0]
                 def subdir    = filename.endsWith('_nc_nomat_final.vcf') ? 'no_mature_peptide/' : ''
-                return "${sample_id}/${workflow}/${subdir}${filename}"
+                return "${sample_id}/nextclade/${subdir}${filename}"
             }
-            if (filename =~ /nc_output.*/) {
-                def newname = filename.replaceAll(/nc_output/, "${segment}_output")
-                return "nextclade/${db_name}/${newname}"
-            }
-            return null
+            // Not named ${segment} in the work dir: the staged dataset already holds that name.
+            return filename == 'nc_output' ? "aggregate/nextclade/${db_name}/${segment}" : null
         }
 
     input:

@@ -92,7 +92,7 @@ flowchart TD
         nc2vcf[nextclade_to_freebayes_vcf.py: QC + VCF]
         nc_final[Final NEXTCLADE VCFs]
         coord_map[coordinate_conversion: build_reference_coordinate_map.py]
-        coord_final[aggregate/reference_remap, per bundle]
+        coord_final[aggregate/nextclade/db/reference_remap]
         flumut_merge[merge_flumut_mutations: merge_flumut_mutations.py]
         flumut_annotated[FluMutDB-annotated VCFs]
 
@@ -238,16 +238,16 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `*.fastp.json` | Per-sample fastp JSON report |
 | `*_contigs.fasta` | De-novo assembled contigs from SPAdes |
 | `*_consensus.fasta` | Multi-FASTA containing the consensus sequences for each segment |
-| `*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
-| `*_blastn.tsv` | BLAST search results of assembled contigs against the reference database |
-| `*_blastn_filter.tsv` | Filtered BLAST search results |
+| `blast/*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
+| `blast/*_blastn.tsv` | BLAST search results of assembled contigs against the reference database |
+| `blast/*_blastn_filter.tsv` | Filtered BLAST search results |
 | `*.sort.filter.bam` | Sorted, filtered alignment BAM used for downstream calling and coverage calculations |
 | `*_coverage.png` | Line plots describing mapping coverage across all 8 flu segments |
 | `*_pileup.tsv` | Pileup TSV with raw counts of all 4 nucleotides and gaps |
 | `*_depth.tsv` | Per-position alignment depth (samtools depth) |
 | `*_low_coverage.bed` | Low-coverage regions masked during consensus generation |
 | `short_read/*_final.vcf` | Per-segment final VCF after SnpEff annotation and MNV codon correction |
-| `short_read/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF |
+| `watchlist/<list>/*_<list>_sr_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF, one file per segment |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
@@ -261,13 +261,13 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 | File | Description |
 |------|-------------|
 | `${sample_id}.fasta` | Validated consensus FASTA with headers normalised to `{sample_id}_{SEGMENT}` |
-| `*_qc_report.tsv` | QC report from consensus preparation |
-| `*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
-| `*_blastn.tsv` | BLAST search results against the reference database |
-| `*_blastn_filter.tsv` | Filtered BLAST search results |
+| `qc/*_qc_report.tsv` | QC report from consensus preparation |
+| `blast/*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
+| `blast/*_blastn.tsv` | BLAST search results against the reference database |
+| `blast/*_blastn_filter.tsv` | Filtered BLAST search results |
 | `qc/*_coverage_qc.tsv` | Per-segment PAFTOOLS consensus coverage QC with coverage percentage and PASS/WARN/FAIL status. A segment with no BLAST reference, or that minimap2 cannot align, is FAIL and has no VCF |
 | `paftools/*_final.vcf` | Per-segment final VCF after `paftools.js`, SnpEff, freebayes-style conversion, and MNV codon correction |
-| `paftools/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF |
+| `watchlist/<list>/*_<list>_pf_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF, one file per segment |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
@@ -281,7 +281,7 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 | `nextclade/*_final.vcf` | Per-segment final VCF from the Nextclade-to-VCF conversion, written only for segments that do not FAIL QC (see `aggregate/nextclade_qc_summary.tsv`). Rows in a codon holding more than one substitution carry the combined change, plus `MNV_CORRECTED` and `MNV_ORIGINAL_HGVS_P` where it differs from the call before codon correction (Nextclade's, otherwise the single-base change) |
 | `nextclade/no_mature_peptide/*_nc_nomat_final.vcf` | *Optional* (`--emit_no_mature_vcf`): the same records annotated without mature peptides, so HA carries only its HA0 `ANN=` entry and no HA1/HA2 ones |
 | `nextclade/flumut_annotated/*_flumut_annotated.vcf` | *Optional* (`--merge_flumut_mutations`): the same VCF with a `FLUMUT=` INFO field (`Protein\|AA_Pos\|Alt_AA\|Mutation_Name\|DirectEffect\|AssociatedEffect`) on rows whose amino-acid change matches a curated FluMutDB marker |
-| `nextclade/*_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF. Independent of `--merge_flumut_mutations`: `FLUMUT=` is a curated annotation written *into* the VCF, this is a custom list scanned *out* of it |
+| `watchlist/<list>/*_<list>_nc_watchlist_hits.tsv` | *Optional* (`--watchlist_dir`): watchlist substitutions found in the final VCF, one file per segment, beside the PAFTOOLS (`_pf_`) ones. Independent of `--merge_flumut_mutations`: `FLUMUT=` is a curated annotation written *into* the VCF, this is a custom list scanned *out* of it |
 | `flumut/*_flumut_markers.tsv` | FluMut table of molecular markers identified in the consensus sequences |
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
@@ -292,17 +292,18 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 
 | File | Description |
 |------|-------------|
-| `${run_name}_fluscan-nf_multiqc_report.html` | MultiQC report summarising fastp, cutadapt, and FastQC results for all samples (short-read workflow only) |
+| `aggregate/${run_name}_fluscan-nf_multiqc_report.html` | MultiQC report summarising fastp, cutadapt, and FastQC results for all samples (short-read workflow only) |
 | `aggregate/paftools_qc_summary.tsv` | Run-level tabular summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
 | `aggregate/nextclade_qc_summary.tsv` | One row per sample and segment Nextclade saw (NEXTCLADE workflow). `status` is FAIL, with no VCF written, when Nextclade could not align the segment (`not_aligned`), reports a frameshift (`frameshift`), or scores its stop codons `bad` (`stop_codons`); WARN when `coverage_pct` is below `--consensus_coverage_pass_pct` (default 90); otherwise PASS. `coverage_pct` is the share of the reference covered by called (non-N) bases, so a truncated or N-heavy segment WARNs but keeps its VCF. `identity_pct` is exact matches over the called bases plus insertions; it has no threshold and is low for a segment from a different lineage than the reference |
 | `aggregate/sample_ids.csv` | `input_id,sample_id,db`: each input's sample sheet `ID` (or FASTA filename), its cleaned `sample_id`, and the bundle it ran against (FASTA mode) |
 | `aggregate/consensus_qc_summary.tsv` | Every `*_qc_report.tsv` row from consensus preparation, concatenated across the run. A sample rejected at preparation — duplicate segment, or headers naming more than one sample — contributes no rows and is reported only in the Nextflow log |
-| `aggregate/reference_remap/<db>/coordinate_map.json` | Primary machine-readable nucleotide/amino-acid coordinate map lifting flumut's reference (source) onto bundle `<db>`'s Nextclade reference datasets (target), one directory per bundle (NEXTCLADE workflow only) |
-| `aggregate/reference_remap/<db>/coordinate_map.nt.tsv` | Flat per-position nucleotide coordinate map (source/flumut position/base -> target/nextclade position/base, per segment) |
-| `aggregate/reference_remap/<db>/coordinate_map.aa.tsv` | Flat per-residue amino-acid coordinate map (source/flumut position/residue -> target/nextclade position/residue, per segment/gene) |
-| `aggregate/reference_remap/<db>/coordinate_map.qc.tsv` | Per-segment/per-gene alignment QC: identity, coverage, the number of co-optimal alignments the map's gap placement was chosen from, and status (`ok`/`warning`/`missing_in_source`/`extra_in_source`/`stale_annotation`) |
-| `aggregate/reference_remap/<db>/flumut_alignment.fasta` | Target/source (nextclade/flumut) nucleotide alignment blocks, one per segment |
-| `aggregate/reference_remap/<db>/flumut_aa_alignment.fasta` | Target/source (nextclade/flumut) amino-acid alignment blocks, one per gene |
+| `aggregate/nextclade/<db>/<SEGMENT>/batch.*` | Raw `nextclade run --output-all` output for one bundle and segment across every sample in the run (NEXTCLADE workflow) |
+| `aggregate/nextclade/<db>/reference_remap/coordinate_map.json` | *Optional* (`--merge_flumut_mutations`): primary machine-readable nucleotide/amino-acid coordinate map lifting flumut's reference (source) onto bundle `<db>`'s Nextclade reference datasets (target) |
+| `aggregate/nextclade/<db>/reference_remap/coordinate_map.nt.tsv` | Flat per-position nucleotide coordinate map (source/flumut position/base -> target/nextclade position/base, per segment) |
+| `aggregate/nextclade/<db>/reference_remap/coordinate_map.aa.tsv` | Flat per-residue amino-acid coordinate map (source/flumut position/residue -> target/nextclade position/residue, per segment/gene) |
+| `aggregate/nextclade/<db>/reference_remap/coordinate_map.qc.tsv` | Per-segment/per-gene alignment QC: identity, coverage, the number of co-optimal alignments the map's gap placement was chosen from, and status (`ok`/`warning`/`missing_in_source`/`extra_in_source`/`stale_annotation`) |
+| `aggregate/nextclade/<db>/reference_remap/flumut_alignment.fasta` | Target/source (nextclade/flumut) nucleotide alignment blocks, one per segment |
+| `aggregate/nextclade/<db>/reference_remap/flumut_aa_alignment.fasta` | Target/source (nextclade/flumut) amino-acid alignment blocks, one per gene |
 | `${run_name}_fluscan-nf_nextflow_report.html` | Nextflow execution report |
 | `${run_name}_fluscan-nf_nextflow_timeline.html` | Nextflow execution timeline |
 | `${run_name}_fluscan-nf_nextflow_trace.txt` | Nextflow task trace |
