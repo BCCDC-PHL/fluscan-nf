@@ -2,7 +2,7 @@
 """Build Nextclade reference dataset directories from GenBank files.
 
 Reads a hand-written config.json from the dataset directory as its input manifest:
-display name, ID prefix, strain, QC thresholds, and the segment list. This script is
+display name, ID prefix, strain, subtype, QC thresholds, and the segment list. This script is
 the only consumer of that file — the pipeline resolves datasets by directory name and
 never reads it.
 
@@ -234,7 +234,7 @@ def process_segment(seg_cfg, dataset_dir, cfg):
 
     seq = str(record.seq).upper()
     with open(outdir / "reference.fasta", "w") as fh:
-        fh.write(f">{seqid}\n")
+        fh.write(f">{seqid} Influenza A virus ({cfg['strain']}({cfg['subtype']}))\n")
         for chunk in textwrap.wrap(seq, 70):
             fh.write(chunk + "\n")
 

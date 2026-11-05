@@ -88,8 +88,8 @@ HA1 numbering starts *after* HA's 16-residue signal peptide. Keying an HA1 marke
 
 | Dataset | What the VCF annotates | Correct watchlist key |
 |---|---|---|
-| `chicken2021` | `HA1`, `HA2` as two CDS features | `HA1` / `HA2` |
-| `gsgd` | `HA` CDS with `HA1`/`HA2` mature peptides | `HA1` / `HA2` |
+| `chicken2021`, `gsgd` | `HA` CDS with `HA1`/`HA2` mature peptides | `HA1` / `HA2` |
+| a hand-built dataset | `HA1`, `HA2` as two CDS features | `HA1` / `HA2` |
 | a bare `HA` CDS | `HA` | `HA` |
 
 The scanner resolves an annotation's `Feature_ID` first and its gene name second, because

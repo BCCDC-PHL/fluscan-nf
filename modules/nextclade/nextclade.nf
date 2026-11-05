@@ -45,8 +45,8 @@ process nextclade_run_batch {
         batch.fasta
 
     REFERENCE_NAME=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/>(\\S+).*/\\1/g')
-    SUBTYPE=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/.+\\(\\S+\\((\\S+)\\)\\S*\\).+/\\1/g')
-    if echo "\$SUBTYPE" | grep -q '^>'; then SUBTYPE="unknown"; fi
+    SUBTYPE=\$(head -n1 ${dataset_dir}/reference.fasta | sed -nE 's/.*\\((H[0-9]+N[0-9]+)\\).*/\\1/p')
+    [ -n "\$SUBTYPE" ] || { echo "No (HxNy) subtype in ${dataset_dir}/reference.fasta header" >&2; exit 1; }
 
     printf -- "- process_name: nextclade_run_batch\\n"                                           > ${segment}_nextclade_provenance.yml
     printf -- "  tools:\\n"                                                                       >> ${segment}_nextclade_provenance.yml
