@@ -45,7 +45,7 @@ process nextclade_run_batch {
         batch.fasta
 
     REFERENCE_NAME=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/>(\\S+).*/\\1/g')
-    SUBTYPE=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/.+\\(\\S+\\((\\S+)\\)\\S*\\).+/\\1/g')
+    SUBTYPE=\$(head -n1 ${dataset_dir}/reference.fasta | sed -E 's/.+\\([^()]+\\((\\S+)\\)\\S*\\).+/\\1/g')
     if echo "\$SUBTYPE" | grep -q '^>'; then SUBTYPE="unknown"; fi
 
     printf -- "- process_name: nextclade_run_batch\\n"                                           > ${segment}_nextclade_provenance.yml
