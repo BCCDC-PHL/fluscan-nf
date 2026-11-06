@@ -4,7 +4,7 @@ Three things are pinned here:
 
 1. **HA subunits are read from either annotation shape.** FluMutDB numbers HA by its
    HA1/HA2 subunits. A target dataset may express that split as two real CDS features
-   (hand-built datasets) or as `mature_protein_region_of_CDS` children of one HA CDS (the
+   (chicken2021) or as `mature_protein_region_of_CDS` children of one HA CDS (the
    NCBI/RefSeq model, the GsGD dataset among them). The two must produce the same
    coordinate map -- the second one produced no HA map at all until the mature rows were
    read, putting all 76 of FluMutDB's HA mappings out of reach on the default dataset.
@@ -50,7 +50,7 @@ def _load_module():
 
 builder = _load_module()
 
-# HA has HA1 at 77..1063 (987 nt) and HA2 at 1064..1732 (669 nt),
+# HA is modelled on chicken2021: HA1 at 77..1063 (987 nt) and HA2 at 1064..1732 (669 nt),
 # adjacent, inside a 1776 nt segment. Because they abut, one CDS spanning 77..1732 with two
 # mature children over the same intervals is an exact re-encoding of the same protein
 # structure -- which is what makes the equivalence assertion below meaningful.

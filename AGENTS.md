@@ -209,7 +209,7 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   canonicalise through it; a second copy lets the map be keyed under a name the
   merge never looks up, silently dropping a whole gene's markers.
 - HA marker annotation needs the Nextclade annotation to expose the HA1/HA2
-  split, either as two real `CDS` features (hand-built datasets) or as
+  split, either as two real `CDS` features (chicken2021) or as
   `mature_protein_region_of_CDS` children of one HA CDS (the NCBI/RefSeq model,
   GsGD included). A dataset offering only a bare `HA` CDS is still unusable for
   HA markers and is flagged `stale_annotation`.

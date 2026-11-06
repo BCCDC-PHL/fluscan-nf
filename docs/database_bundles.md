@@ -116,15 +116,6 @@ the uppercase segment name, because the pipeline resolves datasets as
 `nextclade/<SEGMENT>/`. Nothing at pipeline runtime reads `config.json`: the bundle layout
 is the interface, and the file is only a record of how the datasets were built.
 
-The first word of each `reference.fasta` header names the reference in the VCF's `CHROM`
-and file name. The header must also contain the subtype as `(HxNy)`, as GenBank headers do:
-
-```
->PV312104.1 Influenza A virus (A/Fancy chicken/NL/FAV-0033-1-2021/2021(H5N1)) segment 4 ...
-```
-
-The Nextclade workflow reads the subtype from there and fails if it is missing.
-
 **BLAST reference** — a plain nucleotide FASTA with `accession|subtype|segment` headers.
 The pipeline runs `makeblastdb` itself, so no index files are needed alongside it.
 
