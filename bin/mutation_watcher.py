@@ -4,7 +4,13 @@
     mutation_watcher.py --vcf sample_HA_final.vcf --watchlist nai.csv \\
                         --sample SAMPLE-ID --segment HA -o hits.tsv
 
-A watchlist is a CSV of `gene,mutation[,note]`. See docs/watchlists.md.
+A watchlist is a CSV of `gene,mutation[,note]` carrying a `# numbering:` header that names
+the reference bundle its positions are written in. See docs/watchlists.md.
+
+A list is scanned only against the bundle it was built for. Several per-reference lists
+share one watchlist directory and every list is handed to every sample, so without that
+check a list numbered for one reference would be applied to another's VCF and report
+positions nobody resolved. A list for a different bundle is skipped and writes no file.
 
 Matching keys on (gene, position, ALT). The watchlist's REF residue is not part of the key:
 what makes a sample resistant is ending up with Y at 275, whatever residue it started from.
@@ -22,6 +28,7 @@ import argparse
 import csv
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,7 +44,11 @@ from lib.tools import read_vcf  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
-SCRIPT_VERSION = "3.0.0"
+SCRIPT_VERSION = "4.0.0"
+
+# The header line naming the numbering a list's positions are written in. Only the first
+# token is taken, so a trailing parenthetical is a comment.
+NUMBERING_RE = re.compile(r"^\s*#\s*numbering\s*:\s*(\S+)", re.IGNORECASE)
 
 COLUMNS = (
     "sample_id", "segment", "gene", "position", "ref_aa", "alt_aa",
@@ -67,6 +78,24 @@ class Entry:
     def key(self) -> tuple[str, int, str]:
         """The matching key. REF is deliberately absent."""
         return (self.gene, self.position, self.alt_aa)
+
+
+def read_numbering(path: Path) -> str:
+    """The bundle name a list's positions are written in, from its `# numbering:` header.
+
+    Missing is fatal rather than a warning. A list whose numbering is unknown cannot be
+    checked against the reference being scanned, and scanning it anyway is the failure this
+    header exists to prevent: positions resolved for one reference silently applied to
+    another, reporting a residue nobody looked up.
+    """
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if (matched := NUMBERING_RE.match(line)) is not None:
+            return matched.group(1)
+    raise WatchlistError(
+        f"{path}: no '# numbering: <reference>' header. It names the reference bundle the "
+        "positions are written in, and is what keeps a list from being scanned against a "
+        "reference it was not built for. Generate the list with scripts/resolve_watchlist.py."
+    )
 
 
 def load_watchlist(path: Path) -> dict[tuple[str, int, str], Entry]:
@@ -278,7 +307,10 @@ def get_args() -> argparse.Namespace:
     p.add_argument("--version", action="version", version=f"%(prog)s {SCRIPT_VERSION}")
     p.add_argument("--vcf", required=True, type=Path, help="Annotated VCF to scan")
     p.add_argument("--watchlist", required=True, type=Path,
-                   help="Watchlist CSV (gene,mutation[,note])")
+                   help="Watchlist CSV (gene,mutation[,note]) with a '# numbering:' header")
+    p.add_argument("--reference", required=True,
+                   help="Name of the reference bundle being scanned. A watchlist numbered "
+                        "for a different bundle is skipped and no output is written.")
     p.add_argument("--sample", required=True, help="Sample id, reported verbatim")
     p.add_argument("--segment", default="", help="Segment label, reported verbatim")
     p.add_argument("-o", "--output", required=True, type=Path, help="Output hits TSV")
@@ -289,6 +321,16 @@ def main() -> int:
     args = get_args()
 
     try:
+        numbering = read_numbering(args.watchlist)
+        if numbering != args.reference:
+            # Not an error: this is how several per-reference lists coexist in one
+            # directory. No output file is written, which is what distinguishes "not for
+            # this reference" from "scanned and found nothing" (a header-only file).
+            log.info(
+                "%s: numbered for %s, not %s -- skipped",
+                args.watchlist.name, numbering, args.reference,
+            )
+            return 0
         watchlist = load_watchlist(args.watchlist)
     except WatchlistError as exc:
         log.error("%s", exc)

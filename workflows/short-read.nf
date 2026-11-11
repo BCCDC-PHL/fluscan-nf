@@ -135,11 +135,14 @@ workflow SHORT_READ {
                 ch_watchlists = Channel.fromPath(
                     params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
                 )
-                // [sample_id, vcfs] -> [sample_id, [segments], [vcfs]]; final VCFs end __{SEGMENT}_final.vcf
+                // [sample_id, vcfs] -> [sample_id, bundle, [segments], [vcfs]]; final VCFs end
+                // __{SEGMENT}_final.vcf. One bundle is resolved for the whole run here, so its
+                // name is a plain value; the scanner needs it to skip lists numbered for
+                // another reference.
                 ch_watch_in = post_process_vcf.out.vcf
                     .map { sample_id, vcfs ->
                         vcfs = [vcfs].flatten()
-                        [sample_id, vcfs.collect { it.baseName.split('__')[-1].replaceFirst(/_final$/, '') }, vcfs]
+                        [sample_id, db.name, vcfs.collect { it.baseName.split('__')[-1].replaceFirst(/_final$/, '') }, vcfs]
                     }
                 mutation_watch(ch_watch_in, ch_watchlists.collect())
             }

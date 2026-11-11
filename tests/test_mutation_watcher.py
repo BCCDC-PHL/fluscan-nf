@@ -420,9 +420,11 @@ def test_hits_are_reported_in_watchlist_order(tmp_path):
 
 def test_the_output_has_the_documented_columns(tmp_path):
     vcf = write_vcf(tmp_path / "in.vcf", [vcf_row(100, [ann("PB2", "p.E627K")])])
-    watchlist = write_watchlist(tmp_path / "w.csv", "gene,mutation,note\nPB2,E627K,x\n")
+    watchlist = write_watchlist(
+        tmp_path / "w.csv", "# numbering: testref\ngene,mutation,note\nPB2,E627K,x\n"
+    )
     out = tmp_path / "hits.tsv"
-    result = run_cli("--vcf", vcf, "--watchlist", watchlist,
+    result = run_cli("--vcf", vcf, "--watchlist", watchlist, "--reference", "testref",
                      "--sample", "S1", "--segment", "PB2", "-o", out)
     assert result.returncode == 0, result.stderr
     with out.open(newline="") as handle:
@@ -433,9 +435,11 @@ def test_the_output_has_the_documented_columns(tmp_path):
 def test_no_hits_writes_a_header_only_file(tmp_path):
     """'Scanned, found nothing' must not read as 'did not run'."""
     vcf = write_vcf(tmp_path / "in.vcf", [vcf_row(100, [ann("PB2", "p.A100V")])])
-    watchlist = write_watchlist(tmp_path / "w.csv", "gene,mutation\nPB2,E627K\n")
+    watchlist = write_watchlist(
+        tmp_path / "w.csv", "# numbering: testref\ngene,mutation\nPB2,E627K\n"
+    )
     out = tmp_path / "hits.tsv"
-    result = run_cli("--vcf", vcf, "--watchlist", watchlist,
+    result = run_cli("--vcf", vcf, "--watchlist", watchlist, "--reference", "testref",
                      "--sample", "S1", "--segment", "PB2", "-o", out)
     assert result.returncode == 0, result.stderr
     assert out.read_text().splitlines() == ["\t".join(watcher.COLUMNS)]
@@ -450,11 +454,39 @@ def test_an_empty_vcf_is_not_an_error(tmp_path):
 def test_a_malformed_watchlist_exits_nonzero(tmp_path):
     """Never a silent empty scan: that is indistinguishable from a clean sample."""
     vcf = write_vcf(tmp_path / "in.vcf", [vcf_row(100, [ann("PB2", "p.E627K")])])
-    watchlist = write_watchlist(tmp_path / "w.csv", "gene,note\nPB2,x\n")
-    result = run_cli("--vcf", vcf, "--watchlist", watchlist,
+    watchlist = write_watchlist(tmp_path / "w.csv", "# numbering: testref\ngene,note\nPB2,x\n")
+    result = run_cli("--vcf", vcf, "--watchlist", watchlist, "--reference", "testref",
                      "--sample", "S1", "-o", tmp_path / "hits.tsv")
     assert result.returncode == 1
     assert "missing required column" in result.stderr
+
+
+def test_a_watchlist_for_another_reference_is_skipped(tmp_path):
+    """How several per-reference lists coexist in one directory: most of them skip."""
+    vcf = write_vcf(tmp_path / "in.vcf", [vcf_row(100, [ann("PB2", "p.E627K")])])
+    watchlist = write_watchlist(
+        tmp_path / "w.csv", "# numbering: darwin6\ngene,mutation\nPB2,E627K\n"
+    )
+    out = tmp_path / "hits.tsv"
+    result = run_cli("--vcf", vcf, "--watchlist", watchlist, "--reference", "chicken2021",
+                     "--sample", "S1", "--segment", "PB2", "-o", out)
+    assert result.returncode == 0, result.stderr
+    # No file at all, which is what separates "not for this reference" from the
+    # header-only file a scan that found nothing writes.
+    assert not out.exists()
+    assert "skipped" in result.stderr
+
+
+def test_a_watchlist_without_a_numbering_header_is_fatal(tmp_path):
+    """Unknown numbering cannot be checked, and scanning it anyway is the whole hazard."""
+    vcf = write_vcf(tmp_path / "in.vcf", [vcf_row(100, [ann("PB2", "p.E627K")])])
+    watchlist = write_watchlist(tmp_path / "w.csv", "gene,mutation\nPB2,E627K\n")
+    out = tmp_path / "hits.tsv"
+    result = run_cli("--vcf", vcf, "--watchlist", watchlist, "--reference", "chicken2021",
+                     "--sample", "S1", "-o", out)
+    assert result.returncode == 1
+    assert "numbering" in result.stderr
+    assert not out.exists()
 
 
 def test_the_cli_reports_a_version():

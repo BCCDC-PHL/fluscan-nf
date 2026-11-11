@@ -93,7 +93,15 @@ workflow PAFTOOLS {
             ch_watchlists = Channel.fromPath(
                 params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
             )
-            mutation_watch(ch_final_vcfs, ch_watchlists.collect())
+            // The bundle is chosen per sample by BLAST here, so the name comes off ch_db
+            // rather than a run-level value; the scanner needs it to skip lists numbered
+            // for another reference.
+            mutation_watch(
+                ch_final_vcfs.join(ch_db).map { sample_id, segments, vcfs, db_name ->
+                    [sample_id, db_name, segments, vcfs]
+                },
+                ch_watchlists.collect(),
+            )
         }
 
         // Per-sample provenance. Inner joins: prepare_consensus and blastn run errorStrategy

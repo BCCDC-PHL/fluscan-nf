@@ -3,9 +3,9 @@
 Three things are pinned here:
 
 1. **HA subunits are read from either annotation shape.** FluMutDB numbers HA by its
-   HA1/HA2 subunits. A target dataset may express that split as two real CDS features
-   (chicken2021) or as `mature_protein_region_of_CDS` children of one HA CDS (the
-   NCBI/RefSeq model, the GsGD dataset among them). The two must produce the same
+   HA1/HA2 subunits. A target dataset may express that split as two real CDS features or
+   as `mature_protein_region_of_CDS` children of one HA CDS (the NCBI model, which every
+   bundle in use follows). The two must produce the same
    coordinate map -- the second one produced no HA map at all until the mature rows were
    read, putting all 76 of FluMutDB's HA mappings out of reach on the default dataset.
 

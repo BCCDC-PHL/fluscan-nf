@@ -6,6 +6,11 @@
 // Publishes one watchlist/<list>/*_watchlist_hits.tsv per (VCF, watchlist), with one row per
 // matching variant. A scan that finds nothing writes a header-only file.
 //
+// Every watchlist is handed to every sample, so the scanner is told which bundle is being
+// scanned and skips any list numbered for a different one. With several per-reference lists
+// in the watchlist directory most of them skip, and a sample whose lists all skip produces
+// no hits file at all -- hence the optional output.
+//
 // Nothing here writes to the VCF. FLUMUT= is curated and always-on and belongs in the VCF;
 // a watchlist is set on our own terms, and merging it in would make the same consensus
 // produce different VCFs depending on the contents of a CSV.
@@ -33,17 +38,17 @@ process mutation_watch {
     publishDir "${params.outdir}/${sample_id}/watchlist", pattern: "*/*_watchlist_hits.tsv", mode: 'copy'
 
     input:
-    tuple val(sample_id), val(segments), path(vcfs, stageAs: 'vcf/*')
+    tuple val(sample_id), val(db_name), val(segments), path(vcfs, stageAs: 'vcf/*')
     path(watchlists, stageAs: 'watchlists/*')
 
     output:
-    tuple val(sample_id), path("*/*_watchlist_hits.tsv"),                    emit: hits
+    tuple val(sample_id), path("*/*_watchlist_hits.tsv"), emit: hits, optional: true
     tuple val(sample_id), path("${sample_id}_mutation_watch_provenance.yml"), emit: provenance
 
     script:
     def scans = watch_scans(sample_id, task.ext.workflow, segments, vcfs, watchlists)
     def commands = scans.collect { vcf, watchlist, segment, out ->
-        "mutation_watcher.py --vcf ${vcf} --watchlist ${watchlist} --sample ${sample_id} --segment '${segment}' -o ${out}"
+        "mutation_watcher.py --vcf ${vcf} --watchlist ${watchlist} --reference ${db_name} --sample ${sample_id} --segment '${segment}' -o ${out}"
     }
     """
     for watchlist in watchlists/*; do

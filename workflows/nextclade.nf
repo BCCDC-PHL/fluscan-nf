@@ -87,11 +87,13 @@ workflow NEXTCLADE {
             ch_watchlists = Channel.fromPath(
                 params.watchlist_dir + "/*watchlist.csv", checkIfExists: true
             )
-            // [bundle, segment, [vcfs]] -> [sample_id, [segments], [vcfs]]: one scan task per sample.
+            // [bundle, segment, [vcfs]] -> [sample_id, bundle, [segments], [vcfs]]: one scan
+            // task per sample. The bundle name is grouped on rather than collected: the
+            // scanner needs it to skip lists numbered for another reference.
             ch_sample_vcfs = nextclade_run_batch.out.vcf
                 .transpose()
-                .map { db_name, segment, vcf -> [vcf.name.split('__')[0], segment, vcf] }
-                .groupTuple()
+                .map { db_name, segment, vcf -> [vcf.name.split('__')[0], db_name, segment, vcf] }
+                .groupTuple(by: [0, 1])
             mutation_watch(ch_sample_vcfs, ch_watchlists.collect())
         }
 

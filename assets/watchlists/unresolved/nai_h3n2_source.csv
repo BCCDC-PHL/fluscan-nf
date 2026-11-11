@@ -1,0 +1,34 @@
+# numbering: n2
+# source: human-nai-marker-table_for-publication_final_20240918.pdf (WHO GISRS, 18 September 2024)
+# generated: by scripts/parse_nai_table.py 1.0.0
+gene,mutation,subtype,n2_position,footnotes,combination_of,oseltamivir,zanamivir,peramivir,laninamivir,source_of_viruses,references,comment
+NA,E119D,A(H3N2),119,,,NI (2),RI (32),NI (2),?,RG,(59),
+NA,E119I,A(H3N2),119,,,HRI (208),RI (17),NI (3),?,Clin/Ose; in vitro,(60),
+NA,E119V,A(H3N2),119,,,RI/HRI (18–2057),NI (1–7),NI (1–3),NI (3–4),Sur; Clin/Ose; in vitro; RG,"(39, 45, 59-64)",
+NA,Q136K,A(H3N2),136,,,NI (1–7),RI/HRI (11–132),NI (3–9),NI (2),Sur,"(21, 33, 65)","Host cell selected, not found in clinical specimens"
+NA,N142S,A(H3N2),142,,,HRI (595),HRI (244),RI (40),RI (53),Clin/Sur,(21),
+NA,D151A,A(H3N2),151,,,NI (2–3),RI (29–43),RI (10),NI (7),Sur,"(21, 44)",Cell culture- selected
+NA,D151E,A(H3N2),151,,,RI (11),NI (2),?,?,RG,(66),Cell culture- selected
+NA,D151G,A(H3N2),151,,,NI (1),HRI (>1500),?,?,RG,(67),Cell culture- selected
+NA,I222L,A(H3N2),222,,,NI (9),NI (2),?,?,RG,(68),
+NA,R224K,A(H3N2),224,,,HRI (>4000),RI (>50),?,?,RG,(66),
+NA,N245Y,A(H3N2),245,,,RI (15),NI (5),NI (2),NI (1),Sur,(17),
+NA,K249E,A(H3N2),249,,,RI (10–15),NI (4–6),NI (1–3),NI (1–3),Sur,(3),
+NA,E276D,A(H3N2),276,,,RI (15),HRI (160),?,?,RG,(66),
+NA,R292K,A(H3N2),292,,,HRI (>10 000),NI/RI/HRI (3–134),RI/HRI (14–719),NI (2–3),"Clin/Ose, Clin/Ose+Per; in vitro/Zan; RG; Clin/Sur","(12, 21, 39, 44, 59, 61, 66, 71- 73)",
+NA,N294S,A(H3N2),294,,,HRI (300–1879),NI (8),NI (1),?,Clin/Ose; RG,"(39, 73)",
+NA,N329K,A(H3N2),329,i,,NI/RI (5–21),NI/RI (3–12),?,?,Sur,"(13, 74, 75)",Increased NA Kms for MUNANA substrateh
+NA,N329R,A(H3N2),329,i,,RI (13),NI (8),?,?,Sur,(75),Increased NA Kms for MUNANA substrateh
+NA,S331R,A(H3N2),331,i,,NI/RI (5–77),NI/RI (3–30),?,?,Sur,"(13, 74, 75)",Increased NA Kms for MUNANA substrateh
+NA,S334R,A(H3N2),334,,,NI (<2)j,NI (<2)j,?,?,Sur,(75),Increased NA Kms for MUNANA substrateh
+NA,R371K,A(H3N2),371,,,RI (45),RI (15),?,?,RG,(66),
+NA,E119V,A(H3N2),119,,E119V+T148I,HRI (>6000),HRI (>800),HRI (>110),HRI (>250),Sur; in vitro; RG,(64),T148I was host cell selected
+NA,T148I,A(H3N2),148,,E119V+T148I,HRI (>6000),HRI (>800),HRI (>110),HRI (>250),Sur; in vitro; RG,(64),T148I was host cell selected
+NA,E119V,A(H3N2),119,,E119V+I222L,HRI (1571),NI (5),?,?,RG,(68),
+NA,I222L,A(H3N2),222,,E119V+I222L,HRI (1571),NI (5),?,?,RG,(68),
+NA,E119V,A(H3N2),119,,E119V+I222V,HRI (293–2286),NI (2),NI (7),?,Clin/Ose,"(63, 76)",
+NA,I222V,A(H3N2),222,,E119V+I222V,HRI (293–2286),NI (2),NI (7),?,Clin/Ose,"(63, 76)",
+NA,I222T,A(H3N2),222,,I222T+S331R,RI (12–31),NI (3–7),NI (2),NI (3–4),Sur/Clin,(21),
+NA,S331R,A(H3N2),331,,I222T+S331R,RI (12–31),NI (3–7),NI (2),NI (3–4),Sur/Clin,(21),
+NA,Q391K,A(H3N2),391,,Q391K+K249E,RI (87),RI (32),RI (16),NI (9),Sur,(3),
+NA,K249E,A(H3N2),249,,Q391K+K249E,RI (87),RI (32),RI (16),NI (9),Sur,(3),
