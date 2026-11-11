@@ -1,0 +1,27 @@
+# numbering: chicken2021
+# db-version: 2026-11-05
+# source: human-nai-marker-table_for-publication_final_20240918.pdf (WHO GISRS, 18 September 2024)
+# resolved-from: nai_h5n1_source.csv (# numbering: n1-h5-who)
+# generated: 2026-11-11 by scripts/resolve_watchlist.py --source nai_h5n1_source.csv --db /Users/jpalmer/work/flu/fluscan/references/h5n1/chicken2021
+gene,mutation,note
+NA,V116A,"native=V96A;subtype=A(H5N1);n2_position=116;oseltamivir=RI (11–18);zanamivir=RI (10–63);peramivir=NI (4);laninamivir=?;source_of_viruses=Sur;references=(46, 47)"
+NA,I117T,native=I97T;subtype=A(H5N1);n2_position=117;oseltamivir=RI (19);zanamivir=RI (12);peramivir=?;laninamivir=?;source_of_viruses=Sur;references=(48);also_in=I117T
+NA,I117V,"native=I97V;subtype=A(H5N1);n2_position=117;oseltamivir=NI (5–9);zanamivir=NI (2–4);peramivir=?;laninamivir=?;source_of_viruses=RG/ Sur;references=(48, 50, 51);also_in=I97V"
+NA,E119A,"native=E99A;subtype=A(H5N1);n2_position=119;oseltamivir=RI (10–35);zanamivir=HRI (51–1254);peramivir=NI (7);laninamivir=?;source_of_viruses=RG;references=(5, 50);also_in=E99A"
+NA,E119D,native=E99D;subtype=A(H5N1);n2_position=119;oseltamivir=RI (87);zanamivir=HRI (132);peramivir=HRI (1436);laninamivir=?;source_of_viruses=RG;references=(5);also_in=E99D
+NA,E119G,"native=E99G;subtype=A(H5N1);n2_position=119;oseltamivir=NI (3–6);zanamivir=HRI (438–1485);peramivir=RI/HRI (12–164);laninamivir=?;source_of_viruses=RG/ in vitro/Zan;references=(5, 43);also_in=E99G"
+NA,Q136L,native=Q116L;subtype=A(H5N1);n2_position=136;oseltamivir=RI (26);zanamivir=HRI (350);peramivir=?;laninamivir=?;source_of_viruses=In vivo/Zan;references=(52)
+NA,V149A,native=V129A;subtype=A(H5N1);n2_position=149;oseltamivir=NI (4);zanamivir=NI (8);peramivir=?;laninamivir=?;source_of_viruses=Sur;references=(53)
+NA,D199G,native=D179G;subtype=A(H5N1);n2_position=198;oseltamivir=RI (32);zanamivir=RI (44);peramivir=NI (4);laninamivir=?;source_of_viruses=RG/ in vitro/Zan;references=(43)
+NA,I223M,native=I203M;subtype=A(H5N1);n2_position=222;oseltamivir=RI (36);zanamivir=NI (1);peramivir=NI (1);laninamivir=?;source_of_viruses=RG/ in vitro/Zan;references=(43);also_in=I203M
+NA,I223V,native=I203V;subtype=A(H5N1);n2_position=222;oseltamivir=NI (7);zanamivir=NI (1);peramivir=NI (1);laninamivir=?;source_of_viruses=RG/ in vitro/Zan;references=(43);also_in=I203V
+NA,S247N,native=S227N;subtype=A(H5N1);n2_position=246;oseltamivir=RI (24);zanamivir=NI (2);peramivir=?;laninamivir=?;source_of_viruses=Sur;references=(46);also_in=S247N/S227N/S227N
+NA,H275Y,"native=H255Y;subtype=A(H5N1);n2_position=274;oseltamivir=RI/HRI (44–2502);zanamivir=NI (1–3);peramivir=RI/HRI (23–533);laninamivir=NI (6);source_of_viruses=Sur/ Clin/Ose/ RG/ in vitro/Zan;references=(5, 43, 50, 54, 55);also_in=H255Y/H255Y/H255Y/H255Y/H255Y"
+NA,N295S,"native=N275S;subtype=A(H5N1);n2_position=294;oseltamivir=RI/HRI (12–138);zanamivir=NI/RI (1–27);peramivir=NI/RI/HRI (1–130);laninamivir=?;source_of_viruses=Clin/Ose/ RG;references=(5, 49, 50, 54, 56);also_in=N295S/N295S"
+NA,N295D,native=N295D;subtype=A(H5N1);n2_position=294;footnotes=f;oseltamivir=NI (1);zanamivir=NI (4);peramivir=NI (2);laninamivir=NI (2);source_of_viruses=Sur;references=(49)
+NA,K432T,native=K412T;subtype=A(H5N1);n2_position=432;oseltamivir=NI (9);zanamivir=RI (12);peramivir=NI (5);laninamivir=?;source_of_viruses=Sur/ in vitro;references=(57)
+NA,T438I,"native=T438I;subtype=A(H5N1);n2_position=439;footnotes=f;oseltamivir=NI (1–8);zanamivir=RI/HRI (17–98);peramivir=NI/RI (6–23);laninamivir=?;source_of_viruses=RG, Sur;references=(58)"
+NA,T438N,native=T438N;subtype=A(H5N1);n2_position=439;footnotes=f;oseltamivir=NI (2);zanamivir=RI (12);peramivir=NI (2);laninamivir=NI (2);source_of_viruses=Sur;references=(49);also_in=T438N
+NA,I314V,native=I294V;subtype=A(H5N1);n2_position=314;combination_of=I97V+I294V;oseltamivir=RI (16);zanamivir=NI (1);peramivir=NI (1);laninamivir=?;source_of_viruses=Sur;references=(47)
+NA,I223L,native=I203L;subtype=A(H5N1);n2_position=222;combination_of=I203L+ S227N;oseltamivir=RI (14);zanamivir=NI (1);peramivir=NI (5);laninamivir=?;source_of_viruses=Sur/ in vitro;references=(57);also_in=I203L
+NA,K150N,native=K130N;subtype=A(H5N1);n2_position=150;combination_of=K130N+I203L+S227N;oseltamivir=RI (77);zanamivir=NI (1);peramivir=?;laninamivir=?;source_of_viruses=Sur;references=(46)

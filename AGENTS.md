@@ -50,6 +50,11 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   `watchlist/<list>/*_watchlist_hits.tsv` per final VCF and watchlist (header-only
   when nothing matches), named by segment from the VCF filename and tagged
   `pf`/`nc`/`sr` by workflow, since FASTA mode puts both branches in one list dir.
+  Every list is handed to every sample, so the process passes the bundle name and a
+  list numbered for a different bundle is skipped and writes **no** file — which is
+  why `hits` is an optional output. Lists are generated per reference by
+  `scripts/resolve_watchlist.py`; `assets/watchlists/unresolved/` holds the
+  un-numbered sources and is never scanned.
   It runs in all three workflows and is independent of `--merge_flumut_mutations`.
 
 ## Repository map
@@ -67,7 +72,10 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 | `tests/` | Python unit and CLI tests |
 | `docs/vcf_annotation_and_flumut_insertion.md` | Detailed Nextclade VCF and FluMutDB semantics |
 | `docs/watchlists.md` | Custom watchlist schema, matching rules, and the HA1/HA numbering trap |
-| `assets/watchlists/` | The shipped `*watchlist.csv` files; `--watchlist_dir` defaults here |
+| `assets/watchlists/` | The shipped `*watchlist.csv` files, one per reference bundle, each with its `*_reference_map.tsv` audit; `--watchlist_dir` defaults here |
+| `assets/watchlists/unresolved/` | Source lists in their own numbering, not scanned. Resolved onto a bundle by `scripts/resolve_watchlist.py` |
+| `scripts/resolve_watchlist.py` | Resolves a source list onto one bundle's numbering; the generic path any new list takes |
+| `scripts/parse_nai_table.py` | One-off: the WHO GISRS NAI marker PDF to source lists. Needs `pdfplumber`, which no pipeline environment carries |
 | `modules/shared/sample_id.nf` | The only place a consensus or sample sheet `sample_id` is derived; holds `fasta_sample_channel` (FASTA input with each sample's bundle), `input_db_paths` (every bundle the input names) and `samplesheet_channel` (SHORT_READ). Changing `clean_sample_id` renames every output |
 | `modules/shared/database.nf` | The only place that knows the bundle layout; `resolve_db` validates one bundle up front and `resolve_dbs` every bundle a run uses, keyed by name. Also holds the canonical segment list, `@Field DB_SEGMENTS`, which it uses to check each segment's dataset |
 | `scripts/validate_db.py` | Deeper, contents-level bundle check; run after building or moving a bundle |
@@ -209,10 +217,11 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   canonicalise through it; a second copy lets the map be keyed under a name the
   merge never looks up, silently dropping a whole gene's markers.
 - HA marker annotation needs the Nextclade annotation to expose the HA1/HA2
-  split, either as two real `CDS` features (chicken2021) or as
-  `mature_protein_region_of_CDS` children of one HA CDS (the NCBI/RefSeq model,
-  GsGD included). A dataset offering only a bare `HA` CDS is still unusable for
-  HA markers and is flagged `stale_annotation`.
+  split, either as two real `CDS` features or as
+  `mature_protein_region_of_CDS` children of one HA CDS. Every bundle in use is
+  the second shape: NCBI annotates HA as a single CDS with `product=HA1` and
+  `product=HA2` mature peptides. A dataset offering only a bare `HA` CDS is
+  still unusable for HA markers and is flagged `stale_annotation`.
 - A mature-peptide ANN entry names the *parent* gene in `Gene_Name`, so the
   merge falls back to `Feature_ID` and the map records the peptide's
   `protein_id`/GFF3 `ID` as gene `aliases`. The parent is listed in the

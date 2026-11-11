@@ -1,0 +1,30 @@
+# numbering: darwin6
+# db-version: 2026-10-19
+# source: human-nai-marker-table_for-publication_final_20240918.pdf (WHO GISRS, 18 September 2024)
+# resolved-from: nai_h3n2_source.csv (# numbering: n2)
+# generated: 2026-11-11 by scripts/resolve_watchlist.py --source nai_h3n2_source.csv --db /Users/jpalmer/work/flu/fluscan/references/h3n2/darwin6
+gene,mutation,note
+NA,E119D,native=E119D;subtype=A(H3N2);n2_position=119;oseltamivir=NI (2);zanamivir=RI (32);peramivir=NI (2);laninamivir=?;source_of_viruses=RG;references=(59)
+NA,E119I,native=E119I;subtype=A(H3N2);n2_position=119;oseltamivir=HRI (208);zanamivir=RI (17);peramivir=NI (3);laninamivir=?;source_of_viruses=Clin/Ose/ in vitro;references=(60)
+NA,E119V,"native=E119V;subtype=A(H3N2);n2_position=119;oseltamivir=RI/HRI (18–2057);zanamivir=NI (1–7);peramivir=NI (1–3);laninamivir=NI (3–4);source_of_viruses=Sur/ Clin/Ose/ in vitro/ RG;references=(39, 45, 59-64);also_in=E119V/E119V/E119V"
+NA,Q136K,"native=Q136K;subtype=A(H3N2);n2_position=136;oseltamivir=NI (1–7);zanamivir=RI/HRI (11–132);peramivir=NI (3–9);laninamivir=NI (2);source_of_viruses=Sur;references=(21, 33, 65);comment=Host cell selected, not found in clinical specimens"
+NA,N142S,native=N142S;subtype=A(H3N2);n2_position=142;oseltamivir=HRI (595);zanamivir=HRI (244);peramivir=RI (40);laninamivir=RI (53);source_of_viruses=Clin/Sur;references=(21)
+NA,D151A,"native=D151A;subtype=A(H3N2);n2_position=151;oseltamivir=NI (2–3);zanamivir=RI (29–43);peramivir=RI (10);laninamivir=NI (7);source_of_viruses=Sur;references=(21, 44);comment=Cell culture- selected"
+NA,D151E,native=D151E;subtype=A(H3N2);n2_position=151;oseltamivir=RI (11);zanamivir=NI (2);peramivir=?;laninamivir=?;source_of_viruses=RG;references=(66);comment=Cell culture- selected
+NA,D151G,native=D151G;subtype=A(H3N2);n2_position=151;oseltamivir=NI (1);zanamivir=HRI (>1500);peramivir=?;laninamivir=?;source_of_viruses=RG;references=(67);comment=Cell culture- selected
+NA,I222L,native=I222L;subtype=A(H3N2);n2_position=222;oseltamivir=NI (9);zanamivir=NI (2);peramivir=?;laninamivir=?;source_of_viruses=RG;references=(68);also_in=I222L
+NA,R224K,native=R224K;subtype=A(H3N2);n2_position=224;oseltamivir=HRI (>4000);zanamivir=RI (>50);peramivir=?;laninamivir=?;source_of_viruses=RG;references=(66)
+NA,N245Y,native=N245Y;subtype=A(H3N2);n2_position=245;oseltamivir=RI (15);zanamivir=NI (5);peramivir=NI (2);laninamivir=NI (1);source_of_viruses=Sur;references=(17)
+NA,K249E,native=K249E;subtype=A(H3N2);n2_position=249;oseltamivir=RI (10–15);zanamivir=NI (4–6);peramivir=NI (1–3);laninamivir=NI (1–3);source_of_viruses=Sur;references=(3);also_in=K249E
+NA,E276D,native=E276D;subtype=A(H3N2);n2_position=276;oseltamivir=RI (15);zanamivir=HRI (160);peramivir=?;laninamivir=?;source_of_viruses=RG;references=(66)
+NA,R292K,"native=R292K;subtype=A(H3N2);n2_position=292;oseltamivir=HRI (>10 000);zanamivir=NI/RI/HRI (3–134);peramivir=RI/HRI (14–719);laninamivir=NI (2–3);source_of_viruses=Clin/Ose, Clin/Ose+Per/ in vitro/Zan/ RG/ Clin/Sur;references=(12, 21, 39, 44, 59, 61, 66, 71- 73)"
+NA,N294S,"native=N294S;subtype=A(H3N2);n2_position=294;oseltamivir=HRI (300–1879);zanamivir=NI (8);peramivir=NI (1);laninamivir=?;source_of_viruses=Clin/Ose/ RG;references=(39, 73)"
+NA,S329K,"native=N329K;subtype=A(H3N2);n2_position=329;footnotes=i;oseltamivir=NI/RI (5–21);zanamivir=NI/RI (3–12);peramivir=?;laninamivir=?;source_of_viruses=Sur;references=(13, 74, 75);comment=Increased NA Kms for MUNANA substrateh"
+NA,S329R,native=N329R;subtype=A(H3N2);n2_position=329;footnotes=i;oseltamivir=RI (13);zanamivir=NI (8);peramivir=?;laninamivir=?;source_of_viruses=Sur;references=(75);comment=Increased NA Kms for MUNANA substrateh
+NA,S331R,"native=S331R;subtype=A(H3N2);n2_position=331;footnotes=i;oseltamivir=NI/RI (5–77);zanamivir=NI/RI (3–30);peramivir=?;laninamivir=?;source_of_viruses=Sur;references=(13, 74, 75);comment=Increased NA Kms for MUNANA substrateh;also_in=S331R"
+NA,S334R,native=S334R;subtype=A(H3N2);n2_position=334;oseltamivir=NI (<2)j;zanamivir=NI (<2)j;peramivir=?;laninamivir=?;source_of_viruses=Sur;references=(75);comment=Increased NA Kms for MUNANA substrateh
+NA,R371K,native=R371K;subtype=A(H3N2);n2_position=371;oseltamivir=RI (45);zanamivir=RI (15);peramivir=?;laninamivir=?;source_of_viruses=RG;references=(66)
+NA,T148I,native=T148I;subtype=A(H3N2);n2_position=148;combination_of=E119V+T148I;oseltamivir=HRI (>6000);zanamivir=HRI (>800);peramivir=HRI (>110);laninamivir=HRI (>250);source_of_viruses=Sur/ in vitro/ RG;references=(64);comment=T148I was host cell selected
+NA,I222V,"native=I222V;subtype=A(H3N2);n2_position=222;combination_of=E119V+I222V;oseltamivir=HRI (293–2286);zanamivir=NI (2);peramivir=NI (7);laninamivir=?;source_of_viruses=Clin/Ose;references=(63, 76)"
+NA,I222T,native=I222T;subtype=A(H3N2);n2_position=222;combination_of=I222T+S331R;oseltamivir=RI (12–31);zanamivir=NI (3–7);peramivir=NI (2);laninamivir=NI (3–4);source_of_viruses=Sur/Clin;references=(21)
+NA,Q391K,native=Q391K;subtype=A(H3N2);n2_position=391;combination_of=Q391K+K249E;oseltamivir=RI (87);zanamivir=RI (32);peramivir=RI (16);laninamivir=NI (9);source_of_viruses=Sur;references=(3)

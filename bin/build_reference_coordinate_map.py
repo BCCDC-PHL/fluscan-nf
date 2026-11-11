@@ -305,7 +305,8 @@ def read_cds_models(path: Path, segment: str) -> dict[str, CdsModel]:
     amino-acid map is built at all.
 
     A mature peptide is promoted to a gene key only when no real CDS already claims that key,
-    so datasets exposing genuine HA1/HA2 CDS features (chicken2021) are unaffected.
+    so a dataset that does expose genuine HA1/HA2 CDS features is unaffected. None of the
+    bundles in use do: NCBI annotates HA as one CDS with mature-peptide subunits.
     """
     grouped: dict[str, dict[str, Any]] = {}
     mature_rows: list[dict[str, Any]] = []
@@ -433,8 +434,8 @@ def detect_stale_ha_annotation(
 
     FluMutDB numbers HA by its HA1/HA2 subunits, as flumut's source reference does. The
     target is the flexible, user-chosen reference; it may express the split either as two
-    real CDS features (chicken2021) or as mature_protein_region_of_CDS children of a single
-    HA CDS (the NCBI/RefSeq model, GsGD among them) -- read_cds_models accepts both, so
+    real CDS features or as mature_protein_region_of_CDS children of a single HA CDS (the
+    NCBI model, which every bundle in use follows) -- read_cds_models accepts both, so
     `target_gene_keys` already carries HA1/HA2 in either case.
 
     What remains stale is an annotation offering *only* a bare "HA" CDS with no subunit
