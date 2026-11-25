@@ -1,4 +1,6 @@
 // shared/sample_id.nf - the one place a consensus or sample sheet sample_id is derived.
+
+include { pool_db_paths } from './database.nf'
 //
 // The value this produces is final. It keys every channel and names every file
 // from prepare_consensus onward, so nothing downstream may re-derive or edit it:
@@ -82,24 +84,31 @@ def samplesheet_channel(String path, List<String> columns) {
     })
 }
 
-// FASTA-mode samples as [sample_id, FASTA, bundle path, input ID]. The bundle is the sample
-// sheet's DB cell, or --db for a blank cell, a sheet without DB, and --fasta_input.
+// The bundle for a FASTA sample without a DB cell: --db, or null when --db_pool selects it.
+def default_db_path() {
+    return params.db_pool == 'NO_FILE' ? params.db : null
+}
+
+// FASTA-mode samples as [sample_id, FASTA, bundle path or null, input ID]. The bundle is the
+// sample sheet's DB cell, else default_db_path() for a blank cell, a sheet without DB, and
+// --fasta_input.
 def fasta_sample_channel() {
     if (params.samplesheet_input == 'NO_FILE') {
         return consensus_fasta_channel(params.fasta_input)
-            .map { id, fasta -> [id, fasta, params.db, fasta.name] }
+            .map { id, fasta -> [id, fasta, default_db_path(), fasta.name] }
     }
     return Channel.fromList(samplesheet_rows(params.samplesheet_input, ['FASTA']).collect { id, row ->
-        [id, file(row.FASTA, checkIfExists: true), row.DB ?: params.db, row.ID]
+        [id, file(row.FASTA, checkIfExists: true), row.DB ?: default_db_path(), row.ID]
     })
 }
 
-// Every bundle path the input names, by the same rule as fasta_sample_channel. Read eagerly
-// so each bundle is validated before any task runs.
+// Every bundle path the input names, by the same rule as fasta_sample_channel, plus every
+// --db_pool bundle. Read eagerly so each bundle is validated before any task runs.
 def input_db_paths() {
     def rows = params.samplesheet_input == 'NO_FILE' ? [] : file(params.samplesheet_input).splitCsv(header: true, strip: true)
-    if (!rows || !('FASTA' in rows[0].keySet())) {
-        return [params.db]
-    }
-    return rows.collect { row -> row.DB ?: params.db }.unique()
+    def named = (!rows || !('FASTA' in rows[0].keySet()))
+        ? [default_db_path()]
+        : rows.collect { row -> row.DB ?: default_db_path() }
+    def pool = params.db_pool == 'NO_FILE' ? [] : pool_db_paths(params.db_pool)
+    return (named.findAll() + pool).unique()
 }

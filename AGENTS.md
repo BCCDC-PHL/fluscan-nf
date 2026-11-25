@@ -22,13 +22,20 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   `--fastq_input` runs `SHORT_READ` and `--fasta_input` launches both `PAFTOOLS`
   and `NEXTCLADE`. For `--samplesheet_input` the header decides: `ID,R1,R2` runs
   `SHORT_READ`, `ID,FASTA` runs the two FASTA branches. An optional `DB` column
-  gives each FASTA sample its own bundle, so one run can mix subtypes.
+  gives each FASTA sample its own bundle, so one run can mix subtypes. In FASTA
+  mode `--db_pool` (exclusive with `--db`) names a directory of bundles, and
+  each sample without a `DB` cell gets one chosen by `select_db`.
 - `SHORT_READ` performs read QC/primer trimming, downsampling, assembly,
   BLAST-based reference selection, mapping, LoFreq calling, SnpEff annotation,
   MNV correction, consensus generation, and FluMut screening.
 - In FASTA mode, `FASTA_PREP` (`workflows/fasta-prep.nf`) hashes, cleans and
   QC-aggregates the consensus input and runs FluMut once, then hands the cleaned
-  FASTAs and their provenance records to both branches.
+  FASTAs and their provenance records to both branches. With `--db_pool` it also
+  runs `select_db` (`modules/shared/select_db.nf`, `bin/select_db.py`), which
+  BLASTs each sample against all pool bundles. A bundle is assigned only when it
+  is the top HA and the top NA hit and both pass the identity and coverage
+  cutoffs. An unassigned sample gets a row in `aggregate/db_selection.tsv` and is
+  absent from `FASTA_PREP.out.db`, so neither branch sees it.
   - `PAFTOOLS` selects references with BLAST, then one `paftools_variants`
     task per sample aligns each segment with minimap2, calls differences with
     `paftools.js`, annotates with SnpEff, converts to the common VCF shape, and
@@ -62,14 +69,14 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 | `modules/shared/` | Reused BLAST, consensus, FluMut, post-processing, and provenance processes |
 | `modules/{short_read,paftools,nextclade}/` | Branch-specific processes |
 | `bin/` | Python CLI entry points *only* — Nextflow puts this directory on `PATH` for every task, so nothing that is merely importable belongs here |
-| `bin/lib/` | Modules the entry points import: `tools.py` (VCF I/O), `flu_gene_names.py` (gene-key aliases and the known-gene set), and `aa_markers.py` (`ANN=` extraction, HGVS.p parsing, the `MNV_UNRESOLVED` test). Reached as `from lib.… import …`; Python already puts a script's own directory on `sys.path`, so no packaging or `__init__.py` is involved |
+| `bin/lib/` | Modules the entry points import: `tools.py` (VCF I/O), `flu_gene_names.py` (gene-key aliases and the known-gene set), `blast.py` (the BLAST `-outfmt` column list), and `aa_markers.py` (`ANN=` extraction, HGVS.p parsing, the `MNV_UNRESOLVED` test). Reached as `from lib.… import …`; Python already puts a script's own directory on `sys.path`, so no packaging or `__init__.py` is involved |
 | `environments/` | Pinned Conda runtime definitions |
 | `tests/` | Python unit and CLI tests |
 | `docs/vcf_annotation_and_flumut_insertion.md` | Detailed Nextclade VCF and FluMutDB semantics |
 | `docs/watchlists.md` | Custom watchlist schema, matching rules, and the HA1/HA numbering trap |
 | `assets/watchlists/` | The shipped `*watchlist.csv` files; `--watchlist_dir` defaults here |
 | `modules/shared/sample_id.nf` | The only place a consensus or sample sheet `sample_id` is derived; holds `fasta_sample_channel` (FASTA input with each sample's bundle), `input_db_paths` (every bundle the input names) and `samplesheet_channel` (SHORT_READ). Changing `clean_sample_id` renames every output |
-| `modules/shared/database.nf` | The only place that knows the bundle layout; `resolve_db` validates one bundle up front and `resolve_dbs` every bundle a run uses, keyed by name. Also holds the canonical segment list, `@Field DB_SEGMENTS`, which it uses to check each segment's dataset |
+| `modules/shared/database.nf` | The only place that knows the bundle layout; `resolve_db` validates one bundle up front and `resolve_dbs` every bundle a run uses, keyed by name; `resolve_pool` resolves a `--db_pool` directory and enforces one subtype per bundle. Also holds the canonical segment list, `@Field DB_SEGMENTS`, which it uses to check each segment's dataset |
 | `scripts/validate_db.py` | Deeper, contents-level bundle check; run after building or moving a bundle |
 | `docs/database_bundles.md` | Bundle layout, `db.yml` schema, how to build and validate one |
 | `README.md` | User-facing inputs, commands, outputs, and architecture |
@@ -111,7 +118,10 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   must differ, because they key the per-bundle channels and the run-level
   outputs under `aggregate/nextclade/<db>/`.
 - The nucleotide reference FASTA used for BLAST has headers
-  `accession|subtype|segment`.
+  `accession|subtype|segment`. The `--db_pool` BLAST db prefixes them with the
+  bundle name (`bundle|accession|subtype|segment`). `resolve_pool` requires each
+  pool bundle to hold one subtype and no two bundles to share one, so selection
+  picks a subtype and its numbering is the same for every sample.
 - Nextclade datasets live in uppercase per-segment subdirectories (`HA/`, `PB2/`,
   …) and must contain the expected dataset reference and annotation files.
   Resolve them with the segment label directly; never lowercase it. macOS is

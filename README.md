@@ -51,8 +51,10 @@ flowchart TD
         direction TB
         prepare[prepare_consensus]
         prep_flumut[flumut]
+        select_db[select_db: HA/NA BLAST against the bundle pool]
 
         prepare --> prep_flumut
+        prepare -.->|"if --db_pool and no DB cell"| select_db
     end
 
     subgraph PAFTOOLS[PAFTOOLS workflow]
@@ -79,6 +81,7 @@ flowchart TD
         end
 
         prepare --> blastn
+        select_db -.->|bundle| blastn
         prepare --> minimap
         blastn --> minimap
         covqc --> covagg
@@ -97,6 +100,7 @@ flowchart TD
         flumut_annotated[FluMutDB-annotated VCFs]
 
         prepare --> groupseg
+        select_db -.->|bundle| groupseg
         groupseg --> nc_run
         nc_run --> nc2vcf
         nc2vcf --> nc_final
@@ -146,13 +150,13 @@ SAMPLE-01,/path/to/SAMPLE-01.fasta,/path/to/refs/gsgd
 SAMPLE-02,/path/to/SAMPLE-02.fasta,/path/to/refs/wisconsin588
 ```
 
-A blank `DB` cell falls back to `--db`; see [docs/database_bundles.md](docs/database_bundles.md#several-bundles-in-one-run). Other columns are ignored.
+A blank `DB` cell falls back to `--db`, or with `--db_pool` to automatic selection; see [docs/database_bundles.md](docs/database_bundles.md#several-bundles-in-one-run). Other columns are ignored.
 
 - Each `ID` is cleaned by the same rule as a FASTA filename (see the note under Usage), so `24-1234-IP7-SAMPLE_01` is reported as `SAMPLE-01`. After cleaning, an ID may contain only letters, digits, `.` and `-`.
 - Relative paths resolve against the directory `nextflow run` is launched from; absolute paths are safer.
 - The run stops before any task starts if a column or value is missing, a file does not exist, or two IDs clean to the same sample name.
 - `run_name`, which prefixes the run-level reports, is the sample sheet's filename without `.csv`.
-- `aggregate/sample_ids.csv` maps each input ID (or FASTA filename) to its cleaned `sample_id` and bundle name.
+- `aggregate/sample_ids.csv` maps each analysed input ID (or FASTA filename) to its cleaned `sample_id` and bundle name.
 - The short-read workflow takes a single `--db` and rejects a sheet with a `DB` column.
 - Give only one of `--fastq_input`, `--fasta_input` and `--samplesheet_input`.
 
@@ -177,6 +181,14 @@ See [docs/database_bundles.md](docs/database_bundles.md) for the full layout, th
 ```bash
 scripts/validate_db.py /path/to/refs/gsgd
 ```
+
+In FASTA mode, `--db_pool /path/to/refs/pool` takes the place of `--db`. The path is a
+directory of bundles, one per subtype. Each sample without a `DB` cell gets the bundle its
+HA and NA both match best, provided both hits pass `--db_select_min_identity` (default 75%)
+and `--db_select_min_coverage` (default 0.5). A sample with no confident match is left out
+of both branches. Every sample that went through selection gets a row in
+`aggregate/db_selection.tsv`. See
+[docs/database_bundles.md](docs/database_bundles.md#bundle-pool-choosing-a-bundle-per-sample).
 
 ## Usage
 
@@ -262,6 +274,8 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 |------|-------------|
 | `${sample_id}.fasta` | Validated consensus FASTA with headers normalised to `{sample_id}_{SEGMENT}` |
 | `qc/*_qc_report.tsv` | QC report from consensus preparation |
+| `db_selection/*_db_selection.tsv` | *Optional* (`--db_pool`): the sample's bundle selection row (also collected in `aggregate/db_selection.tsv`) |
+| `db_selection/*_db_selection_blastn.tsv` | *Optional* (`--db_pool`): BLAST of the consensus against every pool bundle |
 | `blast/*_ref.fasta` | Multi-FASTA containing the optimal reference sequences selected for each segment |
 | `blast/*_blastn.tsv` | BLAST search results against the reference database |
 | `blast/*_blastn_filter.tsv` | Filtered BLAST search results |
@@ -295,7 +309,8 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 | `aggregate/${run_name}_fluscan-nf_multiqc_report.html` | MultiQC report summarising fastp, cutadapt, and FastQC results for all samples (short-read workflow only) |
 | `aggregate/paftools_qc_summary.tsv` | Run-level tabular summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
 | `aggregate/nextclade_qc_summary.tsv` | One row per sample and segment Nextclade saw (NEXTCLADE workflow). `status` is FAIL, with no VCF written, when Nextclade could not align the segment (`not_aligned`), reports a frameshift (`frameshift`), or scores its stop codons `bad` (`stop_codons`); WARN when `coverage_pct` is below `--consensus_coverage_pass_pct` (default 90); otherwise PASS. `coverage_pct` is the share of the reference covered by called (non-N) bases, so a truncated or N-heavy segment WARNs but keeps its VCF. `identity_pct` is exact matches over the called bases plus insertions; it has no threshold and is low for a segment from a different lineage than the reference |
-| `aggregate/sample_ids.csv` | `input_id,sample_id,db`: each input's sample sheet `ID` (or FASTA filename), its cleaned `sample_id`, and the bundle it ran against (FASTA mode) |
+| `aggregate/sample_ids.csv` | `input_id,sample_id,db`: each input's sample sheet `ID` (or FASTA filename), its cleaned `sample_id`, and the bundle it ran against (FASTA mode). A sample `--db_pool` left unassigned is absent |
+| `aggregate/db_selection.tsv` | *Optional* (`--db_pool`): one row per sample that went through bundle selection, with `status` (`assigned`, `missing_segment`, `no_hit`, `disagree`, `below_threshold`), the chosen bundle and subtype, the top HA and NA hits, and the runner-up bundle |
 | `aggregate/consensus_qc_summary.tsv` | Every `*_qc_report.tsv` row from consensus preparation, concatenated across the run. A sample rejected at preparation — duplicate segment, or headers naming more than one sample — contributes no rows and is reported only in the Nextflow log |
 | `aggregate/nextclade/<db>/<SEGMENT>/batch.*` | Raw `nextclade run --output-all` output for one bundle and segment across every sample in the run (NEXTCLADE workflow) |
 | `aggregate/nextclade/<db>/reference_remap/coordinate_map.json` | *Optional* (`--merge_flumut_mutations`): primary machine-readable nucleotide/amino-acid coordinate map lifting flumut's reference (source) onto bundle `<db>`'s Nextclade reference datasets (target) |

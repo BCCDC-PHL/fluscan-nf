@@ -54,6 +54,53 @@ Bundle names (`db.yml` `name`, else the directory name) must differ within a run
 run-level outputs are filed under them in `aggregate/nextclade/<name>/`. The short-read workflow takes one `--db` and
 rejects a sheet with a `DB` column.
 
+### Bundle pool: choosing a bundle per sample
+
+In FASTA mode `--db_pool` replaces `--db` with a directory of bundles, one per subtype.
+A bundle can be a real directory or a symlink:
+
+```
+pool/
+├── wisconsin588/   -> ../h1n1/wisconsin588
+├── darwin6/        -> ../h3n2/darwin6
+└── chicken2021/    -> ../h5n1/chicken2021
+```
+
+```
+nextflow run BCCDC-PHL/fluscan-nf -profile conda \
+  --fasta_input /path/to/consensus_fastas \
+  --db_pool /path/to/refs/pool \
+  --outdir /path/to/output
+```
+
+A sample with a `DB` cell uses that bundle. Every other sample gets a bundle from the pool.
+`select_db` BLASTs the cleaned consensus against every pool bundle's `blastn_db.fa` and
+keeps, per bundle, the highest-bitscore HA-to-HA and NA-to-NA hit. A bundle is assigned
+only when all of these hold:
+
+- the sample has both an HA and an NA segment
+- the bundle is the top hit for HA and also for NA
+- both hits reach `--db_select_min_identity` percent identity (default 75)
+- both hits cover at least `--db_select_min_coverage` of the query (default 0.5)
+
+Every other sample is unassigned and goes to neither PAFTOOLS nor NEXTCLADE. Examples are
+an H5N5 or a swine H1N2 with no matching bundle in the pool, or a partial HA.
+`aggregate/db_selection.tsv` has one row per selected sample. It gives the `status`
+(`assigned`, `missing_segment`, `no_hit`, `disagree`, `below_threshold`), the top HA and
+NA hits with identity, coverage and bitscore, and the runner-up bundle by combined HA+NA
+bitscore. Samples given a bundle by a `DB` cell are not listed. `aggregate/sample_ids.csv`
+holds the bundle of every sample that was analysed.
+
+The run stops before any task starts if a pool bundle's `blastn_db.fa` holds more than one
+subtype or two bundles share one. Because each subtype has exactly one bundle, every
+sample of a subtype is numbered against the same reference. `--db` and `--db_pool`
+together are an error, and the short-read workflow rejects `--db_pool`.
+
+Pool bundles are resolved with the FASTA-mode requirements, so each needs all three
+components. Run-level per-bundle steps such as `makeblastdb`, the pipeline provenance
+record and `coordinate_conversion` run for every pool bundle, including bundles no sample
+was assigned to.
+
 ### Bundles may be partial
 
 Each workflow validates only what it consumes, so a bundle need not be complete:
