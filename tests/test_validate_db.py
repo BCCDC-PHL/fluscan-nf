@@ -41,16 +41,18 @@ vdb = _load_module()
 # Bundle fixtures
 # ---------------------------------------------------------------------------
 
+ACCESSIONS = {seg: f"NC_00735{i}.1" for i, seg in enumerate(SEGMENTS)}
+
 BLAST_FASTA = "".join(
-    f">NC_00735{i}.1|H5N1|{seg}\nACGTACGTACGT\n"
-    for i, seg in enumerate(SEGMENTS)
+    f">{ACCESSIONS[seg]}|H5N1|{seg}\nACGTACGTACGT\n"
+    for seg in SEGMENTS
 )
 
 def make_nextclade(root: Path, segments=SEGMENTS) -> None:
     for segment in segments:
         directory = root / "nextclade" / segment
         directory.mkdir(parents=True)
-        (directory / "reference.fasta").write_text(f">NC_ref_{segment}\nACGT\n")
+        (directory / "reference.fasta").write_text(f">{ACCESSIONS[segment]} description\nACGT\n")
         (directory / "genome_annotation.gff3").write_text("##gff-version 3\n")
         (directory / "pathogen.json").write_text("{}\n")
 
@@ -331,3 +333,15 @@ def test_cli_json_output(complete_bundle):
     assert payload["name"] == "gsgd"
     assert payload["version"] == "2025-07-07"
     assert set(payload["components"]) == {"blastn", "nextclade", "snpeff"}
+
+
+def test_matching_reference_accessions_do_not_warn(complete_bundle):
+    report = vdb.validate(complete_bundle, [])
+    assert not any("references differ" in w for w in report.warnings)
+
+
+def test_reference_accession_drift_warns_only(complete_bundle):
+    (complete_bundle / "nextclade" / "HA" / "reference.fasta").write_text(">OTHER.1 new HA\nACGT\n")
+    report = vdb.validate(complete_bundle, [])
+    assert report.ok, report.problems
+    assert any("references differ for: HA (NC_007353.1 vs OTHER.1)" in w for w in report.warnings)
