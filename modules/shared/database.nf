@@ -25,7 +25,9 @@
 // NEXTCLADE requires 'nextclade'.
 //
 // SHORT_READ uses the one --db bundle. In FASTA mode each sample carries its own bundle
-// (the sample sheet's DB column, else --db), so one run can hold several.
+// (the sample sheet's DB column, else --db), so one run can hold several. With --db_pool
+// instead of --db, a sample without a DB cell gets the pool bundle its HA and NA match best.
+// A pool is a directory of bundles, each holding one subtype, no two sharing one.
 
 import org.yaml.snakeyaml.Yaml
 
@@ -239,4 +241,37 @@ def db_summary(Map db) {
 
     return "${db.name} (version: ${db.version}; components: ${components ?: 'none'})\n" +
            "                      ${db.root}"
+}
+
+
+// Bundle roots in a --db_pool directory: its immediate subdirectories (symlinks followed).
+def pool_db_paths(String path) {
+    def root = file(path)
+    if (!root.isDirectory()) {
+        error "ERROR: --db_pool ${path} is not a directory of reference database bundles."
+    }
+    def paths = root.list().sort().collect { root.resolve(it) }.findAll { it.isDirectory() }*.toString()
+    if (!paths) {
+        error "ERROR: --db_pool ${path} holds no bundle directories."
+    }
+    return paths
+}
+
+
+// Resolve every bundle in a --db_pool directory, keyed by name like resolve_dbs. Selection
+// picks a bundle per subtype, so each must hold exactly one subtype and no two the same one.
+def resolve_pool(String path, List required) {
+    def dbs = resolve_dbs(pool_db_paths(path), (required + ['blastn']).unique())
+    def subtypes = dbs.collectEntries { name, db ->
+        [(name): db.blastn.readLines().findAll { it.startsWith('>') }.collect { it.split(/\|/)[1] }.unique().sort()]
+    }
+    def mixed = subtypes.findAll { it.value.size() != 1 }
+    if (mixed) {
+        error "ERROR: each --db_pool bundle must hold one subtype; found ${mixed.collect { name, s -> "${name}: ${s.join(', ')}" }.join('; ')}"
+    }
+    def shared = subtypes.groupBy { it.value[0] }.findAll { it.value.size() > 1 }
+    if (shared) {
+        error "ERROR: --db_pool bundles must not share a subtype; ${shared.collect { subtype, m -> "${subtype}: ${m.keySet().join(', ')}" }.join('; ')}"
+    }
+    return dbs
 }

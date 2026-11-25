@@ -5,8 +5,7 @@ import pandas as pd
 import argparse
 from Bio import SeqIO
 
-# Must match the -outfmt the blastn process passes
-BLAST_COLUMNS = 'qseqid sseqid pident length qlen slen qstart qend sstart send evalue bitscore score'.split()
+from lib.blast import BLAST_COLUMNS
 
 def parse_args():
 	parser = argparse.ArgumentParser()

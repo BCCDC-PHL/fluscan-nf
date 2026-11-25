@@ -11,6 +11,7 @@ include { PAFTOOLS }   from './workflows/paftools.nf'
 include { NEXTCLADE }  from './workflows/nextclade.nf'
 include { resolve_dbs }     from './modules/shared/database.nf'
 include { db_summary }      from './modules/shared/database.nf'
+include { resolve_pool }    from './modules/shared/database.nf'
 include { input_db_paths }  from './modules/shared/sample_id.nf'
 
 // Resolved with no required components: this only checks that every bundle the input names
@@ -28,6 +29,7 @@ log.info """
   fastaInputDir     : ${params.fasta_input}
   samplesheet       : ${params.samplesheet_input}
   database          : ${dbs.values().collect { db_summary(it) }.join('\n                      ')}
+  database pool     : ${params.db_pool}
   primers           : ${params.primers}
   outdir            : ${params.outdir}
   pipeline run name : ${workflow.runName}
@@ -53,6 +55,17 @@ workflow {
 
     if ('R1' in header && 'DB' in header) {
         error "ERROR: the short-read workflow takes one --db bundle; remove the DB column from ${params.samplesheet_input}."
+    }
+
+    if (params.db_pool != 'NO_FILE') {
+        if (params.db != 'NO_FILE') {
+            error "ERROR: Provide only one of --db or --db_pool."
+        }
+        if (params.fastq_input != 'NO_FILE' || 'R1' in header) {
+            error "ERROR: --db_pool applies to FASTA input only; the short-read workflow takes one --db bundle."
+        }
+        // Checked up front: one subtype per bundle, none shared.
+        resolve_pool(params.db_pool, [])
     }
 
     if (params.fastq_input != 'NO_FILE' || 'R1' in header) {

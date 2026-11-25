@@ -199,6 +199,31 @@ def check_nextclade(root: Path, report: Report) -> None:
         report.components["nextclade"] = f"OK ({len(SEGMENTS)} segment datasets)"
 
 
+def check_reference_accessions(root: Path, report: Report) -> None:
+    """Warn where blastn_db.fa and a Nextclade dataset hold different reference records.
+
+    PAFTOOLS and --db_pool selection use the BLAST records, NEXTCLADE its datasets, so a
+    mismatch calls the two branches against different references.
+    """
+    fasta = root / "blastn_db.fa"
+    if not fasta.is_file() or not (root / "nextclade").is_dir():
+        return
+    blast = {}
+    for line in fasta.read_text().splitlines():
+        match = BLAST_HEADER.match(line)
+        if match:
+            accession, _, segment = match.groups()
+            blast[segment.upper()] = accession
+    differ = []
+    for segment, accession in blast.items():
+        reference = root / "nextclade" / segment / "reference.fasta"
+        first = reference.read_text().splitlines()[:1] if reference.is_file() else []
+        if first and first[0].startswith(">") and first[0][1:].split()[0] != accession:
+            differ.append(f"{segment} ({accession} vs {first[0][1:].split()[0]})")
+    if differ:
+        report.warnings.append("blastn_db.fa and nextclade/ references differ for: " + "; ".join(differ))
+
+
 def parse_snpeff_genomes(config: Path) -> list[str]:
     """Genome keys declared in a snpEff config, in file order."""
     genomes = []
@@ -279,6 +304,7 @@ def validate(root: Path, require: list[str]) -> Report:
 
     check_blastn(root, report)
     check_nextclade(root, report)
+    check_reference_accessions(root, report)
     check_snpeff(root, report, report.metadata.get("snpeff_genomes"))
 
     for component in require:
