@@ -19,6 +19,7 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - Detection of mutations of interest via customisable watchlist scanning of the final VCF
 - Consensus sequence generation
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
+- H5N1 genotype assignment with [GenoFLU](https://github.com/USDA-VS/GenoFLU) (`--skip_genoflu` to disable)
 
 ### PAFTOOLS workflow (consensus FASTA input)
 - Consensus FASTA validation and header normalisation
@@ -29,6 +30,7 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - MNV codon correction
 - Alignment coverage QC with run-level aggregation
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
+- H5N1 genotype assignment with [GenoFLU](https://github.com/USDA-VS/GenoFLU) (`--skip_genoflu` to disable)
 
 ### NEXTCLADE workflow (consensus FASTA input)
 - Consensus FASTA validation and header normalisation
@@ -37,6 +39,7 @@ The short-read workflow performs trimming, assembly, mapping, LoFreq variant cal
 - Per-segment QC from the Nextclade alignment; a segment that fails gets no VCF
 - Conversion to freebayes-style VCF, with substitutions that share a codon annotated as one codon change
 - Detection of influenza molecular markers with [FluMut](https://izsvenezie-virology.github.io/FluMut/docs/usage/usage-cli)
+- H5N1 genotype assignment with [GenoFLU](https://github.com/USDA-VS/GenoFLU) (`--skip_genoflu` to disable)
 - *Optional* (`--merge_flumut_mutations`, default off): reference coordinate conversion — builds a run-level, idempotent nucleotide/amino-acid coordinate map lifting flumut's fixed reference onto the selected Nextclade reference dataset coordinate system (`bin/build_reference_coordinate_map.py`) — followed by FluMutDB annotation of the VCF, which tags each fluscan amino-acid call that matches a curated FluMutDB marker with a `FLUMUT=` INFO field carrying the mutation name and its published effects, split into those directly attributable to that mutation and those associated with it through a multi-mutation marker, each qualified by the subtype it was observed in. No rows are added or removed, so a marker is only reported where fluscan called a difference from the Nextclade reference. Because FluMutDB numbers HA by its HA1/HA2 subunits, HA markers are only annotated when the Nextclade dataset also exposes that split — either as two dedicated `HA1`/`HA2` CDS features, or as `mature_protein_region_of_CDS` children of a single HA CDS (the NCBI/RefSeq model, which the GsGD dataset uses). A dataset offering only a bare `HA` CDS is flagged `stale_annotation` and passes through with its HA rows unannotated
 
 ```mermaid
@@ -197,6 +200,7 @@ Optional short-read parameters:
 - `--aligner` — `bwa` (default) or `minimap2`
 
 Optional in every workflow:
+- `--skip_genoflu` — skip the GenoFLU genotype step (default: GenoFLU runs on every sample)
 - `--watchlist_dir` — directory of `*watchlist.csv` files (`gene,mutation[,note]`) scanned out of the final VCF into a published TSV. Defaults to `assets/watchlists/`; set to `NO_FILE` to disable. `HA1`/`HA2` entries are matched against the reference annotation's mature-peptide coordinates, so they work whether or not the VCF annotates the subunits directly. See [docs/watchlists.md](docs/watchlists.md)
 
 **FASTA-mode example (runs both PAFTOOLS and NEXTCLADE):**
@@ -252,6 +256,7 @@ Sample-level outputs are written to one folder per sample, and some workflows al
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers |
+| `genoflu/*_genoflu.tsv` | GenoFLU genotype call, per-segment matches and percent identity; `Not assigned` for samples that are not H5 2.3.4.4b. Absent with `--skip_genoflu` |
 | `*_short_read_*_provenance.yml` | Aggregated per-sample provenance file for the short-read workflow |
 
 The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as an integer.
@@ -272,6 +277,7 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers |
+| `genoflu/*_genoflu.tsv` | GenoFLU genotype call, per-segment matches and percent identity; `Not assigned` for samples that are not H5 2.3.4.4b. Absent with `--skip_genoflu` |
 | `*_paftools_*_provenance.yml` | Aggregated per-sample provenance file for the PAFTOOLS workflow |
 
 ### NEXTCLADE workflow outputs (per sample, consensus FASTA input)
@@ -286,6 +292,7 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 | `flumut/*_flumut_mutations.tsv` | FluMut long-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_mutations_wide.tsv` | FluMut wide-format table of amino acid mutations at positions of interest |
 | `flumut/*_flumut_literature.tsv` | FluMut literature references associated with the identified markers |
+| `genoflu/*_genoflu.tsv` | GenoFLU genotype call, per-segment matches and percent identity; `Not assigned` for samples that are not H5 2.3.4.4b. Absent with `--skip_genoflu` |
 | `*_nextclade_*_provenance.yml` | Aggregated per-sample provenance file for the NEXTCLADE workflow |
 
 ### Run-level outputs
@@ -296,6 +303,7 @@ The PAFTOOLS and NEXTCLADE VCFs declare and write the placeholder `FORMAT/GQ` as
 | `aggregate/paftools_qc_summary.tsv` | Run-level tabular summary of PAFTOOLS alignment coverage across all FASTA samples and segments |
 | `aggregate/nextclade_qc_summary.tsv` | One row per sample and segment Nextclade saw (NEXTCLADE workflow). `status` is FAIL, with no VCF written, when Nextclade could not align the segment (`not_aligned`), reports a frameshift (`frameshift`), or scores its stop codons `bad` (`stop_codons`); WARN when `coverage_pct` is below `--consensus_coverage_pass_pct` (default 90); otherwise PASS. `coverage_pct` is the share of the reference covered by called (non-N) bases, so a truncated or N-heavy segment WARNs but keeps its VCF. `identity_pct` is exact matches over the called bases plus insertions; it has no threshold and is low for a segment from a different lineage than the reference |
 | `aggregate/sample_ids.csv` | `input_id,sample_id,db`: each input's sample sheet `ID` (or FASTA filename), its cleaned `sample_id`, and the bundle it ran against (FASTA mode) |
+| `aggregate/genoflu_summary.tsv` | Every `genoflu/*_genoflu.tsv` row, concatenated across the run (all workflows). Absent with `--skip_genoflu` |
 | `aggregate/consensus_qc_summary.tsv` | Every `*_qc_report.tsv` row from consensus preparation, concatenated across the run. A sample rejected at preparation — duplicate segment, or headers naming more than one sample — contributes no rows and is reported only in the Nextflow log |
 | `aggregate/nextclade/<db>/<SEGMENT>/batch.*` | Raw `nextclade run --output-all` output for one bundle and segment across every sample in the run (NEXTCLADE workflow) |
 | `aggregate/nextclade/<db>/reference_remap/coordinate_map.json` | *Optional* (`--merge_flumut_mutations`): primary machine-readable nucleotide/amino-acid coordinate map lifting flumut's reference (source) onto bundle `<db>`'s Nextclade reference datasets (target) |

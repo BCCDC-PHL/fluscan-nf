@@ -25,9 +25,9 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
   gives each FASTA sample its own bundle, so one run can mix subtypes.
 - `SHORT_READ` performs read QC/primer trimming, downsampling, assembly,
   BLAST-based reference selection, mapping, LoFreq calling, SnpEff annotation,
-  MNV correction, consensus generation, and FluMut screening.
+  MNV correction, consensus generation, FluMut screening, and GenoFLU genotyping.
 - In FASTA mode, `FASTA_PREP` (`workflows/fasta-prep.nf`) hashes, cleans and
-  QC-aggregates the consensus input and runs FluMut once, then hands the cleaned
+  QC-aggregates the consensus input and runs FluMut and GenoFLU once, then hands the cleaned
   FASTAs and their provenance records to both branches.
   - `PAFTOOLS` selects references with BLAST, then one `paftools_variants`
     task per sample aligns each segment with minimap2, calls differences with
@@ -59,11 +59,11 @@ The canonical segment set is `PB2`, `PB1`, `PA`, `HA`, `NP`, `NA`, `M`, and
 | `main.nf` | Entry point and workflow dispatch |
 | `nextflow.config` | Parameters, Conda profile, resources, reports |
 | `workflows/` | Channel wiring for the three top-level workflows and the `FASTA_PREP` subworkflow both FASTA branches take their input from |
-| `modules/shared/` | Reused BLAST, consensus, FluMut, post-processing, and provenance processes |
+| `modules/shared/` | Reused BLAST, consensus, FluMut, GenoFLU, post-processing, and provenance processes |
 | `modules/{short_read,paftools,nextclade}/` | Branch-specific processes |
 | `bin/` | Python CLI entry points *only* — Nextflow puts this directory on `PATH` for every task, so nothing that is merely importable belongs here |
 | `bin/lib/` | Modules the entry points import: `tools.py` (VCF I/O), `flu_gene_names.py` (gene-key aliases and the known-gene set), and `aa_markers.py` (`ANN=` extraction, HGVS.p parsing, the `MNV_UNRESOLVED` test). Reached as `from lib.… import …`; Python already puts a script's own directory on `sys.path`, so no packaging or `__init__.py` is involved |
-| `environments/` | Pinned Conda runtime definitions |
+| `environments/` | Pinned Conda runtime definitions (`fluscan`, `nextclade`, `genoflu`) |
 | `tests/` | Python unit and CLI tests |
 | `docs/vcf_annotation_and_flumut_insertion.md` | Detailed Nextclade VCF and FluMutDB semantics |
 | `docs/watchlists.md` | Custom watchlist schema, matching rules, and the HA1/HA numbering trap |

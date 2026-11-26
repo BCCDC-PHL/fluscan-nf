@@ -1,0 +1,6 @@
+name: genoflu
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - genoflu=1.08
