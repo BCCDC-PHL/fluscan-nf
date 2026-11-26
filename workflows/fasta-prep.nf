@@ -4,7 +4,7 @@
  *   Consensus FASTA preparation, shared by PAFTOOLS and NEXTCLADE
  *   -------------------------------------------------------------
  *   Hashes each input FASTA, validates and cleans it, aggregates the consensus QC rows and
- *   runs FluMut, once per sample however many FASTA branches consume the result.
+ *   runs FluMut and GenoFLU, once per sample however many FASTA branches consume the result.
  *
  *   The sample name comes from the input filename (modules/shared/sample_id.nf); input
  *   headers supply only the segment label. Accepted header formats:
@@ -18,6 +18,7 @@
 include { hash_files }              from '../modules/shared/hash_files.nf'
 include { prepare_consensus }       from '../modules/shared/consensus_qc.nf'
 include { flumut }                  from '../modules/shared/flumut.nf'
+include { genoflu }                 from '../modules/shared/genoflu.nf'
 include { fasta_sample_channel }    from '../modules/shared/sample_id.nf'
 include { input_db_paths }          from '../modules/shared/sample_id.nf'
 include { resolve_dbs }             from '../modules/shared/database.nf'
@@ -65,15 +66,33 @@ workflow FASTA_PREP {
         // HPAI mutation screening (per sample).
         flumut(prepare_consensus.out.cleaned)
 
+        // H5N1 genotype assignment (per sample), plus one run-level table.
+        if (!params.skip_genoflu) {
+            genoflu(prepare_consensus.out.cleaned)
+
+            genoflu.out.tsv
+                .map{ it -> it[1] }
+                .collectFile(
+                    name: 'genoflu_summary.tsv',
+                    storeDir: "${params.outdir}/aggregate",
+                    keepHeader: true,
+                    skip: 1,
+                    sort: true
+                )
+        }
+
         // Inner joins: prepare_consensus runs errorStrategy 'ignore', so a sample it rejects
         // leaves every branch's provenance chain.
         ch_provenance = hash_files.out.provenance
             .join(prepare_consensus.out.provenance)
             .join(flumut.out.provenance)
-            .map { sample_id, hash, prepare, mutations -> [sample_id, [hash, prepare, mutations]] }
+        if (!params.skip_genoflu) {
+            ch_provenance = ch_provenance.join(genoflu.out.provenance)
+        }
+        ch_provenance = ch_provenance.map { it -> [it[0], it[1..-1]] }
 
     emit:
         cleaned    = prepare_consensus.out.cleaned    // [sample_id, cleaned consensus FASTA]
         db         = ch_db                            // [sample_id, bundle name]
-        provenance = ch_provenance                    // [sample_id, [hash, prepare, flumut]]
+        provenance = ch_provenance                    // [sample_id, [hash, prepare, flumut(, genoflu)]]
 }

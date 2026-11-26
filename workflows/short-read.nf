@@ -17,6 +17,7 @@ include { short_read_fastqc }              from '../modules/short_read/qc.nf'
 include { short_read_sample_reads }        from '../modules/short_read/assembly.nf'
 include { short_read_assembly }            from '../modules/short_read/assembly.nf'
 include { flumut }                         from '../modules/shared/flumut.nf'
+include { genoflu }                        from '../modules/shared/genoflu.nf'
 
 include { makeblastdb }                    from '../modules/shared/blast.nf'
 include { blastn }                         from '../modules/shared/blast.nf'
@@ -150,6 +151,20 @@ workflow SHORT_READ {
 
         flumut(short_read_make_consensus.out.consensus)
 
+        if (!params.skip_genoflu) {
+            genoflu(short_read_make_consensus.out.consensus)
+
+            genoflu.out.tsv
+                .map{ it -> it[1] }
+                .collectFile(
+                    name: 'genoflu_summary.tsv',
+                    storeDir: "${params.outdir}/aggregate",
+                    keepHeader: true,
+                    skip: 1,
+                    sort: true
+                )
+        }
+
         // Provenance collection processes
         // The basic idea is to build up a channel with the following structure:
         // [sample_id, [provenance_file_1.yml, provenance_file_2.yml, provenance_file_3.yml...]]
@@ -160,6 +175,9 @@ workflow SHORT_READ {
         ch_provenance = ch_provenance.join(short_read_cutadapt.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(short_read_assembly.out.provenance).map{ it ->        [it[0], it[1] << it[2]] }
         ch_provenance = ch_provenance.join(flumut.out.provenance).map{ it ->         [it[0], it[1] << it[2]] }
+        if (!params.skip_genoflu) {
+            ch_provenance = ch_provenance.join(genoflu.out.provenance).map{ it ->     [it[0], it[1] << it[2]] }
+        }
         collect_provenance(ch_provenance)
 
 }
